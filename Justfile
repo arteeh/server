@@ -154,6 +154,32 @@ export-sysext: build-sysext
     rm -rf dist/sysext-checkout
     @echo "==> wrote k0s sysext:" && ls -lh dist/sysext/
 
+# -- Flatcar LTS kernel & ZFS --------------------------------------------------
+# Build the Flatcar LTS kernel and ZFS sysext.
+
+# Build the Flatcar LTS kernel binary and modules.
+[group('kernel')]
+build-kernel:
+    just bst build flatcar/flatcar-kernel.bst
+
+# Build the Flatcar ZFS system extension.
+[group('kernel')]
+build-zfs:
+    just bst build flatcar/flatcar-zfs.bst
+
+# Export the kernel and ZFS artifacts to dist/kernel/.
+[group('kernel')]
+export-kernel: build-kernel build-zfs
+    rm -rf dist/kernel dist/kernel-checkout dist/zfs-checkout
+    mkdir -p dist/kernel dist/kernel-checkout dist/zfs-checkout
+    just bst artifact checkout flatcar/flatcar-kernel.bst --directory /src/dist/kernel-checkout
+    just bst artifact checkout flatcar/flatcar-zfs.bst --directory /src/dist/zfs-checkout
+    cp -a dist/kernel-checkout/* dist/kernel/
+    cp -a dist/zfs-checkout/* dist/kernel/
+    rm -rf dist/kernel-checkout dist/zfs-checkout
+    (cd dist/kernel && find . -type f -exec sha256sum --binary {} + > SHA256SUMS)
+    @echo "==> wrote kernel & ZFS artifacts:" && ls -lh dist/kernel/
+
 # Write the raw GPT installer image to a physical USB drive.
 [group('installer')]
 flash-installer DEVICE="":
@@ -480,7 +506,7 @@ install-vm:
       -drive file="$TARGET_RAW",format=raw,if=virtio \
       -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
       -drive if=pflash,format=raw,file="$OVMF_VARS" \
-      -nic user,model=virtio-net-pci,hostfwd=tcp::8080-:8080,hostfwd=tcp::2222-:22 &
+      -nic user,model=virtio-net-pci,hostfwd=tcp::8080-:8080,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443 &
     QEMU_PID=$!
     cleanup() {
       if kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -504,3 +530,36 @@ install-vm:
     echo "==> Access URL (Local): http://localhost:8080/"
     xdg-open "http://${HOST_IP:-localhost}:8080/" || xdg-open http://localhost:8080/ || true
     wait "$QEMU_PID"
+
+# Set up KubeStellar kc-agent for the user in ONE command.
+[group('test')]
+setup-kubestellar ORIGIN="http://localhost:8080,http://127.0.0.1:8080":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -x "files/bin/bluefin-kubestellar" ]; then
+      exec ./files/bin/bluefin-kubestellar start --origin "{{ORIGIN}}"
+    else
+      if ! command -v kc-agent >/dev/null 2>&1; then
+        echo "==> Installing kc-agent from kubestellar/tap..."
+        brew tap kubestellar/tap
+        brew install kc-agent
+      fi
+      export KAGENTI_CONTROLLER_URL="none"
+      kc-agent -kubeconfig "${KUBECONFIG:-$HOME/.kube/config}" -allowed-origins "{{ORIGIN}}" &
+    fi
+
+# Run fully automated headless browser test against the KubeStellar console.
+[group('test')]
+test-e2e-browser CONSOLE_URL="http://127.0.0.1:8080":
+    python3 tests/e2e/test_kubestellar_browser_login.py --console-url "{{CONSOLE_URL}}"
+
+# Complete end-to-end Lima VM orchestration test.
+[group('test')]
+test-e2e-lima:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    limactl validate files/lima/bluefin-server-kiosk.yaml
+    echo "==> Lima VM template validation passed: files/lima/bluefin-server-kiosk.yaml"
+    if [ "${RUN_LIMA_VM:-0}" = "1" ]; then
+      ./scripts/lima-e2e-kubestellar-test.sh
+    fi

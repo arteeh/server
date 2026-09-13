@@ -1,8 +1,9 @@
 kind: manual
 description: Create custom Flatcar-compatible os-release metadata to support Flatcar system extensions (sysext).
 
-# %{flatcar-board} — derived from the `arch` option, never hardcoded here.
-(@): include/arch.yml
+(@):
+  - include/arch.yml
+  - include/flatcar.yml
 
 build-depends:
   # Base runtime providing /bin/sh and coreutils (cat, ln, mkdir, sed) in the sandbox.
@@ -19,7 +20,7 @@ config:
     - |
       # %{release-version} is declared in project.conf and enforced against
       # the junction ref by check-release-version.py — no re-parsing needed.
-      FLATCAR_VERSION="4593.2.3"
+      FLATCAR_VERSION="%{flatcar-version}"
 
       cat <<EOF > "%{install-root}/usr/lib/os-release"
       NAME="Bluefin Server"
