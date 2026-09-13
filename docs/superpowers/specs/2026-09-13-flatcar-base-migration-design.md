@@ -177,23 +177,27 @@ Flatcar publishes a manifest for each stage:
 | 1 | `flatcar_production_image_initrd_contents.txt` | 339 | `rootfs-0/` shim: a 6,772-byte `/init`, busybox, `kmod`, `dmsetup`, `veritysetup`, and empty `/realinit` + `/sysusr/usr` mount points |
 | 2 | `flatcar_production_image_realinitrd_contents.txt` | 2,280 | The systemd initrd - byte-identical entry count to `/usr/lib/flatcar/bootengine.img` |
 
-Stage 1 is a busybox shim that sets up dm-verity for `/usr` and pivots into
-stage 2. Stage 2 is `bootengine.img`, a 50 MiB squashfs built by
-`sys-kernel/bootengine` 0.0.38-r40 from Flatcar's dracut module set, carrying
-`/init`, `/etc/initrd-release`, and `/etc/cmdline.d/10-default.conf`. It
-conforms to the systemd initrd interface exactly as
+Stage 1 is a busybox shim. It is the only stage compiled into the kernel; the
+`realinit` entry in its cpio is an empty directory. Stage 2 is
+`bootengine.img`, a 50 MiB squashfs built by `sys-kernel/bootengine` 0.0.38-r40
+from Flatcar's dracut module set, carrying `/init`, `/etc/initrd-release`, and
+`/etc/cmdline.d/10-default.conf`. Stage 1 loop-mounts it **from the `/usr` it
+just mounted**, so stage 2 versions with the OS payload automatically rather
+than with the kernel. It conforms to the systemd initrd interface exactly as
 `docs/INITRD_INTERFACE.md` prescribes.
 
 `flatcar_production_image.vmlinuz` and `flatcar_production_pxe.vmlinuz` are
-both 34,245,760 bytes: one kernel, one embedded initramfs, two names.
+both 34,245,760 bytes: one kernel, one embedded stage 1, two names.
 
 The consequence is that `elements/flatcar/flatcar-kernel.bst` has been
 importing a self-sufficient kernel all along, and the installer has been
 building a second initrd to lay on top of it.
 
-`flatcar_production_pxe_image.cpio.gz` is **not** a candidate for anything. It
-is a four-entry cpio whose payload is `usr.squashfs` at 374 MiB: the OS for a
-RAM boot, not a driver initrd.
+`flatcar_production_pxe_image.cpio.gz` is not a driver initrd. It is a
+four-entry cpio whose payload is `usr.squashfs` at 374 MiB, and stage 1 has an
+explicit branch for it: when no `/usr` partition is found and `/usr.squashfs`
+exists in the initramfs, that file becomes `/usr` with `usrfstype=squashfs`.
+It is the PXE path, not the disk path.
 
 ### Verified by experiment
 
@@ -230,39 +234,106 @@ Three facts fall out of those six lines:
   the kernel carries a built-in `CONFIG_CMDLINE` that any UKI cmdline is
   merged with, not a replacement for.
 
-### The boot contract that comes with it
+### The boot contract: decided, conform to it
 
-Taking the built-in initramfs means taking Flatcar's boot contract. Its
-cmdline, from the shipped `usr/boot/syslinux/root.A.cfg`, is:
+**Decision: follow Flatcar's design.** The OS payload becomes a `/usr` image on
+a verity-protected A/B partition pair, and `/` becomes writable state. The
+alternatives - overriding the built-in initramfs, or generating one with
+`mkosi-initrd` - are dropped.
 
+The contract is not guesswork. Stage 1's `/init` was extracted from the kernel
+and read directly; it is 6,772 bytes of shell and the relevant logic is exact:
+
+```sh
+verityusr=$(cmdline_arg verity.usr)
+usrhash=$(cmdline_arg verity.usrhash)
+verityusr=$(find_drive "${verityusr}")
+if echo "${verityusr}" | grep -q "^/" && [ "${usrhash}" != "" ]; then
+  veritysetup --panic-on-corruption --hash-offset=1065345024 open "${verityusr}" usr "${verityusr}" "${usrhash}"
+  status=$(dmsetup status usr | cut -d " " -f 4)
+  [ "${status}" = V ] || { echo "Verity setup failed" >&2; false; }
+fi
+usr=$(cmdline_arg mount.usr $(cmdline_arg usr))
+usrfstype=$(cmdline_arg mount.usrfstype $(cmdline_arg usrfstype auto))
+usrflags=$(cmdline_arg mount.usrflags $(cmdline_arg usrflags ro))
+mount -t "${usrfstype}" -o "${usrflags}" "${usr}" /sysusr/usr
+losetup -r "${LOOP}" /sysusr/usr/lib/flatcar/bootengine.img
+mount -t squashfs "${LOOP}" /underlay
+mount -t overlay -o rw,lowerdir=/underlay,upperdir=/work/realinit,workdir=/work/work overlay /realinit
+mount -o move /sysusr/usr /realinit/sysusr/usr
+exec switch_root /realinit /init
 ```
-root=LABEL=ROOT rootflags=subvol=root usr=PARTLABEL=USR-A
-```
 
-`veritysetup` in stage 1 and `usr=PARTLABEL=USR-A` mean `/usr` is expected as
-a dm-verity-protected A/B partition pair. Stage 2 then runs Flatcar's
-provisioning state machine: `ignition-fetch.service`, `ignition-disks.service`,
-`ignition-mount.service`, `ignition-files.service`, `ignition-kargs.service`,
-`ignition-diskful.target`, `sysroot-boot.service`.
+Seven consequences, each load-bearing:
 
-The current DDI has neither a `USR-A` verity pair nor a `ROOT` label, and this
-design rejects Ignition. Three ways out, to be settled by the boot proof in
-phase 4 rather than asserted here:
+1. **Verity is one partition, not two.** `--hash-offset=1065345024` is
+   hardcoded, with the comment "Hardcoded expected value from the image GPT
+   layout". The filesystem occupies the first 1,065,345,024 bytes and the
+   verity hash tree follows it in the same partition. This is incompatible with
+   `systemd-repart`'s `Verity=data` / `Verity=hash` two-partition model, so the
+   image is built with the hash appended by the DDI element and `repart` simply
+   `CopyBlocks=` the result - the existing contract, unchanged.
+2. **Our `/usr` must fit in 1,065,345,024 bytes.** Flatcar's own uses 454 MiB of
+   it. This is a hard build-time budget, and the DDI element must fail loudly
+   when exceeded rather than silently corrupt the hash offset.
+3. **Verity is optional.** The block is guarded by
+   `[ "${usrhash}" != "" ]`. Landing the partition layout without verity is a
+   valid intermediate state, so layout and verity split cleanly into two
+   tickets.
+4. **The root hash must reach the kernel cmdline** as `verity.usrhash=`.
+   Flatcar publishes theirs per release in
+   `flatcar_production_image_verity.txt`
+   (`20b08968dc4527a622b7f9f0ba9b6e1a16377500f1f9f93231712ccb45150570`). Ours is
+   an output of our own DDI build, baked into the UKI cmdline by `ukify`. That
+   binds each UKI to exactly one `/usr` image, which is precisely the property
+   A/B updates need.
+5. **The `/usr` filesystem stays XFS.** `mount -t "${usrfstype}"` passes the
+   type through, so `mount.usrfstype=xfs` works. Only `auto` and `btrfs` get
+   Flatcar's `rescue=nologreplay` special-casing.
+6. **`/usr/lib/flatcar/bootengine.img` must survive the import.** Stage 1
+   loop-mounts it from the mounted `/usr`; without it the boot stops between
+   stages. It is an explicit keep in the `flatcar-usr.bst` strip list, not an
+   incidental leftover.
+7. **Ignition units must be masked.** Stage 2 runs `ignition-fetch.service`,
+   `ignition-disks.service`, `ignition-mount.service`, `ignition-files.service`,
+   `ignition-kargs.service`, `ignition-diskful.target`, and
+   `sysroot-boot.service`. This design rejects Ignition.
 
-1. **Conform to the layout.** Give the installer's `repart.d` a `USR-A`/`USR-B`
-   verity pair and a `ROOT`-labelled root, and mask the Ignition units. This is
-   the largest change, but it delivers roadmap items 1, 2, and 3 - A/B slots,
-   read-only `/usr`, dm-verity - as a consequence of conforming rather than as
-   three separate projects, and it is the only option upstream actually tests.
-2. **Override the built-in initramfs.** Supply an external initrd, which the
-   kernel unpacks over the built-in one. This is today's behavior and keeps us
-   owning a generator forever.
-3. **Generate with `mkosi-initrd --generic --kernel-version=`.** The systemd
-   project's own generator, if the current partition layout must be preserved
-   and Flatcar's contract cannot be met.
+### Target partition layout
 
-Option 1 is the recommendation. Options 2 and 3 exist so the boot proof has
-somewhere to fall back to.
+Flatcar's own GPT, read from `flatcar_production_image.bin`:
+
+| # | PARTLABEL | MiB | Type GUID |
+|---|---|---|---|
+| 1 | `EFI-SYSTEM` | 1024 | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
+| 2 | `BIOS-BOOT` | 2 | `21686148-6449-6e6f-744e-656564454649` |
+| 3 | `USR-A` | 2048 | `5dfbf5f4-2848-4bac-aa5e-0d9a20b745a6` |
+| 4 | `USR-B` | 2048 | `5dfbf5f4-2848-4bac-aa5e-0d9a20b745a6` |
+| 6 | `OEM` | 1024 | `0fc63daf-8483-4772-8e79-3d69d8477de4` |
+| 7 | `OEM-CONFIG` | 64 | `c95dc21a-df0e-4340-8d7b-26cbfa9a03e0` |
+| 9 | `ROOT` | 1784 | `3884dd41-8582-4404-b9a8-e9b84f2df50e` |
+
+Partitions 5 and 8 are absent; the numbering is ChromeOS heritage.
+
+What Bluefin Server adopts, as `repart.d` drop-ins replacing the current
+`10-esp.conf` / `20-root-a.conf` / `30-var.conf`:
+
+| PARTLABEL | Type | Source | Notes |
+|---|---|---|---|
+| `EFI-SYSTEM` | ESP, vfat | `bootctl install` + UKI | Carries the UKI whose cmdline pins `verity.usrhash=` |
+| `USR-A` | `5dfbf5f4-…` | `CopyBlocks=` the `/usr` DDI | Read-only, verity, 2048 MiB |
+| `USR-B` | `5dfbf5f4-…` | empty | The A/B slot `50-root.transfer` already names but the installer never provisioned |
+| `ROOT` | `3884dd41-…` | `Format=`, `GrowFileSystem=yes` | Writable state |
+
+`BIOS-BOOT` is dropped: this is a UEFI-only image, per hard rule 5.
+`OEM` and `OEM-CONFIG` are dropped: they exist for Flatcar's cloud-provider
+hooks and Ignition, both of which this design rejects.
+
+This closes the known gap recorded as an `xfail` in
+`tests/unit/test_repart_layout.py`, where `50-root.transfer` names both slots
+but the installer provisions only one. Roadmap items 1, 2, and 3 - A/B slots,
+read-only `/usr`, dm-verity - arrive as a consequence of conforming rather than
+as three separate projects.
 
 ### Versioning
 
@@ -280,14 +351,15 @@ string edit, and gets its own ticket ahead of any element work.
   buys nothing that a pinned, digest-verified binary import does not.
 - **Status quo hybrid.** Rejected: it permanently straddles two ABI domains
   and requires the identity fiction in `os-release-flatcar.bst` to function.
-- **Boot Flatcar's `/usr` squashfs with dm-verity, as upstream does.**
-  Reclassified from "deferred follow-on" to the leading option, because the
-  kernel's built-in stage-1 initramfs ships `veritysetup` and expects
-  `usr=PARTLABEL=USR-A`. Conforming to that layout is how the embedded
-  initramfs boots at all, and it delivers roadmap items 1-3 as a side effect.
-  The alternative is overriding the built-in initramfs, which is what the
-  repository does today and what this design exists to stop. Settled by the
-  phase 4 boot proof.
+- **Boot Flatcar's `/usr` with dm-verity, as upstream does.** **Adopted.** Not
+  a follow-on and not optional: stage 1 hardcodes
+  `--hash-offset=1065345024` and expects `verity.usr=` / `verity.usrhash=`, so
+  this is simply how the embedded initramfs boots. See "The boot contract:
+  decided, conform to it".
+- **Override the built-in initramfs with a generated one**, via dracut or
+  `mkosi-initrd --generic`. Rejected: it is what the repository does today and
+  what this design exists to stop. Keeping it means owning an initrd generator
+  and a foreign module tree forever.
 
 ## Migration phases
 
@@ -298,17 +370,22 @@ Each phase is independently landable and independently verifiable.
    Record this design as an ADR. Split the release-version axes.
 2. **Import elements.** `flatcar/flatcar-usr.bst` plus a sysext family for
    `podman`, `containerd`, `docker`. Contract tests assert the update and
-   provisioning stack is absent and the module layout is flat.
-3. **Parallel DDI.** A project option (`os-base: fsdk | flatcar`) builds both
-   payloads so they can be A/B compared on the ghost cluster before anything is
-   deleted.
-4. **Boot proof.** `just show-me-the-future` installs and boots the Flatcar
-   payload in QEMU; the Lima end-to-end test drives the KubeStellar console
-   login against it.
-5. **Cutover.** `os-stack.bst` switches to the Flatcar base, displaced FSDK
-   elements and the `dracut` target-initrd path are deleted, and the `os-base`
-   option is removed.
-6. **Follow-on.** dm-verity `/usr` and A/B slots; arm64.
+   provisioning stack is absent, the module layout is flat, and
+   `/usr/lib/flatcar/bootengine.img` is preserved.
+3. **Partition layout.** Replace `repart.d/10-esp.conf`, `20-root-a.conf`, and
+   `30-var.conf` with Flatcar's `EFI-SYSTEM` / `USR-A` / `USR-B` / `ROOT`
+   layout using upstream type GUIDs. Verity stays off at this stage, which
+   stage 1 explicitly permits, so the layout can be proven on its own.
+4. **`/usr` DDI.** The OS payload becomes a `/usr` image sized to the
+   1,065,345,024-byte budget with the verity hash tree appended, and its root
+   hash is baked into the UKI cmdline as `verity.usrhash=`.
+5. **Boot proof.** `just show-me-the-future` installs and boots on the kernel's
+   built-in initramfs with Ignition masked; the Lima end-to-end test drives the
+   KubeStellar console login against it.
+6. **Cutover.** `os-stack.bst` switches to the Flatcar base; the displaced FSDK
+   elements and the `dracut` target-initrd path are deleted.
+7. **Follow-on.** Wire `50-root.transfer` to the real `USR-A`/`USR-B` slots and
+   retire the `xfail` in `tests/unit/test_repart_layout.py`; arm64.
 
 ## Verification
 
