@@ -69,7 +69,8 @@ GPG-verified at release time.
 | `flatcar-container.tar.gz` | 377 MiB | Complete OS tree: `/usr` (19,658 entries), `/boot`, `/oem` |
 | `flatcar_production_image_sysext.squashfs` | 418 MiB | The same `/usr`, packaged as a verity-capable sysext squashfs |
 | `flatcar_production_image.vmlinuz` | in use today | Kernel `6.12.102-flatcar` |
-| `flatcar_production_pxe_image.cpio.gz` | in use today | Upstream-built initrd for that kernel |
+| `flatcar_production_pxe_image.cpio.gz` | 374 MiB | Four cpio entries wrapping `usr.squashfs`; a RAM-boot OS payload, **not** a driver initrd |
+| `usr/lib/flatcar/bootengine.img` (inside the tarball) | 50 MiB | Flatcar's real initramfs: squashfs, 2,280 entries, `/init` + `/etc/initrd-release` |
 | `flatcar-zfs.raw` | 3 MiB | ZFS sysext (in use today) |
 | `flatcar-podman.raw` | 33 MiB | Podman sysext |
 | `rootfs-included-sysexts/containerd-flatcar.raw` | 24 MiB | containerd sysext |
@@ -152,15 +153,38 @@ Removed from the OS payload once the Flatcar base lands:
 Moving Podman from the base DDI to a sysext also brings the tree into line
 with hard rule 4, which already forbids container runtimes in the base DDI.
 
-### Initrd: stop generating, start importing
+### Initrd: stop generating, ship it in `/usr`
 
-The FSDK `dracut` invocation for the target OS initrd is deleted. The target
-UKI is assembled from `flatcar_production_image.vmlinuz` plus
-`flatcar_production_pxe_image.cpio.gz`, both already pinned upstream artifacts
-from the same release as the kernel modules. `ukify` still assembles the UKI,
-so hard rules 3 and 5 are untouched, but nothing regenerates an initrd against
-a foreign module tree. This removes the entire failure mode that required the
-manual initrd repacking work.
+The FSDK `dracut` invocation for the target OS initrd is deleted. The
+replacement is the initramfs Flatcar already builds for exactly this kernel:
+`/usr/lib/flatcar/bootengine.img`, which arrives inside
+`flatcar-container.tar.gz` at no extra cost. Measured: a 50 MiB squashfs
+(not a cpio), 2,280 entries, carrying `/init`, `/etc/initrd-release`, and
+`/etc/cmdline.d/10-default.conf`. It is produced by the `sys-kernel/bootengine`
+package (0.0.38-r40 in this release, per `usr/share/SLSA/`), which is Flatcar's
+dracut module set, and it is built once per release rather than regenerated
+per install.
+
+`ukify` still assembles the UKI, so hard rules 3 and 5 are untouched, but
+nothing regenerates an initrd against a foreign module tree. This removes the
+entire failure mode that required the manual initrd repacking work.
+
+Two constraints apply and are ticket-level work, not hand-waves:
+
+- `bootengine.img` drives Flatcar's provisioning state machine
+  (`ignition-fetch.service`, `ignition-disks.service`, `ignition-mount.service`,
+  `ignition-files.service`, `ignition-diskful.target`, `sysroot-boot.service`).
+  This design rejects Ignition, so those units must be masked and the root
+  mount driven from the UKI cmdline `root=PARTUUID=` instead. If masking proves
+  to fight the image rather than configure it, the fallback is `mkosi-initrd
+  --generic --kernel-version=`, the systemd project's own generator.
+- `flatcar_production_pxe_image.cpio.gz` is **not** a candidate. It is a
+  four-entry cpio whose payload is `usr.squashfs` at 374 MiB: the whole OS for
+  a RAM boot, not a driver initrd.
+
+For reference, `flatcar_production_image.vmlinuz` is a 32 MiB PE bzImage with
+an EFI stub (sections `.setup`, `.text`, `.data`) - not a UKI. Flatcar boots it
+with `bootengine.img` supplied separately.
 
 ### Versioning
 
