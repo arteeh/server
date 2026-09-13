@@ -195,6 +195,41 @@ building a second initrd to lay on top of it.
 is a four-entry cpio whose payload is `usr.squashfs` at 374 MiB: the OS for a
 RAM boot, not a driver initrd.
 
+### Verified by experiment
+
+The claim above is not inferred from the kernel config alone. Booting the
+pinned kernel in QEMU with **no `-initrd` argument and no disk attached**:
+
+```
+qemu-system-x86_64 -enable-kvm -m 2048 -cpu host -nographic -no-reboot \
+  -kernel <cached flatcar_production_image.vmlinuz> \
+  -append "console=ttyS0,115200n8 root=LABEL=ROOT usr=PARTLABEL=USR-A"
+```
+
+produced:
+
+```
+[    0.000000] Linux version 6.12.102-flatcar (build@pony-truck.infra.kinvolk.io) ...
+[    0.025767] Kernel command line: rootflags=rw mount.usrflags=ro console=ttyS0,115200n8 root=LABEL=ROOT usr=PARTLABEL=USR-A
+[    1.053101] Run /init as init process
+[    1.171015] SCSI subsystem initialized
+...
+Waiting for drive...
+Still waiting for drive...
+```
+
+Three facts fall out of those six lines:
+
+- `Run /init as init process` with no initrd supplied proves the initramfs is
+  compiled in and live, not merely declared in the config.
+- Stage 1 loaded storage modules and then blocked on `Waiting for drive...`,
+  which is the busybox shim hunting for `usr=PARTLABEL=USR-A`. With no disk
+  attached it waits forever. That message is the boot contract asserting
+  itself.
+- `rootflags=rw mount.usrflags=ro` appears **before** the appended arguments:
+  the kernel carries a built-in `CONFIG_CMDLINE` that any UKI cmdline is
+  merged with, not a replacement for.
+
 ### The boot contract that comes with it
 
 Taking the built-in initramfs means taking Flatcar's boot contract. Its
