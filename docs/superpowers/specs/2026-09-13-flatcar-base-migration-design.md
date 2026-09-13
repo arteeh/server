@@ -68,9 +68,11 @@ GPG-verified at release time.
 |---|---|---|
 | `flatcar-container.tar.gz` | 377 MiB | Complete OS tree: `/usr` (19,658 entries), `/boot`, `/oem` |
 | `flatcar_production_image_sysext.squashfs` | 418 MiB | The same `/usr`, packaged as a verity-capable sysext squashfs |
-| `flatcar_production_image.vmlinuz` | in use today | Kernel `6.12.102-flatcar` |
+| `flatcar_production_image.vmlinuz` | 32 MiB, in use today | Kernel `6.12.102-flatcar` **with a two-stage initramfs compiled in** (`CONFIG_INITRAMFS_SOURCE="bootengine.cpio"`) |
+| `flatcar_production_pxe.vmlinuz` | 32 MiB | Byte-for-byte the same size as the above; same kernel, same embedded initramfs |
 | `flatcar_production_pxe_image.cpio.gz` | 374 MiB | Four cpio entries wrapping `usr.squashfs`; a RAM-boot OS payload, **not** a driver initrd |
-| `usr/lib/flatcar/bootengine.img` (inside the tarball) | 50 MiB | Flatcar's real initramfs: squashfs, 2,280 entries, `/init` + `/etc/initrd-release` |
+| `flatcar_production_image_initrd_contents.txt` / `_realinitrd_contents.txt` | text | Per-stage manifests for the embedded initramfs: 339 and 2,280 entries |
+| `usr/lib/flatcar/bootengine.img` (inside the tarball) | 50 MiB | Stage 2 of that initramfs, standalone: squashfs, 2,280 entries, `/init` + `/etc/initrd-release` |
 | `flatcar-zfs.raw` | 3 MiB | ZFS sysext (in use today) |
 | `flatcar-podman.raw` | 33 MiB | Podman sysext |
 | `rootfs-included-sysexts/containerd-flatcar.raw` | 24 MiB | containerd sysext |
@@ -153,38 +155,79 @@ Removed from the OS payload once the Flatcar base lands:
 Moving Podman from the base DDI to a sysext also brings the tree into line
 with hard rule 4, which already forbids container runtimes in the base DDI.
 
-### Initrd: stop generating, ship it in `/usr`
+### Initrd: the kernel already has one
 
-The FSDK `dracut` invocation for the target OS initrd is deleted. The
-replacement is the initramfs Flatcar already builds for exactly this kernel:
-`/usr/lib/flatcar/bootengine.img`, which arrives inside
-`flatcar-container.tar.gz` at no extra cost. Measured: a 50 MiB squashfs
-(not a cpio), 2,280 entries, carrying `/init`, `/etc/initrd-release`, and
-`/etc/cmdline.d/10-default.conf`. It is produced by the `sys-kernel/bootengine`
-package (0.0.38-r40 in this release, per `usr/share/SLSA/`), which is Flatcar's
-dracut module set, and it is built once per release rather than regenerated
-per install.
+The FSDK `dracut` invocation for the target OS initrd is deleted, and nothing
+replaces it. The kernel this repository already imports ships a complete,
+two-stage initramfs compiled in.
 
-`ukify` still assembles the UKI, so hard rules 3 and 5 are untouched, but
-nothing regenerates an initrd against a foreign module tree. This removes the
-entire failure mode that required the manual initrd repacking work.
+`flatcar_production_image_kernel_config.txt` for this release states it
+directly:
 
-Two constraints apply and are ticket-level work, not hand-waves:
+```
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_INITRAMFS_SOURCE="bootengine.cpio"
+CONFIG_INITRAMFS_COMPRESSION_XZ=y
+```
 
-- `bootengine.img` drives Flatcar's provisioning state machine
-  (`ignition-fetch.service`, `ignition-disks.service`, `ignition-mount.service`,
-  `ignition-files.service`, `ignition-diskful.target`, `sysroot-boot.service`).
-  This design rejects Ignition, so those units must be masked and the root
-  mount driven from the UKI cmdline `root=PARTUUID=` instead. If masking proves
-  to fight the image rather than configure it, the fallback is `mkosi-initrd
-  --generic --kernel-version=`, the systemd project's own generator.
-- `flatcar_production_pxe_image.cpio.gz` is **not** a candidate. It is a
-  four-entry cpio whose payload is `usr.squashfs` at 374 MiB: the whole OS for
-  a RAM boot, not a driver initrd.
+Flatcar publishes a manifest for each stage:
 
-For reference, `flatcar_production_image.vmlinuz` is a 32 MiB PE bzImage with
-an EFI stub (sections `.setup`, `.text`, `.data`) - not a UKI. Flatcar boots it
-with `bootengine.img` supplied separately.
+| Stage | Manifest | Entries | Contents |
+|---|---|---|---|
+| 1 | `flatcar_production_image_initrd_contents.txt` | 339 | `rootfs-0/` shim: a 6,772-byte `/init`, busybox, `kmod`, `dmsetup`, `veritysetup`, and empty `/realinit` + `/sysusr/usr` mount points |
+| 2 | `flatcar_production_image_realinitrd_contents.txt` | 2,280 | The systemd initrd - byte-identical entry count to `/usr/lib/flatcar/bootengine.img` |
+
+Stage 1 is a busybox shim that sets up dm-verity for `/usr` and pivots into
+stage 2. Stage 2 is `bootengine.img`, a 50 MiB squashfs built by
+`sys-kernel/bootengine` 0.0.38-r40 from Flatcar's dracut module set, carrying
+`/init`, `/etc/initrd-release`, and `/etc/cmdline.d/10-default.conf`. It
+conforms to the systemd initrd interface exactly as
+`docs/INITRD_INTERFACE.md` prescribes.
+
+`flatcar_production_image.vmlinuz` and `flatcar_production_pxe.vmlinuz` are
+both 34,245,760 bytes: one kernel, one embedded initramfs, two names.
+
+The consequence is that `elements/flatcar/flatcar-kernel.bst` has been
+importing a self-sufficient kernel all along, and the installer has been
+building a second initrd to lay on top of it.
+
+`flatcar_production_pxe_image.cpio.gz` is **not** a candidate for anything. It
+is a four-entry cpio whose payload is `usr.squashfs` at 374 MiB: the OS for a
+RAM boot, not a driver initrd.
+
+### The boot contract that comes with it
+
+Taking the built-in initramfs means taking Flatcar's boot contract. Its
+cmdline, from the shipped `usr/boot/syslinux/root.A.cfg`, is:
+
+```
+root=LABEL=ROOT rootflags=subvol=root usr=PARTLABEL=USR-A
+```
+
+`veritysetup` in stage 1 and `usr=PARTLABEL=USR-A` mean `/usr` is expected as
+a dm-verity-protected A/B partition pair. Stage 2 then runs Flatcar's
+provisioning state machine: `ignition-fetch.service`, `ignition-disks.service`,
+`ignition-mount.service`, `ignition-files.service`, `ignition-kargs.service`,
+`ignition-diskful.target`, `sysroot-boot.service`.
+
+The current DDI has neither a `USR-A` verity pair nor a `ROOT` label, and this
+design rejects Ignition. Three ways out, to be settled by the boot proof in
+phase 4 rather than asserted here:
+
+1. **Conform to the layout.** Give the installer's `repart.d` a `USR-A`/`USR-B`
+   verity pair and a `ROOT`-labelled root, and mask the Ignition units. This is
+   the largest change, but it delivers roadmap items 1, 2, and 3 - A/B slots,
+   read-only `/usr`, dm-verity - as a consequence of conforming rather than as
+   three separate projects, and it is the only option upstream actually tests.
+2. **Override the built-in initramfs.** Supply an external initrd, which the
+   kernel unpacks over the built-in one. This is today's behavior and keeps us
+   owning a generator forever.
+3. **Generate with `mkosi-initrd --generic --kernel-version=`.** The systemd
+   project's own generator, if the current partition layout must be preserved
+   and Flatcar's contract cannot be met.
+
+Option 1 is the recommendation. Options 2 and 3 exist so the boot proof has
+somewhere to fall back to.
 
 ### Versioning
 
@@ -203,10 +246,13 @@ string edit, and gets its own ticket ahead of any element work.
 - **Status quo hybrid.** Rejected: it permanently straddles two ABI domains
   and requires the identity fiction in `os-release-flatcar.bst` to function.
 - **Boot Flatcar's `/usr` squashfs with dm-verity, as upstream does.**
-  Deferred, not rejected. It is the natural follow-on once the base lands and
-  pairs directly with roadmap items 1-3 (A/B slots, read-only `/usr`, verity).
-  Taking it in the same change would couple the base swap to a boot-chain
-  rewrite.
+  Reclassified from "deferred follow-on" to the leading option, because the
+  kernel's built-in stage-1 initramfs ships `veritysetup` and expects
+  `usr=PARTLABEL=USR-A`. Conforming to that layout is how the embedded
+  initramfs boots at all, and it delivers roadmap items 1-3 as a side effect.
+  The alternative is overriding the built-in initramfs, which is what the
+  repository does today and what this design exists to stop. Settled by the
+  phase 4 boot proof.
 
 ## Migration phases
 
