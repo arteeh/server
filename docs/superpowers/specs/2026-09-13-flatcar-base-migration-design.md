@@ -294,10 +294,12 @@ Seven consequences, each load-bearing:
    loop-mounts it from the mounted `/usr`; without it the boot stops between
    stages. It is an explicit keep in the `flatcar-usr.bst` strip list, not an
    incidental leftover.
-7. **Ignition units must be masked.** Stage 2 runs `ignition-fetch.service`,
-   `ignition-disks.service`, `ignition-mount.service`, `ignition-files.service`,
-   `ignition-kargs.service`, `ignition-diskful.target`, and
-   `sysroot-boot.service`. This design rejects Ignition.
+7. **Ignition needs no masking.** Measured, not assumed: on a disk with no
+   Ignition config, stage 2 runs `ignition-setup-pre.service` to completion,
+   skips `ignition-delete-config.service` ("no trigger condition checks were
+   met"), and reaches `ignition-subsequent.target - Subsequent (Not Ignition)
+   boot complete`. The state machine degrades to a no-op on its own. Masking
+   is available if a future unit misbehaves, but it is not a prerequisite.
 
 ### Target partition layout
 
@@ -323,17 +325,60 @@ What Bluefin Server adopts, as `repart.d` drop-ins replacing the current
 | `EFI-SYSTEM` | ESP, vfat | `bootctl install` + UKI | Carries the UKI whose cmdline pins `verity.usrhash=` |
 | `USR-A` | `5dfbf5f4-…` | `CopyBlocks=` the `/usr` DDI | Read-only, verity, 2048 MiB |
 | `USR-B` | `5dfbf5f4-…` | empty | The A/B slot `50-root.transfer` already names but the installer never provisioned |
+| `OEM` | `0fc63daf-…` | `Format=ext4`, `Label=OEM` | Required: stage 2 waits on `dev-disk-by-label-OEM.device` |
 | `ROOT` | `3884dd41-…` | `Format=`, `GrowFileSystem=yes` | Writable state |
 
 `BIOS-BOOT` is dropped: this is a UEFI-only image, per hard rule 5.
-`OEM` and `OEM-CONFIG` are dropped: they exist for Flatcar's cloud-provider
-hooks and Ignition, both of which this design rejects.
+`OEM` is **required**, not optional. Stage 2 declares a dependency on
+`dev-disk-by-label-OEM.device`; without it the boot waits 90 seconds and drops
+to an emergency shell. Note the match is on **filesystem label** `OEM`, not
+partition label, so the partition must be formatted with `mke2fs -L OEM` or
+equivalent. `OEM-CONFIG` is dropped: nothing in the boot path references it.
 
 This closes the known gap recorded as an `xfail` in
 `tests/unit/test_repart_layout.py`, where `50-root.transfer` names both slots
 but the installer provisions only one. Roadmap items 1, 2, and 3 - A/B slots,
 read-only `/usr`, dm-verity - arrive as a consequence of conforming rather than
 as three separate projects.
+
+### Boot proof
+
+The adopted design was booted end to end before any Bluefin code was written,
+using only upstream artifacts and unprivileged tooling (`mksquashfs`,
+`mke2fs -d`, `sfdisk`; no root, no loop mounts).
+
+A 10 GiB GPT was built with Flatcar's type GUIDs: `EFI-SYSTEM`, `USR-A`,
+`USR-B`, `OEM`, `ROOT`. Flatcar's `/usr` tree was packed with `mksquashfs`
+(356 MiB, against the 1,065,345,024-byte budget) and written into `USR-A`;
+`OEM` and `ROOT` were `mke2fs -d` ext4 images. The pinned kernel was booted
+with no external initrd:
+
+```
+-append "console=ttyS0,115200n8 mount.usr=PARTLABEL=USR-A \
+         mount.usrfstype=squashfs mount.usrflags=ro root=PARTLABEL=ROOT rootfstype=ext4"
+```
+
+The full chain ran:
+
+```
+[    1.122448] Run /init as init process
+Mounting /usr from /dev/vda2
+[    1.776610] systemd[1]: Successfully made /usr/ read-only.
+[    1.788585] systemd[1]: systemd 257.9 running in system mode
+[    1.794580] systemd[1]: Running in initrd.
+[    4.133550] systemd[1]: Switching root.
+Welcome to Flatcar Container Linux by Kinvolk 4593.2.5 (Oklo)!
+[  OK  ] Reached target multi-user.target - Multi-User System.
+localhost login:
+```
+
+SSH host keys were generated and DHCP brought `ens3` up on `10.0.2.15`. Every
+claim in this section - `PARTLABEL` resolution, read-only `/usr`,
+`bootengine.img` loop-mount, `switch_root`, Ignition degrading to a no-op - is
+from that trace rather than from reading upstream code.
+
+Two corrections came out of it, both folded in above: `OEM` is required, and
+Ignition needs no masking.
 
 ### Versioning
 
@@ -343,6 +388,50 @@ After the split, the FSDK pin describes only the installer, while the OS
 payload's real version is `FLATCAR_VERSION`. The release version needs two
 axes recorded and enforced separately. This is an invariant change, not a
 string edit, and gets its own ticket ahead of any element work.
+
+## Second opinion: the version-parity plan
+
+A competing plan proposes **version parity**: read the component versions
+Flatcar ships and rebuild those same versions from source inside BuildStream,
+with three kernels (Flatcar LTS, Fedora CoreOS, Ubuntu), a Flatcar-versioned
+`k8s` sysext replacing k0s, and A/B slots as `root-a`/`root-b`.
+
+Adopted from it:
+
+- **Single source of truth for pins.** Extend `include/flatcar.yml` to carry
+  every pinned upstream version, with a single-consumer rule so no element or
+  script hardcodes one. Good discipline, orthogonal to the base swap.
+- **Provisioning parity via `systemd-creds`**, covering SSH keys, networkd
+  configuration, `systemd-firstboot`, and TPM2 sealing. This design keeps
+  `systemd-sysinstall` + `systemd-creds` and rejects Ignition, which the other
+  plan agrees with; its provisioning workstream is real work this spec did not
+  cover.
+- **Reboot coordination for non-Kubernetes hosts**, matching roadmap item 6.
+
+Rejected, with reasons:
+
+- **"Rebuild Flatcar's versions from source in BuildStream."** Version parity
+  is not ABI parity. Flatcar's kernel banner reads
+  `x86_64-cros-linux-gnu-gcc (Gentoo Hardened 14.3.1_p20250801 p4)`; rebuilding
+  "the same version" under the FSDK toolchain produces different binaries with
+  different behavior, which is precisely the seam this migration exists to
+  close. It also means maintaining forks of Flatcar's forks.
+- **Three kernels built from upstream tarballs.** The premise that Flatcar has
+  "Ubuntu-based builds" is not true of any published release. More decisively,
+  the boot proof above depends on `CONFIG_INITRAMFS_SOURCE="bootengine.cpio"`:
+  a kernel built from a plain upstream tarball has no embedded initramfs, so
+  each additional kernel re-creates the initrd problem this design removes.
+- **Deleting the k0s sysext for a Flatcar `k8s` sysext.** That plan's own risk
+  table concedes the Flatcar sysext is "binaries-only, not a full control
+  plane" and that dropping k0s "removes the single-node k8s story". The
+  KubeStellar console path depends on it.
+- **A/B as `root-a`/`root-b`.** Superseded by measurement: Flatcar's A/B pair
+  is `USR-A`/`USR-B` with type GUID `5dfbf5f4-2848-4bac-aa5e-0d9a20b745a6`,
+  and `/` is writable state. Mirroring the whole-rootfs DDI into a second slot
+  does not satisfy the initramfs contract.
+- **"Enforce read-only `/usr` via fstab or cmdline `ro`."** Already automatic:
+  `mount.usrflags=ro` produced `Successfully made /usr/ read-only` in the
+  trace. No additional mechanism needed.
 
 ## Rejected alternatives
 
