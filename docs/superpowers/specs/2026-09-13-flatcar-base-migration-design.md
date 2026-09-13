@@ -445,27 +445,43 @@ Ignition needs no masking.
 
 ### Versioning
 
-The release version carries both axes in one string:
+**Use Flatcar's version.** `release-version` is the Flatcar release the image
+targets, verbatim:
 
 ```
-26.08.XX.$FLATCARVERSION
+4593.2.5
 ```
 
-- `26.08` - the freedesktop-sdk series this image is composed from.
-- `XX` - the FSDK point release, parsed from the junction ref by
-  `.github/scripts/check-release-version.py` exactly as today.
-- `$FLATCARVERSION` - the Flatcar release whose component versions this image
-  targets, from `FLATCAR_VERSION` in the upstream `version.txt`.
+Not a composite, not a translation. If the image claims parity with Flatcar
+4593.2.5, it says `4593.2.5`.
 
-For FSDK 26.08.13 targeting Flatcar 4593.2.5 the version is
-`26.08.13.4593.2.5`. Both halves are enforced: the FSDK half against the
-junction ref, the Flatcar half against the pin in `include/flatcar.yml`. A
-release cannot claim parity with a Flatcar version it does not target, and
-cannot claim an FSDK series it is not built from.
+This is already half-true in the tree. `os-release-flatcar.bst` sets
+`VERSION_ID=${FLATCAR_VERSION}` and `CPE_NAME=cpe:/o:flatcar-linux:flatcar_linux:${FLATCAR_VERSION}`
+while `PRETTY_NAME` carries the unrelated `%{release-version}`. One image
+currently answers two different questions about what version it is. Adopting
+Flatcar's version collapses them.
 
-This supersedes the earlier proposal to split `release-version` into two
-separate fields. One string, two enforced halves, and the parity claim is
-legible at a glance in an artifact filename.
+It also makes the sysext story honest. Flatcar's `systemd-sysext` images match
+on `ID` and `VERSION_ID`; `flatcar-zfs.raw` attaches today only because
+`os-release-flatcar.bst` already asserts Flatcar's identity. With
+`release-version` equal to the Flatcar version, `flatcar-podman.raw`,
+`containerd-flatcar.raw`, and the rest attach on a true statement rather than
+a convenient one.
+
+Consequences:
+
+- `.github/scripts/check-release-version.py` inverts. It stops enforcing
+  `release-version` against the FSDK junction ref and starts enforcing it
+  against `flatcar-version` in `include/flatcar.yml`.
+- The FSDK pin does not disappear, it stops being user-facing. It remains in
+  the junction ref and in `fsdk_ref` for provenance, and is recorded in
+  `os-release` as its own field rather than smuggled into the version string.
+- Artifact names follow: `bluefin-server-ddi-4593.2.5.raw.zst`.
+- Prerelease suffixes keep working. `check-release-version.py` already allows
+  them, so an alpha is `4593.2.5-alpha.1`.
+
+This supersedes both earlier proposals: the two-field split and the
+`26.08.XX.$FLATCARVERSION` composite.
 
 ## The version-parity plan, folded in
 
@@ -546,9 +562,10 @@ Deferred:
 Each phase is independently landable and independently verifiable. Hard rule 1
 is untouched throughout: the base stays FSDK 26.08.
 
-1. **Invariants.** Adopt the `26.08.XX.$FLATCARVERSION` release version with
-   both halves enforced. Extend `include/flatcar.yml` to the single source of
-   truth for pins. Record this design as an ADR.
+1. **Invariants.** Adopt Flatcar's version as `release-version` and invert
+   `check-release-version.py` to enforce it against `include/flatcar.yml`.
+   Extend that file to the single source of truth for pins. Record this design
+   as an ADR.
 2. **Version audit.** Inventory the component versions Flatcar 4593.2.5 ships,
    from `flatcar_production_image_packages.txt` and the SBOM, and diff them
    against what FSDK 26.08 pins. The output is a parity matrix: component,
