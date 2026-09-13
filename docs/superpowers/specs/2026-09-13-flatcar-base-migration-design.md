@@ -1,6 +1,40 @@
-# Flatcar Base Migration Design
+# Flatcar Version Parity Design
 
 **Status:** Proposed design
+
+## Purpose
+
+This project is an experiment with a concrete question: **what would Flatcar
+Container Linux look like if it were built with BuildStream?**
+
+Flatcar is a Gentoo/portage cross-build driven by its own SDK. Bluefin Server
+builds with `bst`. The question is not academic - it decides whether an
+image-based server OS of Flatcar's shape can be produced by a declarative,
+cache-backed build graph instead of a distribution toolchain, and what is lost
+or gained on the way.
+
+The target is **version parity, not ABI parity.**
+
+- **Version parity** means: for each component Flatcar ships, Bluefin Server
+  builds the same upstream version from source in BuildStream. systemd 257
+  means systemd 257. Kernel `6.12.102` means kernel `6.12.102`.
+- **ABI parity is explicitly not the goal.** Flatcar's binaries come from
+  `x86_64-cros-linux-gnu-gcc (Gentoo Hardened 14.3.1_p20250801 p4)` with their
+  patch set; ours will not. The binaries will differ, and that is expected and
+  accepted. Where a difference in behavior falls out of a difference in
+  toolchain, that difference is a finding worth recording, not a defect to
+  paper over.
+
+The distinction matters because it sets what "done" means. Done is not "our
+bytes match theirs". Done is "we build the versions Flatcar builds, the result
+boots and behaves, and we can say precisely where a BuildStream-built Flatcar
+diverges from the real one."
+
+**The build base stays freedesktop-sdk 26.08.** Hard rule 1 is unchanged:
+compose from FSDK `components/*`. Version parity is pursued *within* the FSDK
+graph, by building the versions Flatcar ships rather than by importing
+Flatcar's tree wholesale. Where FSDK's pinned version of a component differs
+from Flatcar's, closing that difference is the parity work.
 
 ## Problem
 
@@ -35,27 +69,53 @@ thing: a long-term-support kernel with a matching, prebuilt ZFS module.
 
 ## Goals
 
-- Collapse to a single ABI domain: kernel, userspace, and system extensions
-  from one upstream with one vermagic, one glibc, one systemd.
+- Achieve version parity with Flatcar 4593.2.5: build each component Flatcar
+  ships at the version Flatcar ships it, from source, in BuildStream.
 - Keep BuildStream as the only build system and the DDI/installer contract
   unchanged.
 - Keep the installer `systemd-sysinstall`-native and `systemd-repart`-based.
-- Delete the hand-written initrd repair path in favor of upstream artifacts.
-- Gain an upstream SBOM, package manifest, and signed digests for the OS
-  payload.
+- Conform to Flatcar's boot contract and partition layout, so a
+  BuildStream-built payload is substitutable for the real one.
+- Delete the hand-written initrd repair path.
+- Record every divergence between the BuildStream build and upstream, with
+  evidence, as the primary output of the experiment.
 - Make `ID=flatcar` true rather than cosmetic.
 
 ## Non-goals
 
-- Rebuilding Flatcar packages from source in BuildStream. Flatcar is a
-  Gentoo/portage cross-build driven by its own SDK; reproducing it under
-  `bst` is a multi-year effort with no payoff. This design imports Flatcar
-  binaries the same way `flatcar-kernel.bst` and `flatcar-zfs.bst` already do.
+- **ABI or byte-level parity with Flatcar's binaries.** Different toolchain,
+  different binaries. See "Purpose".
+- Reproducing Flatcar's build system. `coreos-assembler`, the Flatcar SDK, and
+  portage stay out of the tree; `bst` is the point of the exercise.
+- Matching Flatcar's full package set. Parity is scoped to the components
+  Flatcar publishes versions for.
 - Adopting Flatcar's update stack (`update_engine`, `locksmithd`) or its
   provisioning stack (Ignition, `coreos-cloudinit`). Bluefin Server stays on
-  `systemd-sysupdate` plus Kured.
-- Changing the k0s delivery model. k0s stays an optional sysext.
+  `systemd-sysupdate` plus Kured with `systemd-creds`.
+- Changing the k0s delivery model. k0s stays an optional sysext; the
+  KubeStellar console path depends on it.
 - arm64 support. Flatcar publishes `arm64-usr`; that is follow-on work.
+
+## Method: import first, then substitute
+
+Version parity needs an oracle. Building a component and asking "is this
+right?" is unanswerable without something known-good to compare against.
+
+So the work runs in two movements:
+
+1. **Import.** Bring Flatcar's own binaries in as pinned, digest-verified
+   artifacts and boot them on Bluefin Server's installer and partition layout.
+   This establishes a known-good baseline and forces every interface question -
+   boot contract, partition types, cmdline, verity offsets - into the open
+   before any compiler runs. The "Boot proof" section below records this
+   baseline already achieved.
+2. **Substitute.** Replace imported binaries with BuildStream-built ones at the
+   same versions, one component at a time, re-running the same boot proof after
+   each swap. A component is at parity when the image still boots and behaves
+   with it built rather than imported.
+
+The imported base is scaffolding with a purpose: it is the control against
+which each BuildStream-built component is measured. It is not the destination.
 
 ## Upstream artifact survey
 
@@ -94,14 +154,17 @@ Verified contents of `flatcar-container.tar.gz`:
 
 ## Design
 
-### Split the two images by role
+### The installer and the payload diverge in version, not in base
 
-The installer and the installed OS stop sharing a userspace.
+Both images are composed from FSDK 26.08. They differ in which versions they
+pin.
 
-- **Installer** stays FSDK 26.08. It is the only consumer of
-  `systemd-sysinstall`, which does not exist in systemd 257. Hard rule 3 is
+- **Installer** tracks FSDK's own versions, including systemd 261. It is the
+  only consumer of `systemd-sysinstall`, which does not exist in systemd 257,
+  so it cannot follow the payload down to Flatcar's version. Hard rule 3 is
   preserved untouched.
-- **Installed OS DDI** becomes Flatcar `/usr` plus the Bluefin overlay.
+- **Installed OS payload** tracks Flatcar's versions - systemd 257 and the rest
+  of the parity matrix - still built from FSDK `components/*`.
 
 This split is safe because the installer's contract with the DDI is
 byte-level, not content-level: `files/installer/repart.d/20-root.conf` copies
@@ -382,64 +445,92 @@ Ignition needs no masking.
 
 ### Versioning
 
-`project.conf` `release-version` is currently derived from and enforced
-against the FSDK junction ref by `.github/scripts/check-release-version.py`.
-After the split, the FSDK pin describes only the installer, while the OS
-payload's real version is `FLATCAR_VERSION`. The release version needs two
-axes recorded and enforced separately. This is an invariant change, not a
-string edit, and gets its own ticket ahead of any element work.
+The release version carries both axes in one string:
 
-## Second opinion: the version-parity plan
+```
+26.08.XX.$FLATCARVERSION
+```
 
-A competing plan proposes **version parity**: read the component versions
-Flatcar ships and rebuild those same versions from source inside BuildStream,
-with three kernels (Flatcar LTS, Fedora CoreOS, Ubuntu), a Flatcar-versioned
-`k8s` sysext replacing k0s, and A/B slots as `root-a`/`root-b`.
+- `26.08` - the freedesktop-sdk series this image is composed from.
+- `XX` - the FSDK point release, parsed from the junction ref by
+  `.github/scripts/check-release-version.py` exactly as today.
+- `$FLATCARVERSION` - the Flatcar release whose component versions this image
+  targets, from `FLATCAR_VERSION` in the upstream `version.txt`.
 
-Adopted from it:
+For FSDK 26.08.13 targeting Flatcar 4593.2.5 the version is
+`26.08.13.4593.2.5`. Both halves are enforced: the FSDK half against the
+junction ref, the Flatcar half against the pin in `include/flatcar.yml`. A
+release cannot claim parity with a Flatcar version it does not target, and
+cannot claim an FSDK series it is not built from.
 
+This supersedes the earlier proposal to split `release-version` into two
+separate fields. One string, two enforced halves, and the parity claim is
+legible at a glance in an artifact filename.
+
+## The version-parity plan, folded in
+
+A competing plan proposed version parity directly. It is now the frame of this
+document rather than an alternative to it. What it contributes:
+
+Adopted as the frame:
+
+- **Version parity as the objective**, with feature parity as a side effect
+  rather than the target. See "Purpose".
+- **Build the matched versions from source in BuildStream**, on the FSDK base.
 - **Single source of truth for pins.** Extend `include/flatcar.yml` to carry
   every pinned upstream version, with a single-consumer rule so no element or
-  script hardcodes one. Good discipline, orthogonal to the base swap.
+  script hardcodes one.
 - **Provisioning parity via `systemd-creds`**, covering SSH keys, networkd
-  configuration, `systemd-firstboot`, and TPM2 sealing. This design keeps
-  `systemd-sysinstall` + `systemd-creds` and rejects Ignition, which the other
-  plan agrees with; its provisioning workstream is real work this spec did not
-  cover.
+  configuration, `systemd-firstboot`, and TPM2 sealing, in preference to
+  Ignition. Both plans agree here.
 - **Reboot coordination for non-Kubernetes hosts**, matching roadmap item 6.
 
-Rejected, with reasons:
+Clarified:
 
-- **"Rebuild Flatcar's versions from source in BuildStream."** Version parity
-  is not ABI parity. Flatcar's kernel banner reads
-  `x86_64-cros-linux-gnu-gcc (Gentoo Hardened 14.3.1_p20250801 p4)`; rebuilding
-  "the same version" under the FSDK toolchain produces different binaries with
-  different behavior, which is precisely the seam this migration exists to
-  close. It also means maintaining forks of Flatcar's forks.
-- **Three kernels built from upstream tarballs.** The premise that Flatcar has
-  "Ubuntu-based builds" is not true of any published release. More decisively,
-  the boot proof above depends on `CONFIG_INITRAMFS_SOURCE="bootengine.cpio"`:
-  a kernel built from a plain upstream tarball has no embedded initramfs, so
-  each additional kernel re-creates the initrd problem this design removes.
-- **Deleting the k0s sysext for a Flatcar `k8s` sysext.** That plan's own risk
-  table concedes the Flatcar sysext is "binaries-only, not a full control
+- **Version parity is not ABI parity, and does not aim to be.** Flatcar's
+  kernel banner reads
+  `x86_64-cros-linux-gnu-gcc (Gentoo Hardened 14.3.1_p20250801 p4)`; building
+  the same version under the FSDK toolchain produces different binaries. That
+  is accepted. The measure of success is that the image boots and behaves,
+  and that each divergence is recorded - not that bytes match.
+
+Amended by measurement:
+
+- **A/B is `USR-A`/`USR-B`, not `root-a`/`root-b`.** Flatcar's pair uses type
+  GUID `5dfbf5f4-2848-4bac-aa5e-0d9a20b745a6`, with `/` as writable state.
+  Mirroring a whole-rootfs DDI into a second slot does not satisfy the
+  initramfs contract.
+- **Read-only `/usr` needs no fstab or cmdline `ro` work.** `mount.usrflags=ro`
+  alone produced `Successfully made /usr/ read-only` in the boot trace.
+- **A kernel built from a plain upstream tarball has no embedded initramfs.**
+  The boot proof depends on `CONFIG_INITRAMFS_SOURCE="bootengine.cpio"`, so any
+  BuildStream-built kernel must also build a `bootengine.cpio` equivalent and
+  set that config, or supply an external initrd. This is a concrete parity
+  requirement, and it multiplies per additional kernel.
+
+Deferred:
+
+- **Three kernels (LTS, Fedora CoreOS, Ubuntu).** No published Flatcar release
+  has an Ubuntu-based build, so there is no upstream version to match for that
+  third kernel. Revisit once single-kernel parity holds.
+- **Replacing the k0s sysext with a Flatcar `k8s` sysext.** That plan's own
+  risk table concedes the Flatcar sysext is "binaries-only, not a full control
   plane" and that dropping k0s "removes the single-node k8s story". The
   KubeStellar console path depends on it.
-- **A/B as `root-a`/`root-b`.** Superseded by measurement: Flatcar's A/B pair
-  is `USR-A`/`USR-B` with type GUID `5dfbf5f4-2848-4bac-aa5e-0d9a20b745a6`,
-  and `/` is writable state. Mirroring the whole-rootfs DDI into a second slot
-  does not satisfy the initramfs contract.
-- **"Enforce read-only `/usr` via fstab or cmdline `ro`."** Already automatic:
-  `mount.usrflags=ro` produced `Successfully made /usr/ read-only` in the
-  trace. No additional mechanism needed.
 
 ## Rejected alternatives
 
-- **Rebuild Flatcar from source under `bst`.** Rejected: Flatcar is a
-  portage/SDK cross-build of thousands of ebuilds. The effort is unbounded and
-  buys nothing that a pinned, digest-verified binary import does not.
-- **Status quo hybrid.** Rejected: it permanently straddles two ABI domains
-  and requires the identity fiction in `os-release-flatcar.bst` to function.
+- **Replacing the FSDK base with Flatcar's `/usr` tree.** Rejected: the build
+  base stays freedesktop-sdk 26.08 and hard rule 1 is unchanged. Flatcar's
+  binaries are imported as a *reference* to boot against and measure, not as
+  the shipped payload. See "Method: import first, then substitute".
+- **Reproducing Flatcar's build system** - the Flatcar SDK, portage, or
+  `coreos-assembler`. Rejected: building with `bst` is the point of the
+  experiment. Matching Flatcar's *versions* under FSDK is the work; matching
+  their toolchain would answer a different question.
+- **Status quo drift.** Rejected: leaving component versions wherever FSDK
+  happens to pin them means no parity claim can be made, and
+  `os-release-flatcar.bst` keeps asserting `ID=flatcar` on a fiction.
 - **Boot Flatcar's `/usr` with dm-verity, as upstream does.** **Adopted.** Not
   a follow-on and not optional: stage 1 hardcodes
   `--hash-offset=1065345024` and expects `verity.usr=` / `verity.usrhash=`, so
@@ -452,28 +543,34 @@ Rejected, with reasons:
 
 ## Migration phases
 
-Each phase is independently landable and independently verifiable.
+Each phase is independently landable and independently verifiable. Hard rule 1
+is untouched throughout: the base stays FSDK 26.08.
 
-1. **Decision and invariants.** Amend hard rule 1 to scope FSDK composition to
-   the installer and permit pinned Flatcar binary imports for the OS payload.
-   Record this design as an ADR. Split the release-version axes.
-2. **Import elements.** `flatcar/flatcar-usr.bst` plus a sysext family for
-   `podman`, `containerd`, `docker`. Contract tests assert the update and
-   provisioning stack is absent, the module layout is flat, and
-   `/usr/lib/flatcar/bootengine.img` is preserved.
-3. **Partition layout.** Replace `repart.d/10-esp.conf`, `20-root-a.conf`, and
-   `30-var.conf` with Flatcar's `EFI-SYSTEM` / `USR-A` / `USR-B` / `ROOT`
-   layout using upstream type GUIDs. Verity stays off at this stage, which
-   stage 1 explicitly permits, so the layout can be proven on its own.
-4. **`/usr` DDI.** The OS payload becomes a `/usr` image sized to the
+1. **Invariants.** Adopt the `26.08.XX.$FLATCARVERSION` release version with
+   both halves enforced. Extend `include/flatcar.yml` to the single source of
+   truth for pins. Record this design as an ADR.
+2. **Version audit.** Inventory the component versions Flatcar 4593.2.5 ships,
+   from `flatcar_production_image_packages.txt` and the SBOM, and diff them
+   against what FSDK 26.08 pins. The output is a parity matrix: component,
+   Flatcar version, FSDK version, gap. This decides the order of every phase
+   after it, and nothing downstream should start before it exists.
+3. **Reference import.** Bring Flatcar's binaries in as pinned artifacts to
+   boot against, per "Method: import first, then substitute". They are the
+   oracle, not the payload. Contract tests assert
+   `/usr/lib/flatcar/bootengine.img` is present and the module layout is flat.
+4. **Partition layout.** Replace `repart.d/10-esp.conf`, `20-root-a.conf`, and
+   `30-var.conf` with `EFI-SYSTEM` / `USR-A` / `USR-B` / `OEM` / `ROOT` using
+   upstream type GUIDs. Verity stays off here, which stage 1 explicitly
+   permits, so the layout is provable on its own.
+5. **`/usr` payload.** The OS payload becomes a `/usr` image sized to the
    1,065,345,024-byte budget with the verity hash tree appended, and its root
-   hash is baked into the UKI cmdline as `verity.usrhash=`.
-5. **Boot proof.** `just show-me-the-future` installs and boots on the kernel's
-   built-in initramfs with Ignition masked; the Lima end-to-end test drives the
-   KubeStellar console login against it.
-6. **Cutover.** `os-stack.bst` switches to the Flatcar base; the displaced FSDK
-   elements and the `dracut` target-initrd path are deleted.
-7. **Follow-on.** Wire `50-root.transfer` to the real `USR-A`/`USR-B` slots and
+   hash baked into the UKI cmdline as `verity.usrhash=`.
+6. **Substitution.** Working down the parity matrix, replace each imported
+   binary with an FSDK-built component at Flatcar's version, re-running the
+   boot proof after each swap. Record every behavioral divergence.
+7. **Boot proof in CI.** `just show-me-the-future` installs and boots; the Lima
+   end-to-end test drives the KubeStellar console login against the result.
+8. **Follow-on.** Wire `50-root.transfer` to the real `USR-A`/`USR-B` slots and
    retire the `xfail` in `tests/unit/test_repart_layout.py`; arm64.
 
 ## Verification
