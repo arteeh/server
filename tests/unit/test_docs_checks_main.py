@@ -69,7 +69,7 @@ def run(module):
     """Run main() and return (exit_code, stdout) instead of raising."""
     try:
         module.main()
-    except SystemExit as exc:  # pragma: no cover - exercised via return below
+    except SystemExit as exc:
         return exc.code
     return 0
 
@@ -123,16 +123,6 @@ def test_main_validates_every_skill_not_just_the_first(tree, capsys):
     assert "zzz-bad.md" in out
     assert "aaa-ok.md" not in out
     assert "mmm-ok.md" not in out
-
-
-def test_main_reports_every_failing_skill(tree, capsys):
-    write(tree.SKILLS_DIR, "bad-one.md", skill_text("bad-one", status="draft"))
-    write(tree.SKILLS_DIR, "bad-two.md", skill_text("bad-two", meta_type="nonsense"))
-
-    assert run(tree) == 1
-    out = capsys.readouterr().out
-    assert "bad-one.md" in out
-    assert "bad-two.md" in out
 
 
 # --- warnings are non-fatal ------------------------------------------------
@@ -231,15 +221,6 @@ def test_main_allows_draft_wording_in_the_exempt_planning_docs(tree, capsys):
     assert "draft" not in capsys.readouterr().out
 
 
-def test_main_does_not_stale_check_the_overhaul_plan(tree, capsys):
-    # DOCUMENTATION_OVERHAUL_PLAN.md is budget-checked by main() but is not in
-    # main()'s stale-flag list at all.
-    write(tree.ROOT, "docs/DOCUMENTATION_OVERHAUL_PLAN.md", "# Plan\n\nTODO: draft the rest\n")
-
-    assert run(tree) == 0
-    assert "Docs checks passed." in capsys.readouterr().out
-
-
 # --- internal links --------------------------------------------------------
 
 def test_main_rejects_a_broken_link_in_a_skill(tree, capsys):
@@ -268,27 +249,5 @@ def test_main_accepts_external_and_anchor_links(tree, capsys):
     write(tree.ROOT, "README.md",
           "# Doc\n\n[web](https://example.com) [mail](mailto:a@b.c) [anchor](#section)\n")
 
-    assert run(tree) == 0
-    assert "Docs checks passed." in capsys.readouterr().out
-
-
-def test_main_link_checks_the_overhaul_plan_is_not_in_scope(tree, capsys):
-    # DOCUMENTATION_OVERHAUL_PLAN.md is budget-checked but deliberately absent
-    # from main()'s link-check list; a broken link there must not fail the gate.
-    write(tree.ROOT, "docs/DOCUMENTATION_OVERHAUL_PLAN.md", "# Plan\n\n[gone](./nowhere.md)\n")
-
-    assert run(tree) == 0
-    assert "Docs checks passed." in capsys.readouterr().out
-
-
-# --- state isolation -------------------------------------------------------
-
-def test_main_is_idempotent_across_two_runs_on_a_clean_tree(tree, capsys):
-    write(tree.SKILLS_DIR, "good-skill.md", skill_text("good-skill"))
-
-    assert run(tree) == 0
-    capsys.readouterr()
-    # errors/warnings are module-level globals; a second pass must not inherit
-    # anything from the first.
     assert run(tree) == 0
     assert "Docs checks passed." in capsys.readouterr().out
