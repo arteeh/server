@@ -336,8 +336,7 @@ test-installer-artifact:
     [Service]
     Type=oneshot
     TimeoutStartSec=infinity
-    StandardOutput=journal+console
-    ExecStart=/usr/bin/bash -c 'echo "kiosk-ready: polling https://127.0.0.1:8080"; until [ "$(curl --silent --fail --insecure --max-time 2 https://127.0.0.1:8080/healthz | jq -r .status)" = ok ] && [ "$(curl --silent --fail --insecure --max-time 2 --output /dev/null --write-out "%%{http_code}" https://127.0.0.1:8080/)" = 200 ]; do sleep 2; done; echo KIOSK_CONSOLE_READY'
+    ExecStart=/usr/bin/bash -c 'echo "kiosk-ready: polling https://127.0.0.1:8080" >> /dev/console; until [ "$(curl --silent --fail --insecure --max-time 2 https://127.0.0.1:8080/healthz | jq -r .status)" = ok ] && [ "$(curl --silent --fail --insecure --max-time 2 --output /dev/null --write-out "%%{http_code}" https://127.0.0.1:8080/)" = 200 ]; do sleep 2; done; echo KIOSK_CONSOLE_READY >> /dev/console'
     UNIT
     )
 
