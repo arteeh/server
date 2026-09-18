@@ -60,7 +60,7 @@ def test_sshd_requires_persistent_host_keys_and_core_authorization() -> None:
     assert "After=var.mount systemd-tmpfiles-setup.service" in access
     assert "ExecStart=/usr/bin/test -s /var/home/core/.ssh/authorized_keys" in access
     assert "Requires=bluefin-ssh-host-keys.service bluefin-core-access.service" in drop_in
-    assert "ExecStartPre=" in drop_in
+    assert "ExecStartPre=/usr/sbin/sshd -t" in drop_in
     assert "ExecStartPre=/usr/bin/test -s /var/lib/ssh/ssh_host_ed25519_key" in drop_in
 
 
