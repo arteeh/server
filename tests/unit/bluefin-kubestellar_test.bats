@@ -208,11 +208,15 @@ run_isolated() {
   grep -q "^kc-agent " "$STUB_LOG"
 }
 
-@test "the start health probe honours --port" {
+@test "the start health probe defaults to port 8585 and honours --port" {
   stub_curl_healthy
   run_isolated --port 9999
   [ "$status" -eq 0 ]
   [[ "$output" =~ "http://127.0.0.1:9999/health" ]]
+
+  run_isolated
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "http://127.0.0.1:8585/health" ]]
 }
 
 @test "--no-install fails closed when kc-agent is missing" {
@@ -288,8 +292,9 @@ EOF
   [ "$status" -eq 0 ]
   NEW_PID="$(cat "$PID_FILE")"
   [ "$NEW_PID" != "$OLD_PID" ]
-  ! kill -0 "$OLD_PID" 2>/dev/null
   kill "$NEW_PID" 2>/dev/null || true
+  # Final command: its status gates the test, so a surviving old process fails.
+  ! kill -0 "$OLD_PID" 2>/dev/null
 }
 
 # ── stop ─────────────────────────────────────────────────────────────────────
@@ -397,5 +402,5 @@ EOF
   [[ "$output" =~ "line 60" ]]
   [[ "$output" =~ "line 11" ]]
   # Only the last 50 lines are shown.
-  [[ ! "$output" =~ "line 10 " ]]
+  [[ ! "$output" =~ "line 10" ]]
 }
