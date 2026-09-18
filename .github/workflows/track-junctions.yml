@@ -140,7 +140,13 @@ jobs:
           git commit -m "$title" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
           git push --force-with-lease origin "$BRANCH"
 
-          existing=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty' || true)
+          # No `|| true`: `gh pr list` already exits 0 and prints nothing when
+          # no PR matches, so a fallback buys nothing for the normal case and
+          # only converts an auth failure or API outage into an empty
+          # `existing` that falls through to `gh pr create` against a branch
+          # that may already have an open PR. `// empty` is the legitimate
+          # mechanism for "no open PR"; a failed query must abort the step.
+          existing=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --title "$title" --body-file /tmp/pr-body.md
             echo "Updated PR: $(gh pr view "$existing" --json url --jq '.url')"
