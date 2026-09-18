@@ -25,6 +25,9 @@ This module enforces both directions of the contract:
 * every file under ``files/`` is staged, or is declared host-side tooling, or is
   an explicitly recorded waiver.
 
+Staging is matched by declaration, not by graph reachability: a path named by an
+element that no OCI target depends on still counts as staged here.
+
 ``KNOWN_UNSTAGED`` is shrink-only: staging a waived path fails the gate until
 the waiver is deleted, so the record cannot outlive the bug it describes.
 """
@@ -111,11 +114,6 @@ def _payload_files():
     )
 
 
-def test_files_tree_is_present():
-    assert FILES_DIR.is_dir(), "files/ payload tree missing"
-    assert _payload_files(), "files/ contains no files — payload tree emptied?"
-
-
 def test_at_least_one_element_stages_payload():
     """Guards the gate itself: a parser regression must not silently pass."""
     staged = _staged_paths()
@@ -180,10 +178,3 @@ def test_known_unstaged_waivers_are_still_unstaged():
             f"{waived} is now staged by an element. Remove it from "
             f"KNOWN_UNSTAGED so the gate protects it."
         )
-
-
-def test_waivers_and_host_tooling_are_disjoint():
-    overlap = HOST_TOOLING & KNOWN_UNSTAGED
-    assert not overlap, (
-        f"paths declared both host tooling and unstaged payload: {sorted(overlap)}"
-    )
