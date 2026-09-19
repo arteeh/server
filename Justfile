@@ -465,7 +465,15 @@ install-vm:
     }
     trap cleanup INT TERM
 
-    until curl --silent --insecure --max-time 2 --output /dev/null https://127.0.0.1:8080/ || curl --silent --max-time 2 --output /dev/null http://127.0.0.1:8080/; do
+    ACCESS_SCHEME=""
+    until \
+      if curl --silent --insecure --max-time 2 --output /dev/null https://127.0.0.1:8080/; then
+        ACCESS_SCHEME=https
+      elif curl --silent --max-time 2 --output /dev/null http://127.0.0.1:8080/; then
+        ACCESS_SCHEME=http
+      else
+        false
+      fi; do
       if ! kill -0 "$QEMU_PID" 2>/dev/null; then
         wait "$QEMU_PID"
         exit 1
@@ -475,9 +483,9 @@ install-vm:
 
     HOST_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)"
     echo "==> KubeStellar Console is ready!"
-    echo "==> Access URL (LAN): https://${HOST_IP:-localhost}:8080/"
-    echo "==> Access URL (Local): https://localhost:8080/"
-    xdg-open "https://${HOST_IP:-localhost}:8080/" || xdg-open https://localhost:8080/ || true
+    echo "==> Access URL (LAN): ${ACCESS_SCHEME}://${HOST_IP:-localhost}:8080/"
+    echo "==> Access URL (Local): ${ACCESS_SCHEME}://localhost:8080/"
+    xdg-open "${ACCESS_SCHEME}://${HOST_IP:-localhost}:8080/" || xdg-open "${ACCESS_SCHEME}://localhost:8080/" || true
     wait "$QEMU_PID"
 
 # Set up KubeStellar kc-agent for the user in ONE command.
