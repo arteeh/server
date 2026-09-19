@@ -4,6 +4,37 @@ metadata:
   name: kubestellar-console
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubestellar-console
+  namespace: kubestellar-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubestellar-console
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "namespaces", "pods", "services", "events", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubestellar-console
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubestellar-console
+subjects:
+- kind: ServiceAccount
+  name: kubestellar-console
+  namespace: kubestellar-console
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: kubestellar-console
@@ -38,6 +69,7 @@ spec:
       labels:
         app.kubernetes.io/name: kubestellar-console
     spec:
+      serviceAccountName: kubestellar-console
       containers:
       - name: console
         image: ghcr.io/kubestellar/console:v0.3.34
