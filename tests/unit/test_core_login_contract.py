@@ -94,10 +94,19 @@ def test_systemd_presets_are_packaged_by_the_os_stack() -> None:
     )
     assert entry["target"] == "/usr/lib/systemd/system-preset"
     assert {path.name for path in PRESET_DIR.iterdir()} == {
+        "zz-disable-sshd-socket.preset",
         "zz-enable-networkd.preset",
         "zz-enable-k0s-first-boot.preset",
         "zz-enable-var-mount.preset",
     }
+
+
+def test_sshd_socket_activation_stays_disabled() -> None:
+    preset = PRESET_DIR / "zz-disable-sshd-socket.preset"
+    assert preset.read_text(encoding="utf-8") == (
+        "# SSH is enabled explicitly through sshd.service so readiness gates apply.\n"
+        "disable sshd.socket\n"
+    )
 
 
 def test_no_os_payload_file_is_orphaned_from_the_os_stack() -> None:
@@ -115,7 +124,7 @@ def test_no_os_payload_file_is_orphaned_from_the_os_stack() -> None:
 
 DDI = ROOT / "elements/oci/bluefin-server-ddi.bst"
 ISSUE = ROOT / "files/os/issue.d/40-kubestellar.issue"
-SSHD_PRESET = ROOT / "files/os/systemd/system-preset/zz-enable-sshd.preset"
+SSHD_SERVICE_PRESET = ROOT / "files/os/systemd/system-preset/zz-enable-sshd.preset"
 
 
 def test_ddi_restores_setuid_root_on_sudo() -> None:
@@ -138,7 +147,7 @@ def test_ddi_contains_no_root_credential_or_shared_host_key() -> None:
     assert "ssh-keygen -q -N" not in ddi
     assert "ln -sfn /var/home /layer/home" in ddi
     assert "multi-user.target.wants/sshd.service" in ddi
-    assert not SSHD_PRESET.exists()
+    assert not SSHD_SERVICE_PRESET.exists()
 
 
 ROADMAP = ROOT / "docs/skills/architecture-roadmap.md"
