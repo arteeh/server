@@ -102,6 +102,7 @@ def test_ddi_generates_module_indexes_for_runtime_filesystem_drivers() -> None:
     assert "hostfwd=tcp:127.0.0.1:2222-:22" in justfile
     assert "systemd.wants=sshd.service" in justfile
     assert "ssh.authorized_keys.root=" in justfile
+    assert "find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst'" in justfile
     assert 'if [ "$ROOT_CODE" = "200" ]; then' in justfile
     assert '[ "$ROOT_CODE" = "503" ]' not in justfile
     assert "ln -sf /dev/null /layer/etc/systemd/system/audit-rules.service" in ddi_element
