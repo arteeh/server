@@ -79,7 +79,7 @@ variables:
 
 sources:
   - kind: remote
-    url: flatcar:stable/amd64-usr/%{flatcar-version}/rootfs-included-sysexts/containerd-flatcar.raw
+    url: flatcar:stable/%{flatcar-board}/%{flatcar-version}/rootfs-included-sysexts/containerd-flatcar.raw
     filename: containerd-flatcar.raw
     ref: 78e38344ac490004b9fa4c7da38bbfcffc393146aa990379aff7b5c09589f809
 

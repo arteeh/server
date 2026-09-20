@@ -197,6 +197,27 @@ flash-installer DEVICE="":
         echo "ERROR: {{DEVICE}} is not a valid block device!" >&2
         exit 1
     fi
+    # Refuse the disk backing the running system outright. A single mistyped
+    # character here is unrecoverable, and the y/N prompt below is not a
+    # meaningful defence against a typo the operator has already committed to.
+    #
+    # `/` is not always on a block device. On composefs/ostree hosts — including
+    # Bluefin itself, which is what a developer runs this from — `findmnt / `
+    # reports a composefs digest, and the real device is mounted at /sysroot.
+    # Check both, so the guard is not silently inert on exactly the systems this
+    # project targets.
+    TARGET_NAME=$(lsblk -no KNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    for mp in / /sysroot; do
+        SRC=$(findmnt -no SOURCE "${mp}" 2>/dev/null | head -n1 || true)
+        case "${SRC}" in /dev/*) ;; *) continue ;; esac
+        SRC_DISK=$(lsblk -no PKNAME "${SRC}" 2>/dev/null | head -n1 || true)
+        if [ -n "${SRC_DISK}" ] && [ "${SRC_DISK}" = "${TARGET_NAME}" ]; then
+            echo "ERROR: {{DEVICE}} is the disk backing the running system." >&2
+            echo "  ${mp} is on ${SRC}, which lives on /dev/${SRC_DISK}." >&2
+            echo "Refusing to overwrite it." >&2
+            exit 1
+        fi
+    done
     # Refuse a device with anything mounted off it. dd writing under a live
     # filesystem gives a torn image and leaves the kernel holding stale page
     # cache for blocks that no longer exist.
