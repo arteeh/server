@@ -385,92 +385,21 @@ config:
         | gzip -9 -c > /installer.cpio.gz
       ls -lh /installer.cpio.gz
 
-    # ── Step 4: Lay out the ESP: systemd-boot + a type-1 loader entry ────
-    #
-    # NOT a single UKI. `ukify build --linux --initrd` produced one 434 MiB PE
-    # at EFI/BOOT/BOOTX64.EFI, and firmware cannot execute it: OVMF opens the
-    # file, reports
-    #
-    #   Loading driver at 0x0014DF90000 EntryPoint=0x0014DFA03C0
-    #
-    # and then nothing happens — no kernel output despite console=ttyS0 in the
-    # embedded cmdline, and an attached target disk is still byte-identical
-    # after seven minutes.
-    #
-    # Measured against the same firmware, same ESP, same QEMU invocation:
-    #
-    #   SizeOfImage 0x020D1000 ( 34 MiB)  boots
-    #   SizeOfImage 0x03CCA000 ( 64 MiB)  boots   <- the target OS UKI
-    #   SizeOfImage 0x19E6D000 (434 MiB)  hangs   <- this one
-    #
-    # All three share ImageBase 0x14DF90000, so the base is not the variable;
-    # size is. The installer's initrd is ~382 MiB because it carries the whole
-    # live environment, so it cannot live inside a PE section.
-    #
-    # systemd-boot is a ~100 KiB loader that reads the kernel and initrd as
-    # ordinary files, which is the layout it is designed for and which has no
-    # such ceiling. The target OS keeps its UKI: at 64 MiB it boots fine, and
-    # a UKI is what systemd-sysupdate expects to replace.
+    # ── Step 4: Build the UKI ────────────────────────────────────────────
+    # Unsigned UKI — acceptable for USB installer media. Secure Boot
+    # signing can be layered on by passing --secureboot-private-key /
+    # --secureboot-certificate if keys are injected at CI time.
     - |
       set -eux
+      mkdir -p /layer/boot/efi/EFI/BOOT
       INSTALLER_KVER="$(basename "$(find /layer/usr/lib/modules -mindepth 1 -maxdepth 1 -type d | head -n1)")"
       INSTALLER_KERNEL="/layer/usr/lib/modules/${INSTALLER_KVER}/vmlinuz"
-
-      mkdir -p /layer/boot/efi/EFI/BOOT
-      mkdir -p /layer/boot/efi/EFI/systemd
-      mkdir -p /layer/boot/efi/loader/entries
-      mkdir -p /layer/boot/efi/bluefin
-
-      # systemd-boot at both the removable-media fallback path and its own, so
-      # the medium boots whether or not firmware has an NVRAM entry.
-      #
-      # Explicit paths, not a search. `find / -name systemd-bootx64.efi` can
-      # match either the installer rootfs at /layer or the target rootfs staged
-      # at /target-root, and -quit takes whichever the traversal reaches first —
-      # so which loader ships would vary between builds for no visible reason.
-      # The installer medium must boot the installer's own copy.
-      SDBOOT=/layer/usr/lib/systemd/boot/efi/systemd-bootx64.efi
-      if [ ! -f "${SDBOOT}" ]; then
-        SDBOOT=/usr/lib/systemd/boot/efi/systemd-bootx64.efi
-      fi
-      if [ ! -f "${SDBOOT}" ]; then
-        echo "ERROR: systemd-bootx64.efi not found; the medium would have no bootloader." >&2
-        exit 1
-      fi
-      install -D -m 0644 "${SDBOOT}" /layer/boot/efi/EFI/BOOT/BOOTX64.EFI
-      install -D -m 0644 "${SDBOOT}" /layer/boot/efi/EFI/systemd/systemd-bootx64.efi
-
-      # Kernel and initrd as plain files — no PE size ceiling applies.
-      install -D -m 0644 "${INSTALLER_KERNEL}" /layer/boot/efi/bluefin/vmlinuz
-      install -D -m 0644 /installer.cpio.gz /layer/boot/efi/bluefin/initrd
-
-      # printf, not a heredoc: this block is itself indented inside the element,
-      # and a heredoc would write those leading spaces into the config verbatim.
-      printf '%s\n' \
-        'title   Bluefin Server Installer' \
-        'linux   /bluefin/vmlinuz' \
-        'initrd  /bluefin/initrd' \
-        'options systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw quiet loglevel=3 audit=0' \
-        > /layer/boot/efi/loader/entries/bluefin-installer.conf
-
-      # Boot it without waiting for a keypress; the medium has one entry.
-      printf '%s\n' \
-        'default bluefin-installer.conf' \
-        'timeout 0' \
-        'console-mode keep' \
-        > /layer/boot/efi/loader/loader.conf
-
-      cat /layer/boot/efi/loader/entries/bluefin-installer.conf
-
-      ls -lh /layer/boot/efi/EFI/BOOT/BOOTX64.EFI \
-             /layer/boot/efi/bluefin/vmlinuz \
-             /layer/boot/efi/bluefin/initrd
-      # Fail the build rather than ship another unbootable medium.
-      BOOT_BYTES="$(stat -c %s /layer/boot/efi/EFI/BOOT/BOOTX64.EFI)"
-      if [ "${BOOT_BYTES}" -gt 16777216 ]; then
-        echo "ERROR: EFI/BOOT/BOOTX64.EFI is ${BOOT_BYTES} bytes; firmware could not execute a 434 MiB image." >&2
-        exit 1
-      fi
+      ukify build \
+        --linux="${INSTALLER_KERNEL}" \
+        --initrd=/installer.cpio.gz \
+        --cmdline="systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw quiet loglevel=3 audit=0" \
+        --output=/layer/boot/efi/EFI/BOOT/BOOTX64.EFI
+      ls -lh /layer/boot/efi/EFI/BOOT/BOOTX64.EFI
 
     # ── Step 5: Decompress DDI payload for embedding ─────────────────────
     # This runs AFTER the initrd cpio is packed (Step 3), so the DDI is NOT
@@ -484,10 +413,7 @@ config:
 
     # ── Step 6: Assemble installer GPT disk image ────────────────────────
     # Two-partition layout:
-    #   10-esp.conf:      ESP (1G) — systemd-boot, the kernel, the initrd and a
-    #                     type-1 loader entry; boots the installer. Sized for
-    #                     the ~382 MiB initrd plus the kernel, which is why it
-    #                     is 1G rather than the few MiB a UKI-only ESP needs.
+    #   10-esp.conf:      ESP (1G) — UKI lives here; boots the installer
     #   20-ddi-data.conf: Data (XFS) — bluefin-server-ddi.raw copied here block-for-block
     #
     # At install time, systemd-sysinstall mounts the data partition to
