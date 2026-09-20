@@ -27,6 +27,9 @@ sources:
   - kind: local
     path: files/os/libexec
     directory: libexec-src
+  - kind: local
+    path: files/kubernetes/sysctl.d
+    directory: sysctl-src
 
 # This element stages systemd units, a YAML config and a shell helper. FSDK's
 # default strip-commands shell out to freedesktop-sdk-stripper, which
@@ -47,6 +50,9 @@ config:
 
       mkdir -p "${OUT}/usr/lib/systemd/system/systemd-sysext.service.d"
       cp -a sysext-dropin-src/. "${OUT}/usr/lib/systemd/system/systemd-sysext.service.d/"
+
+      mkdir -p "${OUT}/usr/lib/sysctl.d"
+      cp -a sysctl-src/. "${OUT}/usr/lib/sysctl.d/"
 
       mkdir -p "${OUT}/usr/share/bluefin"
       cp -a kubeadm-src/kubeadm.yaml "${OUT}/usr/share/bluefin/kubeadm.yaml"

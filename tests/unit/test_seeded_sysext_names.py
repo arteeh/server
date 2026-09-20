@@ -88,31 +88,70 @@ def test_seeded_sysexts_are_decoupled_from_the_host_os_release_version() -> None
     )
 
 
-def test_every_sysext_provided_unit_a_host_unit_requires_is_actually_seeded() -> None:
-    """A hard Requires= on a sysext-provided unit obliges the installer to seed it.
+def test_every_sysext_provided_unit_a_host_unit_depends_on_is_actually_seeded() -> None:
+    """Depending on a sysext-provided unit obliges the installer to seed it.
 
     Deleting the ``CopyFiles=`` line for containerd would restore exactly the
-    failure this whole arrangement exists to fix: kubeadm-init.service holds
-    ``Requires=containerd.service``, nothing provides it, the job is
-    unresolvable, and bluefin-cluster-bootstrap.service never runs because it
-    declares ``Requires=kubeadm-init.service``. The machine boots to
-    multi-user.target with no control plane.
+    failure this whole arrangement exists to fix: kubeadm-init.service depends
+    on ``containerd.service``, nothing provides it, and
+    bluefin-cluster-bootstrap.service never runs because it declares
+    ``Requires=kubeadm-init.service``. The machine boots to multi-user.target
+    with no control plane.
 
-    The requirement is read out of the unit rather than restated here, so
-    dropping the ``Requires=`` deliberately also relaxes this test.
+    Both ``Requires=`` and ``Wants=`` count. The unit deliberately uses ``Wants=``
+    — see ``test_sysext_provided_units_are_not_hard_required`` — so matching only
+    ``Requires=`` here would make this gate silently vacuous.
     """
     unit = without_comments(KUBEADM_INIT.read_text(encoding="utf-8"))
     seeded_names = {Path(dst).name for dst in seeded_extensions().values()}
 
-    for required_unit, image in SYSEXT_PROVIDED_UNITS.items():
-        if f"Requires={required_unit}" not in unit:
+    for dep_unit, image in SYSEXT_PROVIDED_UNITS.items():
+        if not any(f"{kw}={dep_unit}" in unit for kw in ("Requires", "Wants")):
             continue
         assert image in seeded_names, (
-            f"{KUBEADM_INIT.relative_to(ROOT)} declares "
-            f"Requires={required_unit}, which only {image} provides, but "
-            f"{VAR_REPART.relative_to(ROOT)} does not seed it into "
-            f"/lib/extensions. Seeded images: {sorted(seeded_names) or 'none'}. "
-            "The control plane will not start."
+            f"{KUBEADM_INIT.relative_to(ROOT)} depends on {dep_unit}, which "
+            f"only {image} provides, but {VAR_REPART.relative_to(ROOT)} does "
+            f"not seed it into /lib/extensions. Seeded images: "
+            f"{sorted(seeded_names) or 'none'}. The control plane will not start."
+        )
+
+
+def test_sysext_provided_units_are_not_hard_required() -> None:
+    """A unit that only exists after the merge cannot be a ``Requires=``.
+
+    systemd resolves dependencies when it computes the boot transaction, which
+    happens before systemd-sysext merges ``/usr``. Observed on a real first boot
+    of this image::
+
+        12:06:10.283  Applying preset policy
+        12:06:11.751  Merged extensions into '/usr'   <- containerd.service appears
+        12:06:13.141  Reached target Multi-User System
+
+    With ``Requires=containerd.service`` the unresolvable dependency made systemd
+    drop kubeadm-init.service's job from the transaction entirely. It was never
+    re-enqueued after the merge, so its conditions were never evaluated, kubeadm
+    never ran, and nothing appeared in ``systemctl list-units --failed``.
+    kubelet.service survived the same boot because it only declares
+    ``After=containerd.service``; a pure ordering edge on a missing unit is
+    ignored rather than fatal.
+
+    ``Wants=`` is ignored the same way, and ``After=`` still orders correctly once
+    the merge makes the unit real.
+    """
+    unit = without_comments(KUBEADM_INIT.read_text(encoding="utf-8"))
+
+    for dep_unit in SYSEXT_PROVIDED_UNITS:
+        assert f"Requires={dep_unit}" not in unit, (
+            f"{KUBEADM_INIT.relative_to(ROOT)} hard-requires {dep_unit}, which "
+            f"does not exist when systemd computes the boot transaction — it "
+            f"arrives with the sysext merge. systemd will drop this unit's job "
+            f"and never re-enqueue it, so kubeadm never runs and the failure is "
+            f"invisible to `systemctl list-units --failed`. Use Wants= plus "
+            f"After=."
+        )
+        assert f"After={dep_unit}" in unit, (
+            f"{KUBEADM_INIT.relative_to(ROOT)} must still order itself "
+            f"After={dep_unit}, or kubeadm can run before the CRI socket exists."
         )
 
 

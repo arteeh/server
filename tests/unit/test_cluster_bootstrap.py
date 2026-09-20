@@ -126,13 +126,28 @@ def test_the_idempotency_guard_lives_on_kubeadm_init_alone() -> None:
 def test_kubeadm_init_waits_for_the_sysext_merge_and_the_runtime() -> None:
     init = unit(KUBEADM_INIT)["Unit"]
     requires = set(init.get("Requires", []))
+    wants = set(init.get("Wants", []))
     after = set(init.get("After", []))
 
-    # kubeadm, kubelet and containerd.service all arrive with the merge.
+    # systemd-sysext.service is part of systemd and exists when the boot
+    # transaction is computed, so requiring it is safe and correct: without the
+    # merge there is no /usr/bin/kubeadm to run.
     assert "systemd-sysext.service" in requires
     assert "systemd-sysext.service" in after
-    assert "containerd.service" in requires
+
+    # containerd.service is different. It arrives *inside* the merge, so it does
+    # not exist yet when systemd resolves dependencies. This previously read
+    # `Requires=containerd.service`, and systemd dropped kubeadm-init's job from
+    # the boot transaction outright — conditions never evaluated, kubeadm never
+    # ran, nothing in `systemctl list-units --failed`. Observed on a real boot:
+    # preset 12:06:10, merge 12:06:11, multi-user 12:06:13.
+    assert "containerd.service" not in requires, (
+        "containerd.service does not exist when the boot transaction is "
+        "computed; a hard requirement silently drops this unit's job"
+    )
+    assert "containerd.service" in wants
     assert "containerd.service" in after
+
     assert "network-online.target" in after
 
 
@@ -153,9 +168,38 @@ def test_kubeadm_init_reads_the_staged_config_and_skips_kube_proxy() -> None:
     ], "Cilium supplies the kube-proxy replacement; installing both fights"
 
 
-def test_sysext_merge_reloads_systemd_so_merged_units_become_visible() -> None:
-    dropin = unit(SYSEXT_DROPIN)["Service"]
-    assert dropin["ExecStartPost"] == ["/usr/bin/systemctl daemon-reload"]
+def test_sysext_merge_reloads_systemd_and_starts_the_merged_runtime() -> None:
+    """Making a merged unit visible is not the same as running it.
+
+    containerd.service and its own multi-user.target.wants symlink both live
+    inside the sysext, so neither exists when systemd computes the boot
+    transaction. The reload makes them visible afterwards, but a reload does not
+    enqueue jobs for a target that is already active or already in flight — so
+    whether containerd starts comes down to whether the merge happened to land
+    before multi-user.target was queued.
+
+    That race was observed resolving both ways on the same image::
+
+        boot A  merge 12:06:11.75, multi-user 12:06:13.14  -> containerd active
+        boot B  merge 12:21:10.24, multi-user not reached  -> containerd inactive
+
+    On boot B kubeadm-init blocked forever waiting for a CRI socket that never
+    appeared. The explicit start removes the race; it is idempotent when the
+    symlink did win.
+    """
+    post = unit(SYSEXT_DROPIN)["Service"]["ExecStartPost"]
+
+    assert "/usr/bin/systemctl daemon-reload" in post, (
+        "without a reload, ordering edges resolve against units systemd has "
+        "never read"
+    )
+    assert "/usr/bin/systemctl start --no-block containerd.service" in post, (
+        "containerd.service must be started explicitly: its enablement symlink "
+        "arrives with the merge, too late for systemd to act on"
+    )
+    assert post.index("/usr/bin/systemctl daemon-reload") < post.index(
+        "/usr/bin/systemctl start --no-block containerd.service"
+    ), "the unit must be read before it can be started"
 
 
 def test_kubelet_is_configured_by_kubeadm_rather_than_by_the_image() -> None:
