@@ -177,25 +177,20 @@ offline installation.
 
 `just test-installer-artifact` and the CI `installer-test` job attach
 `installer.raw` as a read-only data disk and inject the kernel directly with
-`-kernel`/`-initrd` from the PXE artifacts. The medium's ESP is never executed.
+`-kernel`/`-initrd` from the PXE artifacts. The medium's ESP is never executed:
+they prove the installer **installs**, never that the medium **boots**.
 
-They prove the installer **installs**. They cannot prove the medium **boots**.
-
-`just test-installer-boot` closes that gap: it writes the exported image into a
-sparse file larger than itself, relocates the GPT backup header the way
+`just test-installer-boot` closes that gap — it writes the exported image into
+a sparse file larger than itself, relocates the GPT backup header the way
 `flash-installer` does, and boots it through OVMF.
 
-Two things make its success criterion non-obvious, and both were got wrong
-before being got right:
+Note its scope: it boots an **exported artifact** from `dist/`. It does not
+build, and `just validate` only resolves the graph without building. A green
+run is evidence about those bytes, not the current element state; the recipe
+warns when sources are newer than the artifact. Re-export before treating it
+as a gate on an element change.
 
-- The medium boots with `quiet loglevel=3`, so a **correct** boot prints almost
-  nothing on serial, while a **failing** boot prints dracut emergency-mode text.
-  Matching on `Linux version|initrd|systemd` therefore rewards failure.
-- Firmware and `systemd-stub` both emit CSI cursor sequences after handoff, so
-  "any output after the last `BdsDxe:` line" scores a medium whose bootloader is
-  corrupt — it falls through to PXE and prints `PXE-E16` — as a pass.
-
-The criterion is systemd's OSC 3008 identity record, which PID 1 writes
+Its success criterion is systemd's OSC 3008 identity record, which PID 1 writes
 regardless of log verbosity and which firmware cannot forge:
 
 ```
@@ -203,9 +198,37 @@ ESC ]3008;start=<id>;user=root;hostname=<h>;machineid=<id>;bootid=<id>;
      pid=1;comm=systemd;type=boot
 ```
 
-A medium that boots correctly and waits for an operator looks identical to a
-hung one on a `cat`-ed serial log. Dump the bytes before concluding anything:
-`strings serial.log` or `hexdump -C`, not `cat`.
+### A working medium is silent; a broken one is noisy
+
+This inversion is the most expensive thing in this document, and the easiest to
+forget because it is counter-intuitive.
+
+A **correct** boot prints essentially nothing. `quiet loglevel=3` suppresses
+the kernel, and the medium deliberately omits `unattended`, so it comes up and
+waits for an operator. A **failing** boot is loud: dracut emergency mode,
+"Cannot find /usr", and `Dependency failed for ...` all print *through*
+`quiet`, because error paths bypass it.
+
+So silence is not evidence of failure and output is not evidence of success —
+both readings are backwards, and reading them that way cost a day spent
+reverting a healthy installer.
+
+Two habits make it unambiguous:
+
+1. **Never `cat` the serial log.** It is nearly all ANSI and OSC escapes, which
+   the terminal swallows, so a healthy boot renders as two firmware lines and
+   apparent silence. Use `strings serial.log` or `hexdump -C serial.log`; the
+   systemd identity record is plainly visible that way.
+2. **Force verbosity when in doubt.** Add this to the `test-installer-boot`
+   QEMU invocation to make a healthy boot as loud as a broken one:
+
+   ```
+   -smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=loglevel=7
+   ```
+
+   `systemd-stub` reads the SMBIOS type-11 string and appends it to the
+   embedded cmdline, so this needs no rebuild. A healthy medium then produces
+   tens of kilobytes of ordinary boot log.
 
 ## Writing the medium
 
@@ -223,22 +246,20 @@ Warning: Not all of the space available to /dev/sdX appears to be used ...
 ```
 
 **It does not stop the medium booting.** UEFI reads the *primary* GPT at LBA 1,
-which `dd` writes correctly; the backup header is a redundancy copy consulted
-only when the primary is damaged. A medium in this state boots normally —
-verified by writing the image to a 58.6 GB sparse file without relocating,
-which reproduces the `sfdisk` error exactly, and booting it: systemd PID 1
-came up.
+which `dd` writes correctly; the backup is a redundancy copy consulted only
+when the primary is damaged. Verified: the image written to a 58.6 GB sparse
+file without relocating reproduces the `sfdisk` error exactly and still boots
+to systemd PID 1.
 
-What it does break is tooling. `lsblk` and `udisksctl` can report different
-sizes for the same partition, disk utilities show most of the device
-unaccounted for, and any tool that trusts the backup header sees a stale
-geometry. Partition-table health is also easy to mistake for boot health: it
-says nothing either way, and reading it as a boot failure sends you chasing a
-defect that isn't there.
+What it breaks is tooling — `lsblk` and `udisksctl` disagreeing about partition
+sizes, disk utilities showing most of the device unaccounted for. Partition-
+table health says nothing about boot health in either direction; reading it as
+a boot failure sends you chasing a defect that isn't there.
 
-`just flash-installer` repairs it automatically with
-`sfdisk --relocate gpt-bak-std` after the write. For a medium written with
-plain `dd`, apply it by hand:
+`just flash-installer` repairs it with `sfdisk --relocate gpt-bak-std` after
+the write, and also reads the device back and compares digests, so a medium
+that silently fails to retain the image is caught. For a medium written with
+plain `dd`, relocate by hand:
 
 ```
 sudo sfdisk --relocate gpt-bak-std /dev/sdX
@@ -246,9 +267,8 @@ sudo partprobe /dev/sdX
 sudo sfdisk --verify /dev/sdX     # expect: No errors detected.
 ```
 
-This is invisible to CI: the smoke tests attach a virtual disk sized exactly to
-the image, so device size always equals image size and the condition cannot
-arise.
+Invisible to CI: the smoke tests attach a virtual disk sized exactly to the
+image, so device size always equals image size and the condition cannot arise.
 
 ## Verification
 

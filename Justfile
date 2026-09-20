@@ -268,13 +268,20 @@ flash-installer DEVICE="":
         exit 1
     fi
     echo "Writing ${IMG} to {{DEVICE}}..."
-    # Hash and measure the payload in the same pass. Both are needed after the
-    # write: the byte count to know how much of the device to read back, the
-    # digest to compare it against.
-    CNTFILE=$(mktemp)
-    trap 'rm -f "${CNTFILE}"' EXIT
-    EXPECT_SHA=$(zstd -dc "${IMG}" | tee >(wc -c > "${CNTFILE}") | sha256sum | cut -d' ' -f1)
-    EXPECT_BYTES=$(tr -d ' ' < "${CNTFILE}")
+    # Digest and byte count of the payload. Both are needed after the write:
+    # the count to know how much of the device to read back, the digest to
+    # compare it against.
+    #
+    # Two plain passes rather than one with `tee >(wc -c > file)`. Bash does
+    # not wait for process-substitution children, so the count file may still
+    # be unwritten when $( ) returns — it happens to work only because wc
+    # finishes before sha256sum. An empty count yields a malformed `count=`
+    # and fails the flash with a misleading "medium did not retain the image".
+    # The extra decompression costs seconds against a write measured in
+    # minutes.
+    echo "Hashing ${IMG}..."
+    EXPECT_SHA=$(zstd -dc "${IMG}" | sha256sum | cut -d' ' -f1)
+    EXPECT_BYTES=$(zstd -dc "${IMG}" | wc -c | tr -d ' ')
     # bash with pipefail, not sh. Under POSIX sh the pipeline's status is dd's
     # alone, so zstd dying mid-stream leaves dd exiting 0 after writing a
     # partial image and the success line below printing anyway. The outer
@@ -355,6 +362,32 @@ test-installer-boot:
         exit 1
     fi
 
+    # This boots an EXPORTED ARTIFACT. It does not build, and `just validate`
+    # only resolves the graph without building either. So a green result is
+    # evidence about the bytes in dist/, NOT about the current state of
+    # elements/oci/bluefin-server-installer.bst.
+    #
+    # Say so out loud, and refuse to imply more than that when the element has
+    # moved since the export. Without this, "the medium boots" quietly becomes
+    # a claim about a tree that was never built — the same overclaim this
+    # recipe exists to prevent.
+    echo "==> Artifact under test:"
+    echo "    ${IMG}"
+    echo "    sha256 $(sha256sum "${IMG}" | cut -d' ' -f1)"
+    echo "    built  $(date -r "${IMG}" '+%Y-%m-%d %H:%M:%S')"
+    STALE=""
+    for src in elements/oci/bluefin-server-installer.bst elements/bluefin-server/os-stack.bst include/kubernetes.yml; do
+        [ -f "${src}" ] || continue
+        [ "${src}" -nt "${IMG}" ] && STALE="${STALE} ${src}"
+    done
+    if [ -n "${STALE}" ]; then
+        echo "WARNING: these sources are NEWER than the artifact:" >&2
+        for s in ${STALE}; do echo "           ${s}" >&2; done
+        echo "         A pass proves the exported medium boots. It proves" >&2
+        echo "         NOTHING about the current element state. Re-export" >&2
+        echo "         before treating this as a gate on your changes." >&2
+    fi
+
     first_existing() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }
     OVMF_CODE=$(first_existing \
       /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-code.fd \
@@ -388,12 +421,24 @@ test-installer-boot:
         -nographic -serial file:"$WORK/serial.log" -monitor none -no-reboot \
         >/dev/null 2>&1 || true
 
+    # `strings`, not `cat`. The console is almost entirely ANSI and OSC escape
+    # sequences, which a terminal swallows — `cat` on a perfectly good boot log
+    # shows two firmware lines and apparent silence. That is what convinced me
+    # a working medium was hung.
     echo "==> Serial output:"
-    cat "$WORK/serial.log" || true
+    strings -n 4 "$WORK/serial.log" | grep -av '^\[[0-9;]*[A-Za-z]$' || true
 
-    # Firmware starting the image is not success. The old 434 MiB UKI got this
-    # far and then never executed, which is exactly the failure being gated.
-    if ! grep -q "BdsDxe: starting" "$WORK/serial.log"; then
+    # Criterion 1: firmware must actually start an image, not merely find the
+    # medium. A corrupted bootloader makes firmware fall through to PXE, and
+    # this is the check that catches it — verified against a medium built by
+    # mcopy-ing junk over EFI/BOOT/BOOTX64.EFI, which produced
+    # "BdsDxe: failed to load ... Not Found" and no `starting` line.
+    #
+    # This check also carries criterion 2 below: PXE fallback chatter
+    # ("Start PXE over IPv4", "PXE-E16: No valid offer received") is ordinary
+    # printable text, so a content check alone cannot tell it from a booting
+    # kernel. Criterion 2 is only sound because this one precedes it.
+    if ! grep -aq "BdsDxe: starting" "$WORK/serial.log"; then
         echo "ERROR: firmware never started a boot image from the medium." >&2
         exit 1
     fi
@@ -409,14 +454,20 @@ test-installer-boot:
     # Firmware cannot produce a machineid or a bootid. This survives `quiet
     # loglevel=3`, which is what the medium boots with, and it does not depend
     # on guessing kernel log strings.
-    #
-    # Two criteria were tried and rejected, both against captured logs:
+    # Two earlier criteria were tried and rejected, both against captured logs:
     #
     #   "Linux version|initrd|systemd"  — `quiet` suppresses all of it, while a
     #       FAILING boot prints dracut emergency text. It rewarded failure.
     #   any non-whitespace after handoff — firmware and systemd-stub both emit
     #       CSI cursor codes, so a corrupt bootloader falling through to PXE
     #       scored as success.
+    #
+    # Honest limit: this check is proven against a booting medium (it fires on
+    # the real image under both `quiet` and loglevel=7) and against a medium
+    # whose bootloader is destroyed (criterion 1 rejects that before reaching
+    # here). It is NOT proven against a genuine start-then-hang, because no
+    # such image exists — the 434 MiB UKI was suspected of it and exonerated.
+    # If one ever appears, keep it.
     if ! grep -aqE 'machineid=[0-9a-f]{32}|comm=systemd' "$WORK/serial.log"; then
         echo "ERROR: firmware started an image, but userspace never came up." >&2
         echo "       No systemd identity record on the console. Control did not" >&2

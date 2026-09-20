@@ -19,7 +19,8 @@ This audit tracks the gap between the current tree and a first public/usable MVP
 | Release workflow lint | ✅ | `actionlint .github/workflows/build.yml` clean |
 | Release path exists | ✅ | `.github/workflows/build.yml` builds, signs, uploads to GitHub Release |
 | Cluster build pipeline | ✅ | Phase A complete; pipeline builds DDI, installer, and Kubernetes sysext with uutils |
-| Automated boot test | 🔄 | Phase B in progress for Alpha; `bluefin-server-boot-test` workflow running on lab cluster |
+| Automated boot test (installed OS) | 🔄 | Phase B in progress for Alpha; `bluefin-server-boot-test` workflow running on lab cluster |
+| Automated boot test (install medium) | 🔄 | `just test-installer-boot` boots the medium through OVMF and requires systemd PID 1's OSC 3008 identity record. Validates an **exported artifact** from `dist/`, not the current element state, and is not yet wired into CI — it warns when sources are newer than the artifact |
 | A/B root rollback | ❌ | `50-root.transfer` names `root-a`/`root-b`, installer only creates `root-a` |
 | Root immutability | ❌ | DDI boots read/write (`rw` on cmdline) |
 | First-boot SSH keys | ❌ | Only root password credential path exists |
@@ -46,6 +47,11 @@ Priority order. Each item depends on the ones above it.
 ### Phase B: automated boot verification (In progress for Alpha)
 
 - [x] Create `bluefin-server-boot-test` Argo workflow in the downstream factory CI repository.
+- [x] Cover the install medium's own boot path (`just test-installer-boot`).
+      Nothing previously executed the ESP: `test-installer-artifact` and CI's
+      `installer-test` attach `installer.raw` as a data disk and inject the
+      kernel with `-kernel`/`-initrd`, proving the installer installs but never
+      that the medium boots.
 - [ ] Run the workflow against a successful installer build on the lab cluster and iterate to green.
 - [ ] Wire the boot test into a post-merge CI gate or CronWorkflow.
 
