@@ -364,26 +364,34 @@ test-installer-boot:
         echo "ERROR: firmware never started a boot image from the medium." >&2
         exit 1
     fi
-    # The kernel must actually run. Do not guess at kernel strings — asserting
-    # on "Linux version|initrd|systemd" passed against a log containing nothing
-    # but the two BdsDxe lines, which is precisely the broken case. Ask the
-    # structural question instead: did anything at all print after firmware
-    # handed control over? Only the kernel and its initrd can write there.
-    LAST_FW=$(grep -n '^BdsDxe:' "$WORK/serial.log" | tail -1 | cut -d: -f1 || true)
-    if [ -z "${LAST_FW}" ]; then
-        echo "ERROR: no firmware output at all; the medium was never read." >&2
+    # Firmware handing off is not proof that userspace ran. Assert on something
+    # only a running Linux userspace can emit.
+    #
+    # systemd PID 1 writes an OSC 3008 sequence to the console carrying the
+    # machine's identity:
+    #
+    #   ESC ]3008;start=<id>;user=root;hostname=<h>;machineid=<id>;bootid=<id>;
+    #        pid=1;comm=systemd;type=boot
+    #
+    # Firmware cannot produce a machineid or a bootid. This survives `quiet
+    # loglevel=3`, which is what the medium boots with, and it does not depend
+    # on guessing kernel log strings.
+    #
+    # Two criteria were tried and rejected, both against captured logs:
+    #
+    #   "Linux version|initrd|systemd"  — `quiet` suppresses all of it, while a
+    #       FAILING boot prints dracut emergency text. It rewarded failure.
+    #   any non-whitespace after handoff — firmware and systemd-stub both emit
+    #       CSI cursor codes, so a corrupt bootloader falling through to PXE
+    #       scored as success.
+    if ! grep -aqE 'machineid=[0-9a-f]{32}|comm=systemd' "$WORK/serial.log"; then
+        echo "ERROR: firmware started an image, but userspace never came up." >&2
+        echo "       No systemd identity record on the console. Control did not" >&2
+        echo "       reach PID 1." >&2
         exit 1
     fi
-    POST=$(tail -n "+$((LAST_FW + 1))" "$WORK/serial.log" | tr -d '[:space:]' | wc -c)
-    if [ "${POST}" -eq 0 ]; then
-        echo "ERROR: firmware started the boot image, then nothing ran." >&2
-        echo "       Everything after line ${LAST_FW} is empty, so control never" >&2
-        echo "       reached the kernel. That is the 434 MiB-UKI failure:" >&2
-        echo "       LoadImage succeeds, StartImage never produces output." >&2
-        exit 1
-    fi
-    echo "==> The installer medium boots: firmware handed off and the kernel ran."
-    echo "    (${POST} bytes of post-handoff output)"
+    echo "==> The installer medium boots: systemd PID 1 reported in."
+    grep -ao 'machineid=[0-9a-f]\{32\}' "$WORK/serial.log" | head -1 | sed 's/^/    /'
 
 # Build the installer artifacts, then run the reusable artifact smoke path.
 [group('test')]
