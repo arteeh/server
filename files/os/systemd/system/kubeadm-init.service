@@ -42,12 +42,17 @@ After=systemd-sysext.service
 # After=containerd.service: a pure ordering edge on a unit that does not yet
 # exist is ignored rather than fatal.
 #
-# Wants= is ignored the same way when unresolvable, and After= still orders
-# correctly once the merge makes containerd.service real — it is pulled into
-# the transaction by its own multi-user.target.wants symlink inside the sysext.
-# If kubeadm does start without a CRI socket, ExecStart fails against
-# unix:///run/containerd/containerd.sock and Restart=on-failure retries every
-# 30s, which converges instead of silently doing nothing.
+# Wants= is ignored the same way when unresolvable. Be clear about what After=
+# then buys: nothing, at boot. containerd.service is absent from the boot
+# transaction on *every* boot, not just the first, because the sysext merges
+# mid-boot each time and the drop-in on systemd-sysext.service starts containerd
+# imperatively rather than as a queued job. An After= against a unit that is not
+# in the transaction orders nothing.
+#
+# It is kept because it costs nothing and is correct whenever containerd does
+# enter a transaction — a later `systemctl restart containerd`, for instance.
+# The ordering this unit actually relies on at boot is the ExecStartPre socket
+# wait below.
 Wants=containerd.service
 After=containerd.service
 Wants=network-online.target

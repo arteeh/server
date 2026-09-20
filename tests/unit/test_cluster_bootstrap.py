@@ -297,11 +297,31 @@ def test_seed_waits_for_the_git_bridge_before_handing_over_to_argo() -> None:
     )
 
 
-def test_seed_requires_both_prerequisite_units() -> None:
+def test_seed_is_ordered_after_both_prerequisite_units() -> None:
+    """Ordering is required for both; hard dependency only for the repo.
+
+    ``bluefin-cluster-repo.service`` is a base-OS unit and the seed has nothing
+    to apply without the mirrored manifests, so it stays ``Requires=``.
+
+    ``kubeadm-init.service`` must not be, and the distinction is what keeps this
+    chain self-healing. A job that dies with ``result 'dependency'`` never runs,
+    so its own ``Restart=on-failure`` never engages and systemd never re-queues
+    it. Under ``Requires=``, a single failed kubeadm attempt killed this unit
+    permanently — observed with kubeadm failing at 12:18:13, succeeding on retry
+    at 12:18:59, and the seed staying inactive forever behind a working control
+    plane.
+    """
     bootstrap = unit(CLUSTER_BOOTSTRAP)["Unit"]
+
     for name in ("kubeadm-init.service", "bluefin-cluster-repo.service"):
-        assert name in bootstrap["Requires"]
-        assert name in bootstrap["After"]
+        assert name in bootstrap["After"], f"{name} must be ordered before the seed"
+
+    assert "bluefin-cluster-repo.service" in bootstrap["Requires"]
+    assert "kubeadm-init.service" not in bootstrap.get("Requires", []), (
+        "a hard requirement on kubeadm-init makes one transient kubeadm failure "
+        "strand the seed permanently; use Wants= so Restart=on-failure converges"
+    )
+    assert "kubeadm-init.service" in bootstrap["Wants"]
 
 
 def test_kubeadm_config_bootstraps_every_certificate_it_uses() -> None:

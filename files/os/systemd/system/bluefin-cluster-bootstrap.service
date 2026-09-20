@@ -5,8 +5,27 @@ Documentation=file:///usr/share/bluefin/seed
 # *skipped* rather than failed, which would silently no-op the seed on first
 # boot and leave a node with no CNI and no reconciler. Every phase below is a
 # server-side apply and is idempotent on its own, so re-running is free.
-Requires=kubeadm-init.service
+# Wants=, not Requires=, on kubeadm-init.service.
+#
+# A job that dies with result 'dependency' never runs, so its own
+# Restart=on-failure never engages and systemd never re-queues it. Under
+# Requires= that made this unit permanently dead whenever kubeadm-init failed
+# even once — and kubeadm-init has Restart=on-failure precisely because a first
+# attempt can lose a race with the CRI socket, a slow etcd, an image pull or
+# clock skew. Observed exactly that: kubeadm failed at 12:18:13, succeeded on
+# retry at 12:18:59, and this unit stayed inactive forever with a control plane
+# up and no CNI, no Argo and no console.
+#
+# With Wants= plus After=, a premature start is harmless: every phase is a
+# server-side apply, the unit has Restart=on-failure/RestartSec=30s and
+# TimeoutStartSec=1800, so it retries against the API server until the control
+# plane answers. The chain converges instead of depending on kubeadm-init
+# succeeding on the very first try.
+Wants=kubeadm-init.service
 After=kubeadm-init.service
+# bluefin-cluster-repo.service stays a hard requirement: it is a base-OS unit
+# that exists at transaction time, and without the mirrored manifests in
+# /var/lib/bluefin/cluster.git there is nothing for the seed phases to apply.
 Requires=bluefin-cluster-repo.service
 After=bluefin-cluster-repo.service
 Wants=network-online.target
