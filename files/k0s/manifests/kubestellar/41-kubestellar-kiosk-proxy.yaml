@@ -30,11 +30,11 @@ spec:
         ports:
         - containerPort: 8080
           # Kiosk-only proxy: bind loopback so the console is never published on
-          # the node's external interfaces. A QEMU hostfwd cannot reach this
-          # binding, because libslirp delivers a forward with an unspecified
-          # guest address to the guest's DHCP address rather than to 127.0.0.1;
-          # the installer smoke test therefore probes the proxy from inside the
-          # guest. LAN access, if ever wanted, must go through an
+          # the node's external interfaces. A QEMU/libslirp hostfwd with an
+          # unspecified guest address is delivered to the guest's DHCP address,
+          # not to 127.0.0.1, so no QEMU hostfwd can reach this binding;
+          # `just install-vm` and the installer smoke test probe the proxy from
+          # inside the guest instead. LAN access, if ever wanted, must go through an
           # authenticated front end.
           hostIP: 127.0.0.1
           hostPort: 8080
