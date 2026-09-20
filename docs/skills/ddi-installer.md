@@ -219,16 +219,15 @@ Two habits make it unambiguous:
    the terminal swallows, so a healthy boot renders as two firmware lines and
    apparent silence. Use `strings serial.log` or `hexdump -C serial.log`; the
    systemd identity record is plainly visible that way.
-2. **Force verbosity when in doubt.** Add this to the `test-installer-boot`
-   QEMU invocation to make a healthy boot as loud as a broken one:
+2. **Force verbosity when in doubt:**
 
    ```
-   -smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=loglevel=7
+   INSTALLER_BOOT_CMDLINE_EXTRA=loglevel=7 just test-installer-boot
    ```
 
-   `systemd-stub` reads the SMBIOS type-11 string and appends it to the
-   embedded cmdline, so this needs no rebuild. A healthy medium then produces
-   tens of kilobytes of ordinary boot log.
+   `systemd-stub` reads this as an SMBIOS type-11 string and appends it to the
+   UKI's embedded cmdline, so it needs no rebuild. A healthy medium then
+   produces tens of kilobytes of ordinary boot log.
 
 ## Writing the medium
 

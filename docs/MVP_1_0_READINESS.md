@@ -51,7 +51,10 @@ Priority order. Each item depends on the ones above it.
       Nothing previously executed the ESP: `test-installer-artifact` and CI's
       `installer-test` attach `installer.raw` as a data disk and inject the
       kernel with `-kernel`/`-initrd`, proving the installer installs but never
-      that the medium boots.
+      that the medium boots. **Local only, not wired into CI**, and it boots an
+      exported artifact rather than building — it warns when the tree has moved
+      since the export. This does not satisfy the MVP bar item above, which
+      asks that the *installed OS* reach a target.
 - [ ] Run the workflow against a successful installer build on the lab cluster and iterate to green.
 - [ ] Wire the boot test into a post-merge CI gate or CronWorkflow.
 

@@ -124,7 +124,37 @@ export-installer: build-installer
     just bst artifact checkout oci/bluefin-server-installer.bst --directory /src/dist/installer-checkout
     mv dist/installer-checkout/* dist/
     rm -rf dist/installer-checkout
+    # Record what this artifact was built from. mtimes cannot answer that: a
+    # fresh clone stamps every file at checkout time, and a rebase rewrites
+    # commit dates, so both signals lie. A content hash of the build inputs
+    # does not.
+    @just _record-provenance
     @echo "==> wrote:" && ls -lh dist/
+
+# Write the provenance sidecar naming the sources an export was built from.
+[private]
+_record-provenance:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IMG=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' -print -quit)
+    [ -n "${IMG}" ] || exit 0
+    {
+        echo "commit $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+        echo "tree $(just _inputs-hash)"
+    } > "${IMG}.provenance"
+    echo "==> provenance: $(sed -n 2p "${IMG}.provenance")"
+
+# Content hash of everything the installer image is built from. Deterministic
+# across clones and rebases, unlike mtimes or commit dates.
+[private]
+_inputs-hash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    find elements include files project.conf -type f 2>/dev/null \
+        | LC_ALL=C sort \
+        | xargs -r sha256sum \
+        | sha256sum \
+        | cut -d' ' -f1
 
 # Export standalone kernel and initrd for PXE boot. The DDI remains embedded
 # in the raw installer image; network DDI fetching is not enabled.
@@ -367,25 +397,40 @@ test-installer-boot:
     # evidence about the bytes in dist/, NOT about the current state of
     # elements/oci/bluefin-server-installer.bst.
     #
-    # Say so out loud, and refuse to imply more than that when the element has
+    # Say so out loud, and refuse to imply more than that when the tree has
     # moved since the export. Without this, "the medium boots" quietly becomes
     # a claim about a tree that was never built — the same overclaim this
     # recipe exists to prevent.
+    #
+    # The comparison is a content hash of the build inputs, recorded into a
+    # sidecar by `export-installer`. Not mtimes: a fresh clone stamps every
+    # file at checkout time and a rebase rewrites commit dates, so both would
+    # report a clean tree as stale and a stale tree as clean. Not an allow-list
+    # of "important" sources either — that drifts the moment someone edits a
+    # repart config or a unit file.
     echo "==> Artifact under test:"
     echo "    ${IMG}"
     echo "    sha256 $(sha256sum "${IMG}" | cut -d' ' -f1)"
-    echo "    built  $(date -r "${IMG}" '+%Y-%m-%d %H:%M:%S')"
-    STALE=""
-    for src in elements/oci/bluefin-server-installer.bst elements/bluefin-server/os-stack.bst include/kubernetes.yml; do
-        [ -f "${src}" ] || continue
-        [ "${src}" -nt "${IMG}" ] && STALE="${STALE} ${src}"
-    done
-    if [ -n "${STALE}" ]; then
-        echo "WARNING: these sources are NEWER than the artifact:" >&2
-        for s in ${STALE}; do echo "           ${s}" >&2; done
-        echo "         A pass proves the exported medium boots. It proves" >&2
-        echo "         NOTHING about the current element state. Re-export" >&2
-        echo "         before treating this as a gate on your changes." >&2
+    if [ -f "${IMG}.provenance" ]; then
+        BUILT_FROM=$(awk '/^tree /{print $2}' "${IMG}.provenance")
+        BUILT_AT=$(awk '/^commit /{print $2}' "${IMG}.provenance")
+        echo "    commit ${BUILT_AT}"
+        NOW=$(just _inputs-hash)
+        if [ "${BUILT_FROM}" != "${NOW}" ]; then
+            echo "WARNING: the tree has changed since this artifact was built." >&2
+            echo "           built from ${BUILT_FROM}" >&2
+            echo "           tree now   ${NOW}" >&2
+            echo "         A pass proves the exported medium boots. It proves" >&2
+            echo "         NOTHING about the current sources. Re-export before" >&2
+            echo "         treating this as a gate on your changes." >&2
+        else
+            echo "    tree   matches current sources"
+        fi
+    else
+        echo "WARNING: no provenance sidecar beside this artifact, so there is" >&2
+        echo "         no way to tell what it was built from. A pass proves" >&2
+        echo "         these bytes boot and nothing more. Re-export to record" >&2
+        echo "         provenance." >&2
     fi
 
     first_existing() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }
@@ -412,12 +457,28 @@ test-installer-boot:
     truncate -s "$(stat -c %s "$OVMF_CODE")" "$WORK/vars.fd"
 
     DEADLINE="${INSTALLER_BOOT_DEADLINE:-240}"
+    # A healthy medium boots with `quiet loglevel=3` and prints almost nothing,
+    # which is indistinguishable from a hang until you look closely. Setting
+    # INSTALLER_BOOT_CMDLINE_EXTRA=loglevel=7 makes a healthy boot loud without
+    # rebuilding anything: systemd-stub reads this SMBIOS type-11 string and
+    # appends it to the UKI's embedded cmdline.
+    CMDLINE_EXTRA="${INSTALLER_BOOT_CMDLINE_EXTRA:-}"
+    # if-blocks, not `[ -n x ] && y`: under `set -e` a false test makes the
+    # whole recipe exit, so the default (no extra cmdline) would abort the run.
+    SMBIOS=()
+    if [ -n "${CMDLINE_EXTRA}" ]; then
+        SMBIOS=(-smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=${CMDLINE_EXTRA}")
+    fi
     echo "==> Booting the installer medium through firmware (deadline ${DEADLINE}s)..."
+    if [ -n "${CMDLINE_EXTRA}" ]; then
+        echo "    cmdline-extra: ${CMDLINE_EXTRA}"
+    fi
     timeout "${DEADLINE}" qemu-system-x86_64 \
         -enable-kvm -m 4096 -smp 2 -cpu host \
         -drive file="$WORK/medium.img",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORK/vars.fd" \
+        "${SMBIOS[@]}" \
         -nographic -serial file:"$WORK/serial.log" -monitor none -no-reboot \
         >/dev/null 2>&1 || true
 
@@ -434,10 +495,11 @@ test-installer-boot:
     # mcopy-ing junk over EFI/BOOT/BOOTX64.EFI, which produced
     # "BdsDxe: failed to load ... Not Found" and no `starting` line.
     #
-    # This check also carries criterion 2 below: PXE fallback chatter
-    # ("Start PXE over IPv4", "PXE-E16: No valid offer received") is ordinary
-    # printable text, so a content check alone cannot tell it from a booting
-    # kernel. Criterion 2 is only sound because this one precedes it.
+    # Criterion 2 below does not depend on this one: PXE fallback chatter
+    # cannot produce a machineid, and was checked against the corrupt medium's
+    # log — no match. Criterion 1 is kept because it names the failure
+    # precisely ("firmware never started an image" vs "userspace never came
+    # up"), which is the difference between a dead bootloader and a dead boot.
     if ! grep -aq "BdsDxe: starting" "$WORK/serial.log"; then
         echo "ERROR: firmware never started a boot image from the medium." >&2
         exit 1
@@ -462,12 +524,12 @@ test-installer-boot:
     #       CSI cursor codes, so a corrupt bootloader falling through to PXE
     #       scored as success.
     #
-    # Honest limit: this check is proven against a booting medium (it fires on
-    # the real image under both `quiet` and loglevel=7) and against a medium
-    # whose bootloader is destroyed (criterion 1 rejects that before reaching
-    # here). It is NOT proven against a genuine start-then-hang, because no
-    # such image exists — the 434 MiB UKI was suspected of it and exonerated.
-    # If one ever appears, keep it.
+    # Honest limit: proven against a booting medium (fires on the real image
+    # under both `quiet` and loglevel=7) and against a medium whose bootloader
+    # is destroyed (its PXE-fallback log contains no machineid). NOT proven
+    # against a genuine start-then-hang, because no such image exists — the
+    # 434 MiB UKI was suspected of being one and was exonerated. If one ever
+    # turns up, keep it.
     if ! grep -aqE 'machineid=[0-9a-f]{32}|comm=systemd' "$WORK/serial.log"; then
         echo "ERROR: firmware started an image, but userspace never came up." >&2
         echo "       No systemd identity record on the console. Control did not" >&2
