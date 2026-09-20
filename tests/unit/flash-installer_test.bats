@@ -53,7 +53,7 @@ setup() {
 
     make_stub sudo 0
     make_stub dd 0
-    make_stub zstd 0
+    make_zstd_stub
     make_topology_stubs
 
     # Default topology: target is an unrelated, unmounted disk. Individual
@@ -63,6 +63,8 @@ setup() {
     export STUB_PKNAME="nvme0n1"
     export STUB_TARGET_KNAME="sdz"
     export STUB_MOUNTPOINTS=""
+    # zstd -t succeeds unless a test says otherwise.
+    export STUB_ZSTD_TEST_EXIT=0
 }
 
 # make_stub <name> <exit-code>
@@ -109,6 +111,24 @@ EOF
     chmod +x "${STUB_DIR}/findmnt"
 }
 
+# Scriptable `zstd`.
+#
+# The recipe now runs `zstd -t` as an integrity check before the confirmation
+# prompt, and `zstd -dc` on the write path. Only the former needs to be able to
+# fail, so it answers from STUB_ZSTD_TEST_EXIT while decompression stays a
+# logging no-op.
+make_zstd_stub() {
+    cat > "${STUB_DIR}/zstd" <<EOF
+#!/usr/bin/env bash
+echo "zstd \$*" >> "${LOG}"
+case " \$* " in
+    *" -t "*) exit "\${STUB_ZSTD_TEST_EXIT:-0}" ;;
+esac
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/zstd"
+}
+
 # seed_image <filename>
 #
 # Places an exported installer artefact where the recipe looks for it.
@@ -127,10 +147,14 @@ run_flash() {
 }
 
 # Nothing may reach the disk in any of the refusal paths.
+#
+# `zstd -t` is deliberately not refuted: the integrity check runs before the
+# confirmation prompt and only reads the archive. `zstd -dc` is the decompress
+# that feeds dd, and that must never happen on a refusal path.
 assert_nothing_written() {
     refute_log "sudo "
     refute_log "dd "
-    refute_log "zstd "
+    refute_log "zstd -dc"
 }
 
 assert_log() {
@@ -199,6 +223,23 @@ refute_log() {
     run_flash "$FAKE_DEV" "y"
     [ "$status" -ne 0 ]
     [[ "$output" == *"/sysroot is on /dev/nvme0n1p2"* ]]
+    assert_nothing_written
+}
+
+@test "flash-installer resolves the system disk through / on a non-ostree host" {
+    # The other half of `for mp in / /sysroot`. Both cases above leave
+    # STUB_ROOT_SRC as a composefs digest, so without this the / iteration
+    # never runs against a /dev/* source — including on the ubuntu-24.04
+    # runner that executes this suite in CI, where / is a plain block device
+    # and /sysroot does not exist.
+    export STUB_ROOT_SRC="/dev/sda1"
+    export STUB_SYSROOT_SRC=""
+    export STUB_PKNAME="sda"
+    export STUB_TARGET_KNAME="sda"
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"/ is on /dev/sda1"* ]]
     assert_nothing_written
 }
 
@@ -329,6 +370,33 @@ refute_log() {
     assert_log "sudo "
 }
 
+# --- guard: the image must pass its integrity check -----------------------
+
+@test "flash-installer refuses an image that fails its integrity check" {
+    export STUB_ZSTD_TEST_EXIT=1
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"failed its integrity check"* ]]
+    refute_log "sudo "
+    refute_log "dd "
+}
+
+@test "flash-installer checks integrity before warning about destruction" {
+    # Ordering matters: a corrupt download should cost nothing, not prompt the
+    # operator to destroy a disk and only then fail.
+    export STUB_ZSTD_TEST_EXIT=1
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [[ "$output" != *"COMPLETELY DESTROYED"* ]]
+}
+
+@test "flash-installer verifies the image it is about to write, not some other one" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    assert_log "zstd -t dist/bluefin-server-installer-1.0.raw.zst"
+}
+
 # --- the write itself -----------------------------------------------------
 
 @test "flash-installer decompresses the discovered image onto the given device" {
@@ -352,4 +420,15 @@ refute_log() {
     seed_image "bluefin-server-installer-1.0.raw.zst"
     run_flash "$FAKE_DEV" "y"
     [[ "$output" == *"Successfully flashed"* ]]
+}
+
+@test "the write pipeline runs under bash with pipefail so a dying zstd fails the flash" {
+    # Shape, not behaviour: `sudo` is a stub, so the nested shell never runs
+    # here. Under POSIX `sh -c` the pipeline's status is dd's alone, so zstd
+    # dying mid-stream leaves dd exiting 0 after writing a partial image and
+    # the success line printing over it. The outer `set -o pipefail` does not
+    # reach a nested shell.
+    grep -qF "sudo bash -c \"set -o pipefail;" "$JUSTFILE"
+    run grep -cF 'sudo sh -c "zstd -dc' "$JUSTFILE"
+    [ "$output" -eq 0 ]
 }

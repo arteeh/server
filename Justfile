@@ -249,6 +249,15 @@ flash-installer DEVICE="":
         exit 1
     fi
     IMG="${IMGS[0]}"
+    # Verify the archive before the prompt, not after. A truncated or corrupt
+    # download is exactly what a freshly fetched CI artifact invites, and
+    # failing here costs nothing while failing mid-write leaves an unbootable
+    # disk that looks like it succeeded.
+    echo "Verifying ${IMG}..."
+    if ! zstd -t "${IMG}"; then
+        echo "ERROR: ${IMG} failed its integrity check; refusing to write it." >&2
+        exit 1
+    fi
     echo "WARNING: All data on {{DEVICE}} will be COMPLETELY DESTROYED!"
     echo "Double-checking device information:"
     lsblk -p "{{DEVICE}}"
@@ -259,7 +268,12 @@ flash-installer DEVICE="":
         exit 1
     fi
     echo "Writing ${IMG} to {{DEVICE}}..."
-    sudo sh -c "zstd -dc ${IMG} | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    # bash with pipefail, not sh. Under POSIX sh the pipeline's status is dd's
+    # alone, so zstd dying mid-stream leaves dd exiting 0 after writing a
+    # partial image and the success line below printing anyway. The outer
+    # `set -o pipefail` does not reach here — there is no pipeline in the outer
+    # shell, only this nested one.
+    sudo bash -c "set -o pipefail; zstd -dc '${IMG}' | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
 
 # Build the installer artifacts, then run the reusable artifact smoke path.
