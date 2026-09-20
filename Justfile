@@ -298,6 +298,93 @@ flash-installer DEVICE="":
     sudo sfdisk --verify {{DEVICE}}
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
 
+# Boot the installer MEDIUM through firmware, as real hardware does.
+#
+# This is the only test that exercises the ESP. `test-installer-artifact` and
+# CI's installer-test both attach installer.raw as a data disk and inject the
+# kernel with -kernel/-initrd, so EFI/BOOT/BOOTX64.EFI is never executed. They
+# prove the installer installs; they cannot prove the medium boots.
+#
+# That gap shipped a medium that does not boot: a single 434 MiB UKI which OVMF
+# loads and never executes, with every gate green.
+#
+# The image is written into a sparse file LARGER than itself, because that is
+# what a real stick is, and it reproduces the GPT backup-header condition that
+# an image-sized virtual disk cannot.
+[group('test')]
+test-installer-boot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    IMG=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | head -n1)
+    if [ -z "${IMG}" ]; then
+        echo "ERROR: no exported installer in dist/. Run: just export-installer" >&2
+        exit 1
+    fi
+
+    first_existing() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }
+    OVMF_CODE=$(first_existing \
+      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-code.fd \
+      /usr/share/edk2/ovmf/OVMF_CODE.fd \
+      /usr/share/OVMF/OVMF_CODE.fd \
+      /usr/share/OVMF/OVMF_CODE_4M.fd \
+      /usr/share/edk2/x64/OVMF_CODE.4m.fd \
+      /usr/share/qemu/edk2-x86_64-code.fd \
+      /usr/share/qemu/OVMF_CODE.fd) \
+      || { echo "ERROR: OVMF_CODE not found" >&2; exit 1; }
+
+    WORK=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/bluefin-boot-test.XXXXXX")
+    trap 'rm -rf "$WORK"' EXIT INT TERM
+
+    # A stick is bigger than the image. Sparse, so this costs only real bytes.
+    truncate -s 62914560000 "$WORK/medium.img"
+    zstd -dc "${IMG}" | dd of="$WORK/medium.img" conv=notrunc bs=4M iflag=fullblock status=none
+    sfdisk --relocate gpt-bak-std "$WORK/medium.img" >/dev/null
+    sfdisk --verify "$WORK/medium.img"
+
+    # OVMF needs a writable vars pflash of the same size as the code image.
+    truncate -s "$(stat -c %s "$OVMF_CODE")" "$WORK/vars.fd"
+
+    DEADLINE="${INSTALLER_BOOT_DEADLINE:-240}"
+    echo "==> Booting the installer medium through firmware (deadline ${DEADLINE}s)..."
+    timeout "${DEADLINE}" qemu-system-x86_64 \
+        -enable-kvm -m 4096 -smp 2 -cpu host \
+        -drive file="$WORK/medium.img",format=raw,if=virtio \
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+        -drive if=pflash,format=raw,file="$WORK/vars.fd" \
+        -nographic -serial file:"$WORK/serial.log" -monitor none -no-reboot \
+        >/dev/null 2>&1 || true
+
+    echo "==> Serial output:"
+    cat "$WORK/serial.log" || true
+
+    # Firmware starting the image is not success. The old 434 MiB UKI got this
+    # far and then never executed, which is exactly the failure being gated.
+    if ! grep -q "BdsDxe: starting" "$WORK/serial.log"; then
+        echo "ERROR: firmware never started a boot image from the medium." >&2
+        exit 1
+    fi
+    # The kernel must actually run. Do not guess at kernel strings — asserting
+    # on "Linux version|initrd|systemd" passed against a log containing nothing
+    # but the two BdsDxe lines, which is precisely the broken case. Ask the
+    # structural question instead: did anything at all print after firmware
+    # handed control over? Only the kernel and its initrd can write there.
+    LAST_FW=$(grep -n '^BdsDxe:' "$WORK/serial.log" | tail -1 | cut -d: -f1 || true)
+    if [ -z "${LAST_FW}" ]; then
+        echo "ERROR: no firmware output at all; the medium was never read." >&2
+        exit 1
+    fi
+    POST=$(tail -n "+$((LAST_FW + 1))" "$WORK/serial.log" | tr -d '[:space:]' | wc -c)
+    if [ "${POST}" -eq 0 ]; then
+        echo "ERROR: firmware started the boot image, then nothing ran." >&2
+        echo "       Everything after line ${LAST_FW} is empty, so control never" >&2
+        echo "       reached the kernel. That is the 434 MiB-UKI failure:" >&2
+        echo "       LoadImage succeeds, StartImage never produces output." >&2
+        exit 1
+    fi
+    echo "==> The installer medium boots: firmware handed off and the kernel ran."
+    echo "    (${POST} bytes of post-handoff output)"
+
 # Build the installer artifacts, then run the reusable artifact smoke path.
 [group('test')]
 show-me-the-future:
