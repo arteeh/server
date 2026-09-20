@@ -197,12 +197,37 @@ flash-installer DEVICE="":
         echo "ERROR: {{DEVICE}} is not a valid block device!" >&2
         exit 1
     fi
-    IMG=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | head -n1)
-    if [ -z "${IMG}" ]; then
+    # Refuse a device with anything mounted off it. dd writing under a live
+    # filesystem gives a torn image and leaves the kernel holding stale page
+    # cache for blocks that no longer exist.
+    MOUNTED=$(lsblk -n -o MOUNTPOINTS "{{DEVICE}}" | grep -v '^\s*$' || true)
+    if [ -n "${MOUNTED}" ]; then
+        echo "ERROR: {{DEVICE}} has mounted partitions:" >&2
+        lsblk -p -o NAME,SIZE,MOUNTPOINTS "{{DEVICE}}" >&2
+        echo >&2
+        echo "Unmount them first, e.g.:" >&2
+        # -l (list) not the default tree: tree mode prefixes names with box
+        # glyphs, which would make the suggested command uncopyable.
+        lsblk -p -n -l -o NAME,MOUNTPOINTS "{{DEVICE}}" \
+            | awk 'NF>1 {printf "  udisksctl unmount -b %s\n", $1}' >&2
+        exit 1
+    fi
+    # -maxdepth 1 keeps release images in dist/release/ out of the match, but a
+    # stale export beside a fresh one is still ambiguous — fail rather than let
+    # `head -n1` pick by directory order.
+    mapfile -t IMGS < <(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | sort)
+    if [ "${#IMGS[@]}" -eq 0 ]; then
         echo "ERROR: No exported installer found in dist/." >&2
         echo "Please run: just build-installer && just export-installer" >&2
         exit 1
     fi
+    if [ "${#IMGS[@]}" -gt 1 ]; then
+        echo "ERROR: ${#IMGS[@]} installer images in dist/; refusing to guess:" >&2
+        printf '  %s\n' "${IMGS[@]}" >&2
+        echo "Remove the stale one, then re-run." >&2
+        exit 1
+    fi
+    IMG="${IMGS[0]}"
     echo "WARNING: All data on {{DEVICE}} will be COMPLETELY DESTROYED!"
     echo "Double-checking device information:"
     lsblk -p "{{DEVICE}}"

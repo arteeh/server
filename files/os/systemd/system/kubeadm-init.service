@@ -11,12 +11,12 @@ ConditionPathExists=!/etc/kubernetes/admin.conf
 #
 #   kubernetes.raw  elements/oci/kubernetes-sysext.bst — kubeadm, kubelet,
 #                   kubectl, CNI plugins.
-#   containerd.raw  elements/flatcar/containerd-sysext.bst — Flatcar's containerd
+#   containerd-flatcar.raw  elements/flatcar/containerd-sysext.bst — Flatcar's containerd
 #                   sysext: containerd, runc, ctr, containerd-shim-runc-v2, and
 #                   containerd.service itself. FSDK 26.08 ships no containerd
 #                   component, so this import is the only provider.
 #
-# containerd.raw carries its own multi-user.target.wants symlink, so the merge
+# containerd-flatcar.raw carries its own multi-user.target.wants symlink, so the merge
 # enables the service; no preset of ours is involved.
 Requires=systemd-sysext.service
 After=systemd-sysext.service

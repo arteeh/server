@@ -3,8 +3,8 @@ description: |
   Flatcar's containerd system extension, shipped as a second sysext alongside
   oci/kubernetes-sysext.bst.
 
-  Output: /containerd-flatcar.raw — the upstream squashfs image, imported
-  verbatim under its upstream name.
+  Output: /containerd-flatcar.raw — Flatcar's upstream image, repacked with one
+  edited field in its extension-release (see "Version decoupling" below).
 
   The name is load-bearing and must not be shortened. systemd-sysext resolves an
   image's metadata by stem: an extension merged as <name>.raw is required to
@@ -36,11 +36,30 @@ description: |
   satisfies `Requires=containerd.service` in
   files/os/systemd/system/kubeadm-init.service.
 
-  The merge is gated on os-release matching. extension-release.containerd-flatcar
-  declares ID=flatcar and VERSION_ID=4593.2.5; elements/bluefin-server/os-release-flatcar.bst
-  writes ID=flatcar and VERSION_ID=%{flatcar-version}, both sourced from
-  include/flatcar.yml. Bumping flatcar-version without re-pinning the ref below
-  makes systemd-sysext refuse the extension rather than merge a mismatched one.
+  Version decoupling. Upstream's extension-release declares ID=flatcar and
+  VERSION_ID=4593.2.5, and systemd-sysext refuses an extension whose ID/VERSION_ID
+  do not match the host's os-release. elements/bluefin-server/os-release-flatcar.bst
+  writes VERSION_ID=%{flatcar-version}, so they agree at install time — and stop
+  agreeing the moment flatcar-version is bumped.
+
+  That divergence is an OTA hazard, not a build-time one. A build-time mismatch
+  is loud: the source URL embeds %{flatcar-version}, so bumping it changes the
+  URL and the pinned ref below fails to resolve. The danger is an already
+  installed machine. /var survives an A/B root update, so a host updated to a DDI
+  built from a newer flatcar-version boots with a new os-release while
+  /var/lib/extensions/containerd-flatcar.raw still declares the old VERSION_ID.
+  systemd-sysext then refuses the merge, containerd.service disappears, and
+  kubeadm-init.service fails — the cluster goes down after a routine OS update.
+  kubernetes.raw is immune because 70-kubernetes.transfer replaces it in lockstep;
+  containerd has no such transfer.
+
+  So the image is repacked with a single field changed: ID=_any. That is the same
+  decoupling files/kubernetes/sysext/extension-release.kubernetes uses, for the
+  same stated reason — "the sysext ships independently of the host os-release
+  version and would otherwise be rejected after an OS update"
+  (tests/unit/test_sysupdate_transfers.py). Nothing else in the image is touched:
+  the binaries, containerd.service, the target.wants symlink, the config.toml
+  pair and the SLSA provenance documents are repacked byte-for-byte.
 
   elements/flatcar/container-runtime-reference-sysexts.bst also imports this file.
   That element is the parity oracle and additionally pulls podman and docker,
@@ -48,10 +67,12 @@ description: |
   exists so the shipped path imports exactly one runtime and nothing else.
 
 (@):
+  - include/arch.yml
   - include/flatcar.yml
 
 build-depends:
   - base/base-stack.bst
+  - freedesktop-sdk.bst:components/squashfs-tools.bst
 
 variables:
   strip-binaries: ""
@@ -66,5 +87,25 @@ config:
   install-commands:
     - |
       set -euo pipefail
-      install -D -m 0644 containerd-flatcar.raw \
-        "%{install-root}/containerd-flatcar.raw"
+
+      RELEASE="usr/lib/extension-release.d/extension-release.containerd-flatcar"
+
+      unsquashfs -no-xattrs -d unpacked containerd-flatcar.raw
+
+      # Fail loudly if upstream ever renames the metadata file: a silently
+      # missing extension-release produces an image systemd-sysext refuses.
+      test -f "unpacked/${RELEASE}"
+
+      # NAME must equal the image stem, ID=_any decouples the merge from the
+      # host's os-release version. SYSEXT_VERSION_ID keeps the Flatcar release
+      # readable off a merged /usr for provenance.
+      cat > "unpacked/${RELEASE}" <<EOF
+      NAME=containerd-flatcar
+      ID=_any
+      ARCHITECTURE=%{systemd-arch}
+      SYSEXT_VERSION_ID=%{flatcar-version}
+      EOF
+
+      mksquashfs unpacked repacked.raw -noappend -no-xattrs -comp zstd -b 524288
+
+      install -D -m 0644 repacked.raw "%{install-root}/containerd-flatcar.raw"

@@ -35,7 +35,7 @@ UNIT_DIR = ROOT / "files" / "os" / "systemd" / "system"
 # mechanism this repository already uses for Kubernetes.
 # elements/flatcar/containerd-sysext.bst imports that image, the installer stages
 # it into the initrd, and files/installer/repart.d/30-var.conf seeds it to
-# /var/lib/extensions/containerd.raw so the first boot merges it offline. The
+# /var/lib/extensions/containerd-flatcar.raw so the first boot merges it offline. The
 # image carries its own multi-user.target.wants symlink, so the merge is what
 # enables the service.
 EXTERNAL_PROVIDERS = {

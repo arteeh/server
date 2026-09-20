@@ -55,6 +55,39 @@ def seeded_extensions() -> dict[str, str]:
     }
 
 
+def test_seeded_sysexts_are_decoupled_from_the_host_os_release_version() -> None:
+    """A seeded sysext must survive an OS update, so its ID must be ``_any``.
+
+    ``/var`` persists across an A/B root update, so an image sitting in
+    ``/var/lib/extensions`` outlives the os-release it was installed against.
+    systemd-sysext refuses an extension whose ``ID``/``VERSION_ID`` disagree with
+    the host, so an extension pinned to a specific version stops merging the
+    first time the OS is updated — taking containerd.service, and therefore
+    kubeadm-init.service and the whole cluster, down on an otherwise routine
+    reboot.
+
+    ``files/kubernetes/sysext/extension-release.kubernetes`` already uses
+    ``ID=_any`` for this reason. Flatcar's containerd image ships
+    ``ID=flatcar VERSION_ID=4593.2.5`` instead, which is correct for Flatcar and
+    wrong here, so ``elements/flatcar/containerd-sysext.bst`` repacks it. This
+    asserts the repack is still happening: dropping it to "import verbatim" is a
+    tempting simplification that reintroduces the failure.
+    """
+    element = CONTAINERD_ELEMENT.read_text(encoding="utf-8")
+
+    assert "unsquashfs" in element and "mksquashfs" in element, (
+        f"{CONTAINERD_ELEMENT.relative_to(ROOT)} no longer repacks the upstream "
+        "image. Imported verbatim it carries ID=flatcar with a fixed VERSION_ID, "
+        "so the merge breaks on the first OS update that bumps flatcar-version."
+    )
+    assert "ID=_any" in element, (
+        f"{CONTAINERD_ELEMENT.relative_to(ROOT)} must rewrite the "
+        "extension-release with ID=_any so the sysext is independent of the "
+        "host os-release version, matching "
+        "files/kubernetes/sysext/extension-release.kubernetes"
+    )
+
+
 def test_every_sysext_provided_unit_a_host_unit_requires_is_actually_seeded() -> None:
     """A hard Requires= on a sysext-provided unit obliges the installer to seed it.
 
