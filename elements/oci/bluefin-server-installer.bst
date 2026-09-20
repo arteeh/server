@@ -421,13 +421,22 @@ config:
       mkdir -p /layer/boot/efi/loader/entries
       mkdir -p /layer/boot/efi/bluefin
 
-      # systemd-boot at both the removable-media fallback path and its own,
-      # so the medium boots whether or not firmware has an NVRAM entry.
-      SDBOOT="$(find / -name 'systemd-bootx64.efi' -path '*/boot/efi/*' -print -quit 2>/dev/null || true)"
-      if [ -z "${SDBOOT}" ]; then
-        SDBOOT="$(find / -name 'systemd-bootx64.efi' -print -quit)"
+      # systemd-boot at both the removable-media fallback path and its own, so
+      # the medium boots whether or not firmware has an NVRAM entry.
+      #
+      # Explicit paths, not a search. `find / -name systemd-bootx64.efi` can
+      # match either the installer rootfs at /layer or the target rootfs staged
+      # at /target-root, and -quit takes whichever the traversal reaches first —
+      # so which loader ships would vary between builds for no visible reason.
+      # The installer medium must boot the installer's own copy.
+      SDBOOT=/layer/usr/lib/systemd/boot/efi/systemd-bootx64.efi
+      if [ ! -f "${SDBOOT}" ]; then
+        SDBOOT=/usr/lib/systemd/boot/efi/systemd-bootx64.efi
       fi
-      test -n "${SDBOOT}"
+      if [ ! -f "${SDBOOT}" ]; then
+        echo "ERROR: systemd-bootx64.efi not found; the medium would have no bootloader." >&2
+        exit 1
+      fi
       install -D -m 0644 "${SDBOOT}" /layer/boot/efi/EFI/BOOT/BOOTX64.EFI
       install -D -m 0644 "${SDBOOT}" /layer/boot/efi/EFI/systemd/systemd-bootx64.efi
 

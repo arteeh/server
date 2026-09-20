@@ -54,6 +54,24 @@ def test_installer_runtime_and_boot_contracts() -> None:
 
     assert "freedesktop-sdk.bst:bootstrap/bash.bst" in installer_stack
     assert "console=ttyS0,115200 rw" in installer_element
+    # The contract that used to live on the UKI's --cmdline and now lives in the
+    # loader entry's options=. Assert it positively: a medium that boots but
+    # lands in a shell instead of system-install.target is just as useless as
+    # one that does not boot, and only the negative "unattended" check survived
+    # the move.
+    assert "systemd.unit=system-install.target" in installer_boot_cmdline, (
+        "the medium must boot straight into the installer"
+    )
+    assert "console=ttyS0,115200" in installer_boot_cmdline, (
+        "serial console is how the QEMU gate and headless hardware observe the "
+        "install; without it a failure is silent"
+    )
+    assert "console=tty0" in installer_boot_cmdline, (
+        "a physical operator watches tty0"
+    )
+    assert "rw" in installer_boot_cmdline.split(), (
+        "the live environment needs a writable root"
+    )
     assert "unattended" not in installer_boot_cmdline
     assert target_uki_cmdline == "rw console=ttyS0,115200 console=tty0 quiet loglevel=3 audit=0"
     assert (
@@ -190,6 +208,27 @@ def test_installer_medium_does_not_ship_an_unexecutable_fallback_image() -> None
 
     # The build must refuse to ship an oversized fallback image rather than
     # producing another medium that loads and never runs.
+    # Which systemd-boot ships must be deterministic. `find / -name
+    # systemd-bootx64.efi -print -quit` matches either the installer rootfs at
+    # /layer or the target rootfs staged at /target-root, and takes whichever
+    # the traversal reaches first — so the medium's bootloader would vary
+    # between builds for no visible reason.
+    assert "/layer/usr/lib/systemd/boot/efi/systemd-bootx64.efi" in installer_element, (
+        "name the installer's own systemd-boot explicitly rather than searching"
+    )
+    # Scan effective lines only: the element's own comment names the wrong
+    # spelling in order to warn against it, and matching that would flag the
+    # warning as the defect.
+    effective = "\n".join(
+        line
+        for line in installer_element.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r"find / -name '?systemd-bootx64", effective), (
+        "an unbounded find can pick the target rootfs copy instead of the "
+        "installer's, making the shipped bootloader nondeterministic"
+    )
+
     assert "BOOT_BYTES" in installer_element and "16777216" in installer_element, (
         "the build must fail when EFI/BOOT/BOOTX64.EFI exceeds a loader-sized "
         "ceiling; a 434 MiB image reached real hardware because nothing checked"
