@@ -54,11 +54,11 @@ tags:
 [group('dev')]
 validate:
     python3 .github/scripts/check-release-version.py
-    python3 .github/scripts/check-k0s-version.py
+    python3 .github/scripts/check-kubernetes-version.py
     python3 .github/scripts/check-renovate-series.py
     just bst show --deps all oci/bluefin-server-ddi.bst
     just bst show --deps all oci/bluefin-server-installer.bst
-    just bst show --deps all oci/k0s-sysext.bst
+    just bst show --deps all oci/kubernetes-sysext.bst
 
 # Run the unit test suite (pytest + bats).
 [group('dev')]
@@ -134,26 +134,27 @@ export-pxe: export-installer
     @test -n "$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-pxe-initrd-*.cpio.gz' -print -quit)" || { echo "ERROR: PXE initrd was not exported." >&2; exit 1; }
     @echo "==> wrote PXE artifacts:" && ls -lh dist/bluefin-server-pxe-*
 
-# -- k0s systemd-sysext -------------------------------------------------------
-# Produces a systemd-sysext extension image for k0s.
+# -- Kubernetes systemd-sysext ------------------------------------------------
+# Produces a systemd-sysext extension image carrying kubeadm, kubelet, kubectl
+# and the CNI plugins.
 
-# Build the k0s systemd-sysext image.
+# Build the Kubernetes systemd-sysext image.
 [group('sysext')]
 build-sysext:
-    just bst build oci/k0s-sysext.bst
+    just bst build oci/kubernetes-sysext.bst
 
-# Export the k0s systemd-sysext image + SHA256SUMS to dist/sysext/.
+# Export the Kubernetes systemd-sysext image + SHA256SUMS to dist/sysext/.
 # The artifact checkout also emits an uncompressed .raw; only the
 # versioned .raw.zst release asset and its SHA256SUMS are published.
 [group('sysext')]
 export-sysext: build-sysext
     rm -rf dist/sysext dist/sysext-checkout
     mkdir -p dist/sysext-checkout dist/sysext
-    just bst artifact checkout oci/k0s-sysext.bst --directory /src/dist/sysext-checkout
-    cp dist/sysext-checkout/k0s-*.raw.zst dist/sysext/
+    just bst artifact checkout oci/kubernetes-sysext.bst --directory /src/dist/sysext-checkout
+    cp dist/sysext-checkout/kubernetes-*.raw.zst dist/sysext/
     cp dist/sysext-checkout/SHA256SUMS dist/sysext/
     rm -rf dist/sysext-checkout
-    @echo "==> wrote k0s sysext:" && ls -lh dist/sysext/
+    @echo "==> wrote kubernetes sysext:" && ls -lh dist/sysext/
 
 # -- Flatcar LTS kernel & ZFS --------------------------------------------------
 # Build the Flatcar LTS kernel and ZFS sysext.
@@ -355,10 +356,13 @@ test-installer-artifact:
         exit 1
       fi
 
-      # Probe guest directly over SSH tunnel or in-guest curl to 127.0.0.1:8080
-      HEALTHZ_RESP=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p 2222 root@127.0.0.1 "curl --silent --insecure --max-time 2 https://127.0.0.1:8080/healthz 2>/dev/null || curl --silent --max-time 2 http://127.0.0.1:8080/healthz 2>/dev/null || true" 2>/dev/null || true)
+      # Probe guest directly over SSH tunnel or in-guest curl to 127.0.0.1:8080.
+      # The kiosk serves TLS with an in-cluster CA, hence --insecure. Plain HTTP
+      # is not probed: nginx answers it with a 302 to https, so a fallback would
+      # report 302 rather than the real status.
+      HEALTHZ_RESP=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p 2222 root@127.0.0.1 "curl --silent --insecure --max-time 2 https://127.0.0.1:8080/healthz 2>/dev/null || true" 2>/dev/null || true)
       if [ -n "$HEALTHZ_RESP" ]; then
-        ROOT_CODE=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p 2222 root@127.0.0.1 "curl --silent --insecure --max-time 2 --output /dev/null --write-out '%{http_code}' https://127.0.0.1:8080/ 2>/dev/null || curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || true" 2>/dev/null || true)
+        ROOT_CODE=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p 2222 root@127.0.0.1 "curl --silent --insecure --max-time 2 --output /dev/null --write-out '%{http_code}' https://127.0.0.1:8080/ 2>/dev/null || true" 2>/dev/null || true)
         if [ "$ROOT_CODE" = "200" ]; then
           if echo "$HEALTHZ_RESP" | jq -e '.status == "ok"' >/dev/null 2>&1; then
             echo "==> KubeStellar Console is healthy: /healthz status ok, / returned HTTP 200"
@@ -474,7 +478,7 @@ install-vm:
     }
     trap cleanup INT TERM
 
-    until curl --silent --show-error --max-time 2 --output /dev/null http://127.0.0.1:8080/; do
+    until curl --silent --show-error --insecure --max-time 2 --output /dev/null https://127.0.0.1:8080/; do
       if ! kill -0 "$QEMU_PID" 2>/dev/null; then
         wait "$QEMU_PID"
         exit 1
@@ -484,14 +488,14 @@ install-vm:
 
     HOST_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)"
     echo "==> KubeStellar Console is ready!"
-    echo "==> Access URL (LAN): http://${HOST_IP:-localhost}:8080/"
-    echo "==> Access URL (Local): http://localhost:8080/"
-    xdg-open "http://${HOST_IP:-localhost}:8080/" || xdg-open http://localhost:8080/ || true
+    echo "==> Access URL (LAN): https://${HOST_IP:-localhost}:8080/"
+    echo "==> Access URL (Local): https://localhost:8080/"
+    xdg-open "https://${HOST_IP:-localhost}:8080/" || xdg-open https://localhost:8080/ || true
     wait "$QEMU_PID"
 
 # Set up KubeStellar kc-agent for the user in ONE command.
 [group('test')]
-setup-kubestellar ORIGIN="http://localhost:8080,http://127.0.0.1:8080":
+setup-kubestellar ORIGIN="https://localhost:8080,https://127.0.0.1:8080":
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -x "files/bin/bluefin-kubestellar" ]; then
@@ -508,7 +512,7 @@ setup-kubestellar ORIGIN="http://localhost:8080,http://127.0.0.1:8080":
 
 # Run fully automated headless browser test against the KubeStellar console.
 [group('test')]
-test-e2e-browser CONSOLE_URL="http://127.0.0.1:8080":
+test-e2e-browser CONSOLE_URL="https://127.0.0.1:8080":
     python3 tests/e2e/test_kubestellar_browser_login.py --console-url "{{CONSOLE_URL}}"
 
 # Complete end-to-end Lima VM orchestration test.

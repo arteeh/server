@@ -1,0 +1,40 @@
+[Unit]
+Description=Seed the Bluefin cluster: CNI, Argo CD Core, manifest bridge, root Application
+Documentation=file:///usr/share/bluefin/seed
+# Deliberately no ConditionPathExists. A failed condition marks a unit
+# *skipped* rather than failed, which would silently no-op the seed on first
+# boot and leave a node with no CNI and no reconciler. Every phase below is a
+# server-side apply and is idempotent on its own, so re-running is free.
+Requires=kubeadm-init.service
+After=kubeadm-init.service
+Requires=bluefin-cluster-repo.service
+After=bluefin-cluster-repo.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=1800
+Environment=KUBECONFIG=/etc/kubernetes/admin.conf
+# The seed is append-only and is never pruned: kubectl's allowlist --prune is
+# alpha and incompatible with --server-side, and --applyset cannot span the
+# namespaces this seed touches. Argo CD owns pruning for everything downstream.
+# Phase 1: CNI. Nothing else can schedule until the node leaves NotReady.
+ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/00-cilium
+ExecStart=/usr/bin/kubectl wait --for=condition=Ready node --all --timeout=300s
+# Phase 2: the reconciler itself. The application controller is a StatefulSet,
+# so `wait deployment --all` would not cover it.
+ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/10-argocd-core
+ExecStart=/usr/bin/kubectl wait --for=condition=Available deployment --all --namespace argocd --timeout=600s
+ExecStart=/usr/bin/kubectl rollout status statefulset/argocd-application-controller --namespace argocd --timeout=600s
+# Phase 3: the git bridge that lets Argo read /var/lib/bluefin/cluster.git.
+ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/15-gitd
+ExecStart=/usr/bin/kubectl wait --for=condition=Available deployment/bluefin-git-daemon --namespace bluefin-system --timeout=600s
+# Phase 4: hand the cluster over. Argo owns everything from here.
+ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/20-root-app
+
+[Install]
+WantedBy=multi-user.target

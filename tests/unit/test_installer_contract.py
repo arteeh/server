@@ -62,25 +62,27 @@ def test_installer_wrapper_reads_kernel_command_line_without_cat() -> None:
     assert 'CMDLINE="$(cat /proc/cmdline' not in installer_element
 
 
-def test_installer_stages_uncompressed_k0s_before_packing_cpio() -> None:
+def test_installer_stages_uncompressed_sysext_before_packing_cpio() -> None:
+    """The sysext has to be in /layer before the initrd is packed, or the
+    offline installer ships no Kubernetes at all."""
     installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
     data = yaml.safe_load(installer_element)
-    k0s_dependency = next(
+    sysext_dependency = next(
         (
             dependency
             for dependency in data["build-depends"]
             if isinstance(dependency, dict)
-            and dependency.get("filename") == "oci/k0s-sysext.bst"
+            and dependency.get("filename") == "oci/kubernetes-sysext.bst"
         ),
         None,
     )
 
-    assert k0s_dependency == {
-        "filename": "oci/k0s-sysext.bst",
-        "config": {"location": "/k0s"},
+    assert sysext_dependency == {
+        "filename": "oci/kubernetes-sysext.bst",
+        "config": {"location": "/kubernetes"},
     }
 
-    seed_command = "cp /k0s/k0s-*.raw /layer/k0s.raw"
+    seed_command = "cp /kubernetes/kubernetes-*.raw /layer/kubernetes.raw"
     cpio_command = "| cpio --null --create --format=newc"
     assert seed_command in installer_element
     assert installer_element.index(seed_command) < installer_element.index(

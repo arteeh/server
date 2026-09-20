@@ -218,9 +218,16 @@ def test_var_is_a_growing_xfs_tail():
     )
 
 
-def test_var_seeds_the_offline_k0s_sysext():
+def test_var_seeds_the_sysext_into_the_systemd_sysext_scan_directory():
+    """An offline install must boot into a working cluster with no fetch.
+
+    The destination is relative to the /var partition root, so
+    ``/lib/extensions/kubernetes.raw`` is ``/var/lib/extensions/kubernetes.raw``
+    on the running system — one of systemd-sysext's own search paths, which is
+    why no unit has to copy the image anywhere before the merge.
+    """
     var = next(s for s in partitions().values() if s["Type"] == "var")
-    assert var["CopyFiles"] == "/k0s.raw:/lib/k0s/k0s.raw"
+    assert var["CopyFiles"] == "/kubernetes.raw:/lib/extensions/kubernetes.raw"
 
 
 def test_root_partition_label_is_matched_by_the_sysupdate_root_transfer():

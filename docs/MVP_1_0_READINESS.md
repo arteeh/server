@@ -4,7 +4,7 @@ This audit tracks the gap between the current tree and a first public/usable MVP
 
 ## MVP 1.0 bar
 
-1. **Reproducible build path** — documented command or CI job that produces the DDI, live installer, and k0s sysext.
+1. **Reproducible build path** — documented command or CI job that produces the DDI, live installer, and Kubernetes sysext.
 2. **Signed release artifacts** — combined `SHA256SUMS` + detached GPG signature published to GitHub Releases.
 3. **Automated boot verification** — at least one non-human test that proves the installer writes a bootable disk and the installed OS reaches a target.
 4. **Functional update path** — host can pull the signed manifest and apply an OS update without manual intervention.
@@ -15,10 +15,10 @@ This audit tracks the gap between the current tree and a first public/usable MVP
 
 | Check | Status | Evidence |
 |---|---|---|
-| Element graph resolves | ✅ | `just validate` succeeds for DDI, installer, and k0s sysext |
+| Element graph resolves | ✅ | `just validate` succeeds for DDI, installer, and Kubernetes sysext |
 | Release workflow lint | ✅ | `actionlint .github/workflows/build.yml` clean |
 | Release path exists | ✅ | `.github/workflows/build.yml` builds, signs, uploads to GitHub Release |
-| Cluster build pipeline | ✅ | Phase A complete; pipeline builds DDI, installer, and k0s sysext with uutils |
+| Cluster build pipeline | ✅ | Phase A complete; pipeline builds DDI, installer, and Kubernetes sysext with uutils |
 | Automated boot test | 🔄 | Phase B in progress for Alpha; `bluefin-server-boot-test` workflow running on lab cluster |
 | A/B root rollback | ❌ | `50-root.transfer` names `root-a`/`root-b`, installer only creates `root-a` |
 | Root immutability | ❌ | DDI boots read/write (`rw` on cmdline) |
@@ -28,7 +28,7 @@ Competitor context: [gap-analysis-distros.md](skills/gap-analysis-distros.md)
 
 ## Verdict
 
-**Alpha state — in progress for MVP 1.0.** Phase A (build path, uutils, k0s sysext, validate) is complete. Phase B (automated boot test on lab cluster) is actively in progress for the Alpha milestone. Full MVP 1.0 release requires concluding Phase B boot verification and Phase C runtime hardening (automated rollback, read-only `/usr`, credential delivery).
+**Alpha state — in progress for MVP 1.0.** Phase A (build path, uutils, Kubernetes sysext, validate) is complete. Phase B (automated boot test on lab cluster) is actively in progress for the Alpha milestone. Full MVP 1.0 release requires concluding Phase B boot verification and Phase C runtime hardening (automated rollback, read-only `/usr`, credential delivery).
 
 ## Roadmap
 
@@ -39,7 +39,7 @@ Priority order. Each item depends on the ones above it.
 - [x] Extend cluster build deadlines so the pipeline can finish.
 - [x] Fix `build.yml` actionlint warnings.
 - [x] Confirm build path succeeds and publishes `bluefin-server-installer:latest` to `<registry-host>:30500`.
-- [x] Add `oci/k0s-sysext.bst` to the build and validation pipeline.
+- [x] Add `oci/kubernetes-sysext.bst` to the build and validation pipeline.
 - [x] Integrate uutils coreutils across OS elements.
 - [x] Merge-contract graph validation (`just validate`) passes clean.
 

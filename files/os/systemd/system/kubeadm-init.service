@@ -1,0 +1,30 @@
+[Unit]
+Description=Initialise the Kubernetes control plane with kubeadm
+Documentation=https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-init/
+# The idempotency guard belongs here and nowhere else. A unit whose condition
+# fails is marked *skipped*, and systemd treats a skipped unit as satisfied for
+# everything ordered after it, so bluefin-cluster-bootstrap.service still runs.
+ConditionPathExists=!/etc/kubernetes/admin.conf
+# /usr/bin/kubeadm and containerd.service both arrive with the sysext merge.
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Requires=containerd.service
+After=containerd.service
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/kubelet
+
+[Service]
+Type=oneshot
+# RemainAfterExit is what makes the ordering edge useful: the unit stays active
+# after kubeadm exits, so dependents see a control plane that is still up.
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=900
+# Cilium provides the kube-proxy replacement; installing kube-proxy as well
+# would leave two datapaths fighting over the same Services.
+ExecStart=/usr/bin/kubeadm init --config /usr/share/bluefin/kubeadm.yaml --skip-phases=addon/kube-proxy
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Publish the Bluefin cluster manifests as a local git repository
+Documentation=file:///usr/share/bluefin/cluster
+# Argo CD has no filesystem source type, so the image-delivered manifest tree
+# has to be reachable over git before the root Application can sync.
+RequiresMountsFor=/var/lib/bluefin
+Before=bluefin-cluster-bootstrap.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=bluefin
+ExecStart=/usr/libexec/bluefin-cluster-repo
+
+[Install]
+WantedBy=multi-user.target

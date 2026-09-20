@@ -57,10 +57,11 @@ build-depends:
   - filename: bluefin-server/os-rootfs.bst
     config:
       location: /target-root
-  # Uncompressed k0s sysext staged into the installer initrd for offline install
-  - filename: oci/k0s-sysext.bst
+  # Uncompressed Kubernetes sysext staged into the installer initrd for
+  # offline install; systemd-repart seeds it onto /var at install time.
+  - filename: oci/kubernetes-sysext.bst
     config:
-      location: /k0s
+      location: /kubernetes
 
 variables:
   installer-version: "%{release-version}"
@@ -329,11 +330,11 @@ config:
       ln -sf system-install.target \
         /layer/usr/lib/systemd/system/default.target
 
-    # ── Step 2a: Stage the offline k0s sysext before packing the initrd ─
+    # ── Step 2a: Stage the offline Kubernetes sysext before packing cpio ─
     - |
       set -eux
-      cp /k0s/k0s-*.raw /layer/k0s.raw
-      ls -lh /layer/k0s.raw
+      cp /kubernetes/kubernetes-*.raw /layer/kubernetes.raw
+      ls -lh /layer/kubernetes.raw
 
     # ── Step 3: Pack initrd cpio ─────────────────────────────────────────
     # find . from /layer gives paths like ./usr/bin/... which is exactly

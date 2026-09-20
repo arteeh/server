@@ -1,0 +1,45 @@
+# kubeadm control-plane configuration for Bluefin Server.
+#
+# Staged at /usr/share/bluefin/kubeadm.yaml and read by kubeadm-init.service.
+# This is immutable image content: per-site overrides belong on the OEM
+# partition alongside systemd-creds, never here.
+#
+# `kubernetesVersion` is deliberately absent. kubeadm defaults it to the
+# version of the kubeadm binary, which the Kubernetes sysext delivers, so the
+# version stays single-sourced in include/kubernetes.yml instead of being
+# restated here.
+#
+# No certificate or key material ships in this image. Client certificates come
+# from kubeadm's TLS bootstrap and serving certificates from
+# `serverTLSBootstrap` plus the in-cluster kubelet-csr-approver.
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  # Single-node appliance: the default control-plane NoSchedule taint would
+  # leave every workload, Argo CD included, permanently Pending.
+  taints: []
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: bluefin
+networking:
+  dnsDomain: cluster.local
+  # Cilium's cluster-pool IPAM is configured with this same range.
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+# Request a serving certificate over the CSR API rather than generating a
+# self-signed one. kube-controller-manager never auto-approves serving CSRs,
+# so kubelet-csr-approver is mandatory in the Argo-owned tree.
+serverTLSBootstrap: true
+# Renew both client and serving certificates before they expire, so a long
+# uptime cannot strand the node.
+rotateCertificates: true

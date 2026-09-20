@@ -1,0 +1,28 @@
+[Unit]
+Description=kubelet: the Kubernetes node agent
+Documentation=https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/
+# /usr/bin/kubelet ships in the Kubernetes sysext, not in the base DDI, so the
+# merge must complete before this unit can start.
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Wants=network-online.target
+After=network-online.target
+After=containerd.service
+# kubeadm writes the kubelet configuration, so the kubelet restarts until
+# `kubeadm init` has run. Never give up on it.
+StartLimitIntervalSec=0
+
+[Service]
+# The Kubernetes sysext ships the upstream CNI plugins at /usr/local/bin/cni,
+# matching the flatcar/sysext-bakery layout. containerd and Cilium both look in
+# /opt/cni/bin. Without this bridge the `loopback` plugin is missing, every pod
+# sandbox fails to get a network, and the node never leaves NotReady — silently.
+# -n preserves the cilium binary that the agent installs into the same directory.
+ExecStartPre=/usr/bin/install -d -m 0755 /opt/cni/bin
+ExecStartPre=/bin/sh -c 'cp -an /usr/local/bin/cni/. /opt/cni/bin/'
+ExecStart=/usr/bin/kubelet
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
