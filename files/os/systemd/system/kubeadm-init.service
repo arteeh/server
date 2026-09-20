@@ -84,10 +84,16 @@ TimeoutStartSec=900
 # control plane and no CNI, no Argo, and no console — and nothing in
 # `systemctl list-units --failed` to explain it.
 #
-# Waiting here makes the first attempt succeed, which keeps the Requires= edge
-# in the dependents honest. Bounded by TimeoutStartSec above; if containerd
-# genuinely never arrives, Restart=on-failure still retries.
-ExecStartPre=/usr/bin/bash -c 'until [ -S /run/containerd/containerd.sock ]; do sleep 1; done'
+# Waiting here makes the first attempt succeed, which keeps the Wants=/Requires=
+# edges in the dependents honest.
+#
+# Bounded at 300 attempts (300s) rather than open-ended. An unbounded `until`
+# shares TimeoutStartSec=900 with kubeadm itself, so a containerd that never
+# arrives would burn the whole window in silence and the eventual systemd kill
+# would look like "kubeadm was slow" rather than "there was no container
+# runtime". Exiting non-zero hands it to Restart=on-failure with a line that
+# names the cause, and still leaves kubeadm the larger share of the budget.
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 300); do [ -S /run/containerd/containerd.sock ] && exit 0; sleep 1; done; echo "no CRI socket at /run/containerd/containerd.sock after 300s; containerd.service did not start" >&2; exit 1'
 # Cilium provides the kube-proxy replacement; installing kube-proxy as well
 # would leave two datapaths fighting over the same Services.
 ExecStart=/usr/bin/kubeadm init --config /usr/share/bluefin/kubeadm.yaml --skip-phases=addon/kube-proxy

@@ -36,7 +36,21 @@ Type=oneshot
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=30s
-TimeoutStartSec=1800
+# TimeoutStartSec must cover every bounded step below, or systemd kills the unit
+# mid-chain and the kill reads as a generic timeout instead of naming the phase
+# that stalled. The budget is partitioned rather than shared:
+#
+#   ExecStartPre  API server probe                     600
+#   phase 1       kubectl wait node Ready              300
+#   phase 2       kubectl wait deployment Available    600
+#   phase 2       kubectl rollout status statefulset   600
+#   phase 3       kubectl wait deployment Available    600
+#                                                     ----
+#                                                     2700
+#
+# 3000 leaves headroom for the applies themselves without letting a genuinely
+# stuck seed sit for an hour before Restart=on-failure gets a turn.
+TimeoutStartSec=3000
 Environment=KUBECONFIG=/etc/kubernetes/admin.conf
 # The seed is append-only and is never pruned: kubectl's allowlist --prune is
 # alpha and incompatible with --server-side, and --applyset cannot span the
@@ -46,17 +60,24 @@ Environment=KUBECONFIG=/etc/kubernetes/admin.conf
 # This is the cost of Wants= over Requires= above. Under Requires=, a broken
 # kubeadm-init produced exactly one legible line — "Job ... failed with result
 # 'dependency'" — which is how the stranding bug was found in the first place.
-# Under Wants= this unit instead retries every 30s until TimeoutStartSec=1800,
-# and in CI the 900s readiness gate fires first, so the operator would see a
-# timeout with no stated cause and up to thirty rounds of kubectl connection
-# errors to read through.
+# Under Wants= this unit instead retries every 30s until TimeoutStartSec, and in
+# CI the 900s readiness gate fires first, so the operator would see a timeout
+# with no stated cause and many rounds of kubectl connection errors to read
+# through.
 #
 # Probing here collapses that into one self-describing line per attempt, and it
 # sharpens the signal: once this passes, the API server is answering, so any
 # failure in the phases below is a genuine apply failure rather than a control
 # plane that has not arrived yet. `get --raw /readyz` is the cheapest call that
 # proves the apiserver is serving, and needs no RBAC beyond the admin kubeconfig.
-ExecStartPre=/usr/bin/bash -c 'until /usr/bin/kubectl --request-timeout=5s get --raw /readyz >/dev/null 2>&1; do echo "waiting for the Kubernetes API server; kubeadm-init has not finished"; sleep 10; done'
+#
+# The loop is bounded at 60 attempts (600s), not open-ended. An unbounded `until`
+# would share this unit's TimeoutStartSec with the apply phases and could consume
+# the entire budget before phase 1 ran — the systemd kill would then be
+# attributed to the seed rather than to the control plane, which is exactly the
+# ambiguity this probe exists to remove. Exiting non-zero instead hands the
+# failure to Restart=on-failure with a line that names the cause.
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 60); do /usr/bin/kubectl --request-timeout=5s get --raw /readyz >/dev/null 2>&1 && exit 0; echo "waiting for the Kubernetes API server; kubeadm-init has not finished (attempt ${i}/60)"; sleep 10; done; echo "API server never became ready after 600s; not attempting the seed" >&2; exit 1'
 # Phase 1: CNI. Nothing else can schedule until the node leaves NotReady.
 ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/00-cilium
 ExecStart=/usr/bin/kubectl wait --for=condition=Ready node --all --timeout=300s

@@ -14,6 +14,7 @@ have: a condition there would silently no-op the seed.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -291,10 +292,47 @@ def test_seed_waits_for_the_api_server_before_it_applies_anything() -> None:
         "probe the apiserver's /readyz endpoint; it is the cheapest call that "
         "proves it is serving and needs no RBAC beyond the admin kubeconfig"
     )
-    assert "until" in probe, "the probe must retry rather than fail once"
+    assert "exit 1" in probe, (
+        "the probe must be bounded and fail loudly. An unbounded loop shares "
+        "TimeoutStartSec with the apply phases and can consume the whole budget "
+        "before phase 1 runs, so the systemd kill gets attributed to the seed "
+        "rather than to the control plane — the exact ambiguity this removes"
+    )
     assert "echo" in probe, (
         "the probe must say why it is waiting, or a stalled control plane is "
         "indistinguishable from a slow one in the journal"
+    )
+
+
+def test_start_timeout_covers_every_bounded_step() -> None:
+    """A budget smaller than its parts kills the unit mid-chain.
+
+    systemd enforces TimeoutStartSec across ExecStartPre plus every ExecStart.
+    If the bounded waits sum past it, the unit is killed partway through and the
+    kill reads as a generic timeout instead of naming the phase that stalled —
+    the same loss of attribution the probe above exists to prevent.
+
+    Previously the four kubectl waits alone summed to 2100s against a 1800s
+    budget.
+    """
+    service = unit(CLUSTER_BOOTSTRAP)["Service"]
+    budget = int(service["TimeoutStartSec"][0])
+
+    steps = service.get("ExecStartPre", []) + service.get("ExecStart", [])
+    declared = sum(
+        int(match) for step in steps for match in re.findall(r"--timeout=(\d+)s", step)
+    )
+    # The probe bounds itself by attempt count rather than a --timeout flag.
+    probe_bound = sum(
+        int(match) * 10
+        for step in service.get("ExecStartPre", [])
+        for match in re.findall(r"seq (\d+)", step)
+    )
+
+    assert budget > declared + probe_bound, (
+        f"TimeoutStartSec={budget}s does not cover the bounded steps "
+        f"({declared}s of kubectl --timeout plus {probe_bound}s of probe), so "
+        f"systemd can kill the seed mid-chain and the failure loses its cause"
     )
 
 
