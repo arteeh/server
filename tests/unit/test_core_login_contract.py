@@ -60,8 +60,22 @@ def test_sshd_requires_persistent_host_keys_and_core_authorization() -> None:
     assert "After=var.mount systemd-tmpfiles-setup.service" in access
     assert "ExecStart=/usr/bin/test -s /var/home/core/.ssh/authorized_keys" in access
     assert "Requires=bluefin-ssh-host-keys.service bluefin-core-access.service" in drop_in
-    assert "ExecStartPre=/usr/sbin/sshd -t" in drop_in
-    assert "ExecStartPre=/usr/bin/test -s /var/lib/ssh/ssh_host_ed25519_key" in drop_in
+    exec_start_pre = [
+        line.split("=", 1)[1]
+        for line in drop_in.splitlines()
+        if line.startswith("ExecStartPre=")
+    ]
+    assert exec_start_pre == [
+        "",
+        "/usr/bin/test -s /var/lib/ssh/ssh_host_ed25519_key",
+        "/usr/bin/test -s /var/lib/ssh/ssh_host_rsa_key",
+        "/usr/bin/sshd -t",
+    ], (
+        "the drop-in must reset ExecStartPre= (dropping FSDK's ssh-keygen -A, which "
+        "would only regenerate unused /etc/ssh host keys), gate on the persistent "
+        "/var/lib/ssh host keys, and syntax-check with the same sshd path FSDK's "
+        "ExecStart= uses; /usr/sbin/sshd would fail closed and lock the host out"
+    )
 
 
 ELEMENTS = ROOT / "elements"

@@ -42,8 +42,17 @@ f~ /var/home/core/.ssh/authorized_keys 0600 core core - c3NoLWVkMjU1MTkgQUFBQUMz
 ```
 
 The base64 data in the `f~` line is an SSH public key, not a secret. Sealing
-the credential ensures that unauthorized keys cannot be injected into the
-machine offline when TPM2 protection is active.
+the credential binds it to the TPM2 and UKI boot state, so a sealed credential
+cannot be read or re-sealed off the machine.
+
+> **Caveat:** sealing does not by itself prevent offline key injection. Nothing
+> in the boot path *requires* the `tmpfiles.extra` credential to be sealed, so
+> an attacker with write access to the ESP can drop in a plaintext credential
+> that `systemd-tmpfiles` will happily apply. That is exactly the mechanism the
+> [offline recovery sequence](#offline-recovery-sequence) below depends on.
+> Physical/ESP access is therefore equivalent to operator access unless the ESP
+> itself is protected — for example by Secure Boot with a locked-down firmware
+> password and full-disk encryption bound to PCR 7+11.
 
 Seal the credential against PCR 7 (Secure Boot state) and PCR 11 (Unified Kernel
 Image state) on the TPM2 chip:
