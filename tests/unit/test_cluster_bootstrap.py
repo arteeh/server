@@ -293,15 +293,38 @@ def test_seed_waits_for_the_api_server_before_it_applies_anything() -> None:
         "proves it is serving and needs no RBAC beyond the admin kubeconfig"
     )
     assert "exit 1" in probe, (
-        "the probe must be bounded and fail loudly. An unbounded loop shares "
-        "TimeoutStartSec with the apply phases and can consume the whole budget "
-        "before phase 1 runs, so the systemd kill gets attributed to the seed "
-        "rather than to the control plane — the exact ambiguity this removes"
+        "the probe must fail loudly rather than returning quietly, or a control "
+        "plane that never arrives is indistinguishable from one that did"
+    )
+    assert probe_bound(unit(CLUSTER_BOOTSTRAP)["Service"]) > 0, (
+        "the probe must declare a finite bound. `exit 1` alone is not enough: "
+        "`until cond; do ...; done; exit 1` has an unreachable failure path and "
+        "still loops forever, sharing TimeoutStartSec with the apply phases and "
+        "consuming the whole budget before phase 1 runs — so systemd's kill gets "
+        "attributed to the seed rather than to the control plane, which is the "
+        "exact ambiguity this probe exists to remove"
     )
     assert "echo" in probe, (
         "the probe must say why it is waiting, or a stalled control plane is "
         "indistinguishable from a slow one in the journal"
     )
+
+
+def probe_bound(service: dict[str, list[str]]) -> int:
+    """Seconds the ExecStartPre probe is allowed to spend, from its own bound.
+
+    The probe bounds itself by attempt count rather than a ``--timeout`` flag,
+    so this reads ``seq N`` and multiplies by the loop's sleep. Returns 0 when
+    no bound is declared, which the callers treat as a failure rather than as
+    "costs nothing" — an unbounded probe costs the entire budget.
+    """
+    total = 0
+    for step in service.get("ExecStartPre", []):
+        attempts = re.findall(r"seq (\d+)", step)
+        sleeps = re.findall(r"sleep (\d+)", step)
+        if attempts and sleeps:
+            total += int(attempts[0]) * int(sleeps[0])
+    return total
 
 
 def test_start_timeout_covers_every_bounded_step() -> None:
@@ -322,16 +345,11 @@ def test_start_timeout_covers_every_bounded_step() -> None:
     declared = sum(
         int(match) for step in steps for match in re.findall(r"--timeout=(\d+)s", step)
     )
-    # The probe bounds itself by attempt count rather than a --timeout flag.
-    probe_bound = sum(
-        int(match) * 10
-        for step in service.get("ExecStartPre", [])
-        for match in re.findall(r"seq (\d+)", step)
-    )
+    bound = probe_bound(service)
 
-    assert budget > declared + probe_bound, (
+    assert budget > declared + bound, (
         f"TimeoutStartSec={budget}s does not cover the bounded steps "
-        f"({declared}s of kubectl --timeout plus {probe_bound}s of probe), so "
+        f"({declared}s of kubectl --timeout plus {bound}s of probe), so "
         f"systemd can kill the seed mid-chain and the failure loses its cause"
     )
 
