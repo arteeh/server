@@ -266,6 +266,38 @@ def test_seed_applies_server_side_and_never_prunes() -> None:
         assert "-k " in command, f"{command} must apply a kustomization"
 
 
+def test_seed_waits_for_the_api_server_before_it_applies_anything() -> None:
+    """The probe that keeps Wants= diagnosable and the first apply meaningful.
+
+    Relaxing kubeadm-init to ``Wants=`` stopped one transient failure stranding
+    this unit, but it also removed the single legible
+    ``Job ... failed with result 'dependency'`` line that made the stranding
+    visible. Without a probe, a control plane that never arrives shows up as
+    thirty rounds of kubectl connection errors and then a gate timeout with no
+    stated cause.
+
+    The probe also sharpens what a failure means: once it passes, the API server
+    is answering, so anything failing below is a genuine apply failure rather
+    than a control plane that has not arrived yet.
+    """
+    pre = unit(CLUSTER_BOOTSTRAP)["Service"].get("ExecStartPre", [])
+
+    assert pre, (
+        "no ExecStartPre: the seed would start applying against an API server "
+        "that may not exist yet, and the retries would be unreadable"
+    )
+    probe = " ".join(pre)
+    assert "/readyz" in probe, (
+        "probe the apiserver's /readyz endpoint; it is the cheapest call that "
+        "proves it is serving and needs no RBAC beyond the admin kubeconfig"
+    )
+    assert "until" in probe, "the probe must retry rather than fail once"
+    assert "echo" in probe, (
+        "the probe must say why it is waiting, or a stalled control plane is "
+        "indistinguishable from a slow one in the journal"
+    )
+
+
 def test_seed_waits_for_the_node_to_leave_notready_before_argo() -> None:
     commands = exec_starts(CLUSTER_BOOTSTRAP)
     cilium = next(i for i, c in enumerate(commands) if c.endswith("/00-cilium"))

@@ -41,6 +41,22 @@ Environment=KUBECONFIG=/etc/kubernetes/admin.conf
 # The seed is append-only and is never pruned: kubectl's allowlist --prune is
 # alpha and incompatible with --server-side, and --applyset cannot span the
 # namespaces this seed touches. Argo CD owns pruning for everything downstream.
+# Wait for the API server before applying anything, and say so while waiting.
+#
+# This is the cost of Wants= over Requires= above. Under Requires=, a broken
+# kubeadm-init produced exactly one legible line — "Job ... failed with result
+# 'dependency'" — which is how the stranding bug was found in the first place.
+# Under Wants= this unit instead retries every 30s until TimeoutStartSec=1800,
+# and in CI the 900s readiness gate fires first, so the operator would see a
+# timeout with no stated cause and up to thirty rounds of kubectl connection
+# errors to read through.
+#
+# Probing here collapses that into one self-describing line per attempt, and it
+# sharpens the signal: once this passes, the API server is answering, so any
+# failure in the phases below is a genuine apply failure rather than a control
+# plane that has not arrived yet. `get --raw /readyz` is the cheapest call that
+# proves the apiserver is serving, and needs no RBAC beyond the admin kubeconfig.
+ExecStartPre=/usr/bin/bash -c 'until /usr/bin/kubectl --request-timeout=5s get --raw /readyz >/dev/null 2>&1; do echo "waiting for the Kubernetes API server; kubeadm-init has not finished"; sleep 10; done'
 # Phase 1: CNI. Nothing else can schedule until the node leaves NotReady.
 ExecStart=/usr/bin/kubectl apply --server-side --force-conflicts -k /usr/share/bluefin/seed/00-cilium
 ExecStart=/usr/bin/kubectl wait --for=condition=Ready node --all --timeout=300s
