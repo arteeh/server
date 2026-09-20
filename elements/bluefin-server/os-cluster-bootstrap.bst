@@ -28,6 +28,14 @@ sources:
     path: files/os/libexec
     directory: libexec-src
 
+# This element stages systemd units, a YAML config and a shell helper. FSDK's
+# default strip-commands shell out to freedesktop-sdk-stripper, which
+# base/base-stack.bst does not provide, so the default turns a no-op into
+# `command not found` (exit 127). Same contract as os-countme.bst,
+# os-image-info.bst and os-release-flatcar.bst.
+variables:
+  strip-binaries: ""
+
 config:
   install-commands:
     - |

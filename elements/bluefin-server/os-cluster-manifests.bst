@@ -44,6 +44,13 @@ sources:
     directory: certmanager-src
     ref: e03b668ec8675214af6b0a671699d088f2601fa3878e0dbe1b41d3feafd1879f
 
+# This element stages YAML only. FSDK's default strip-commands shell out to
+# freedesktop-sdk-stripper, which base/base-stack.bst does not provide, so the
+# default turns a no-op into `command not found` (exit 127). Same contract as
+# os-countme.bst, os-image-info.bst and os-release-flatcar.bst.
+variables:
+  strip-binaries: ""
+
 config:
   install-commands:
     - |
