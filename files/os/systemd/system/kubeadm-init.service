@@ -5,22 +5,24 @@ Documentation=https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-i
 # fails is marked *skipped*, and systemd treats a skipped unit as satisfied for
 # everything ordered after it, so bluefin-cluster-bootstrap.service still runs.
 ConditionPathExists=!/etc/kubernetes/admin.conf
-# /usr/bin/kubeadm arrives with the sysext merge (elements/oci/kubernetes-sysext.bst
-# stages kubectl, kubeadm, kubelet and the CNI plugins — and nothing else).
+# Both /usr/bin/kubeadm and containerd.service arrive with the sysext merge, but
+# from two different extensions, each seeded to /var/lib/extensions by
+# files/installer/repart.d/30-var.conf:
+#
+#   kubernetes.raw  elements/oci/kubernetes-sysext.bst — kubeadm, kubelet,
+#                   kubectl, CNI plugins.
+#   containerd.raw  elements/flatcar/containerd-sysext.bst — Flatcar's containerd
+#                   sysext: containerd, runc, ctr, containerd-shim-runc-v2, and
+#                   containerd.service itself. FSDK 26.08 ships no containerd
+#                   component, so this import is the only provider.
+#
+# containerd.raw carries its own multi-user.target.wants symlink, so the merge
+# enables the service; no preset of ours is involved.
 Requires=systemd-sysext.service
 After=systemd-sysext.service
-# containerd.service is NOT supplied by that sysext and is not built anywhere in
-# this repository. It reaches the image only through Flatcar's /usr
-# (usr/share/flatcar/sysext/containerd-flatcar.raw), which arrives with
-# elements/flatcar/flatcar-usr.bst in PR #140 and is consumed by os-stack.bst in
-# PR #132. Until both land this is an unresolvable job: the control plane does
-# not start, and bluefin-cluster-bootstrap.service does not run either, because
-# it declares Requires=kubeadm-init.service.
-#
-# The requirement is correct and stays hard on purpose — kubeadm against a host
-# with no CRI socket fails late and confusingly, where an unresolvable job fails
-# immediately and names the missing unit. tests/unit/test_unit_dependency_provenance.py
-# records the gap so it cannot be forgotten.
+# Hard on purpose: kubeadm against a host with no CRI socket fails late and
+# confusingly, where an unresolvable job fails immediately and names the missing
+# unit. tests/unit/test_unit_dependency_provenance.py records the provider.
 Requires=containerd.service
 After=containerd.service
 Wants=network-online.target

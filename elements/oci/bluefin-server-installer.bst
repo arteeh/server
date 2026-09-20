@@ -62,6 +62,12 @@ build-depends:
   - filename: oci/kubernetes-sysext.bst
     config:
       location: /kubernetes
+  # Flatcar's containerd sysext, seeded the same way. kubeadm-init.service has
+  # a hard Requires=containerd.service and FSDK ships no containerd component,
+  # so without this the control plane never starts.
+  - filename: flatcar/containerd-sysext.bst
+    config:
+      location: /containerd
 
 variables:
   installer-version: "%{release-version}"
@@ -330,11 +336,21 @@ config:
       ln -sf system-install.target \
         /layer/usr/lib/systemd/system/default.target
 
-    # ── Step 2a: Stage the offline Kubernetes sysext before packing cpio ─
+    # ── Step 2a: Stage the offline sysexts before packing cpio ───────────
+    # Both are seeded onto /var by systemd-repart at install time
+    # (files/installer/repart.d/30-var.conf), so first boot merges them with
+    # no network fetch.
+    #
+    # Each filename must keep the stem its extension-release is named for:
+    # systemd-sysext merges <name>.raw only if the image carries
+    # extension-release.<name>. kubernetes-<version>.raw -> kubernetes.raw is
+    # safe (extension-release.kubernetes); containerd-flatcar.raw must stay
+    # containerd-flatcar.raw (extension-release.containerd-flatcar).
     - |
       set -eux
       cp /kubernetes/kubernetes-*.raw /layer/kubernetes.raw
-      ls -lh /layer/kubernetes.raw
+      cp /containerd/containerd-flatcar.raw /layer/containerd-flatcar.raw
+      ls -lh /layer/kubernetes.raw /layer/containerd-flatcar.raw
 
     # ── Step 3: Pack initrd cpio ─────────────────────────────────────────
     # find . from /layer gives paths like ./usr/bin/... which is exactly

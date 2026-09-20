@@ -26,19 +26,22 @@ UNIT_DIR = ROOT / "files" / "os" / "systemd" / "system"
 
 # Units this repository does not stage, mapped to what does supply them.
 #
-# containerd.service is the load-bearing entry. Flatcar ships containerd as a
-# sysext blob inside its /usr tree (usr/share/flatcar/sysext/containerd-flatcar.raw,
-# 26 MiB, verified against the 4593.2.5 image contents listing). That tree only
-# reaches this image through elements/flatcar/flatcar-usr.bst, which is NOT on
-# main yet — it arrives with PR #140, and os-stack.bst consumes it in PR #132.
+# containerd.service is the load-bearing entry. FSDK 26.08 ships no containerd
+# component at all, so nothing can be composed from it — see
+# docs/superpowers/specs/2026-09-19-flatcar-runtime-parity.md, which records
+# `no elements/components/containerd.bst` in the pinned junction.
 #
-# Until both land, kubeadm-init.service has a hard requirement on a unit no
-# element supplies, so the control plane does not come up on a real boot. The
-# cutover is structurally complete but inert until then. This entry records that
-# deliberately; delete the note, not the entry, once #140 and #132 have landed.
+# Flatcar publishes containerd as a standalone systemd-sysext, the same delivery
+# mechanism this repository already uses for Kubernetes.
+# elements/flatcar/containerd-sysext.bst imports that image, the installer stages
+# it into the initrd, and files/installer/repart.d/30-var.conf seeds it to
+# /var/lib/extensions/containerd.raw so the first boot merges it offline. The
+# image carries its own multi-user.target.wants symlink, so the merge is what
+# enables the service.
 EXTERNAL_PROVIDERS = {
     "containerd.service": (
-        "Flatcar /usr via elements/flatcar/flatcar-usr.bst — PENDING PR #140/#132"
+        "Flatcar containerd sysext via elements/flatcar/containerd-sysext.bst, "
+        "seeded to /var/lib/extensions by files/installer/repart.d/30-var.conf"
     ),
     "systemd-sysext.service": "systemd, present in the base image",
     "network-online.target": "systemd",
@@ -84,18 +87,6 @@ def test_hard_dependency_has_a_provider(unit: str, required: str) -> None:
         f"does not stage and EXTERNAL_PROVIDERS does not account for. Either ship "
         f"the unit, or record who supplies it — a Requires= on a unit nothing "
         f"provides fails only at boot, where nothing else catches it."
-    )
-
-
-def test_containerd_provider_is_recorded_as_pending() -> None:
-    """The cutover is inert until Flatcar's /usr lands; keep that visible.
-
-    kubeadm-init.service requires containerd.service. Nothing on main supplies
-    it. This asserts the gap stays documented rather than quietly forgotten.
-    """
-    assert "containerd.service" in EXTERNAL_PROVIDERS
-    assert "flatcar-usr.bst" in EXTERNAL_PROVIDERS["containerd.service"], (
-        "containerd.service must name flatcar-usr.bst as its provider"
     )
 
 
