@@ -274,6 +274,28 @@ flash-installer DEVICE="":
     # `set -o pipefail` does not reach here — there is no pipeline in the outer
     # shell, only this nested one.
     sudo bash -c "set -o pipefail; zstd -dc '${IMG}' | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    # Move the GPT backup header to the end of the DEVICE.
+    #
+    # dd writes the image verbatim, so the backup header lands at the end of the
+    # IMAGE. GPT requires it at the device's last LBA, so on any medium larger
+    # than the image the table is only half valid: the primary header points at
+    # a backup LBA that is not where the device ends. parted says so directly —
+    #
+    #   Warning: Not all of the space available to /dev/sdb appears to be used,
+    #   you can fix the GPT to use all of the space (an extra 115791863 blocks)
+    #
+    # — and tools disagree about partition sizes between reads. Firmware that
+    # validates the backup header can refuse to boot the medium outright.
+    #
+    # This is invisible to every test we have. `just test-installer-artifact`
+    # and the CI installer-test attach the image as a drive sized exactly to the
+    # image, so device size always equals image size and the condition cannot
+    # arise. Only real media larger than the image exposes it, which is why a
+    # green installer-test still produced a stick with a broken table.
+    echo "Relocating the GPT backup header to the end of {{DEVICE}}..."
+    sudo sfdisk --relocate gpt-bak-std {{DEVICE}}
+    sudo partprobe {{DEVICE}} || true
+    sudo sfdisk --verify {{DEVICE}}
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
 
 # Build the installer artifacts, then run the reusable artifact smoke path.

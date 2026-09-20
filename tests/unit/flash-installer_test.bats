@@ -53,6 +53,8 @@ setup() {
 
     make_stub sudo 0
     make_stub dd 0
+    make_stub sfdisk 0
+    make_stub partprobe 0
     make_zstd_stub
     make_topology_stubs
 
@@ -414,6 +416,41 @@ refute_log() {
     assert_log "iflag=fullblock"
     assert_log "oflag=direct"
     assert_log "conv=fsync"
+}
+
+@test "flash-installer relocates the GPT backup header to the end of the device" {
+    # dd writes the image verbatim, so the backup header lands at the end of the
+    # IMAGE. On any medium larger than the image the table is half valid: the
+    # primary header points at a backup LBA that is not the device's last LBA.
+    # parted reports "Not all of the space available ... appears to be used",
+    # tools disagree about partition sizes between reads, and firmware that
+    # validates the backup header can refuse the medium.
+    #
+    # No other test can catch this: test-installer-artifact and the CI
+    # installer-test attach a drive sized exactly to the image, so device size
+    # always equals image size and the condition cannot arise.
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -eq 0 ]
+    assert_log "sfdisk --relocate gpt-bak-std ${FAKE_DEV}"
+}
+
+@test "flash-installer repairs the table after writing it, not before" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    # dd runs inside `sudo bash -c "... | dd of=..."`, so it never appears as a
+    # top-level `dd ` line in the call log — match the sudo invocation carrying it.
+    write_line=$(grep -n "dd of=${FAKE_DEV}" "$LOG" | head -1 | cut -d: -f1)
+    relocate_line=$(grep -n "relocate gpt-bak-std" "$LOG" | head -1 | cut -d: -f1)
+    [ -n "$write_line" ]
+    [ -n "$relocate_line" ]
+    [ "$relocate_line" -gt "$write_line" ]
+}
+
+@test "flash-installer verifies the repaired table before declaring success" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    assert_log "sfdisk --verify ${FAKE_DEV}"
 }
 
 @test "flash-installer reports success only after the write is attempted" {
