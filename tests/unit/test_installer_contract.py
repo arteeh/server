@@ -16,14 +16,21 @@ JUSTFILE = REPO_ROOT / "Justfile"
 DDI_ELEMENT = REPO_ROOT / "elements" / "oci" / "bluefin-server-ddi.bst"
 
 
-def _published_uki_cmdline(installer_element: str) -> str:
+def _installer_boot_cmdline(installer_element: str) -> str:
+    """The cmdline the installer medium boots with.
+
+    It lives in a systemd-boot type-1 loader entry, not in a UKI. A single
+    `ukify build --linux --initrd` produced a 434 MiB PE that firmware loads and
+    then never executes; measured on the same firmware and ESP, 34 MiB and
+    64 MiB images boot and 434 MiB does not. The installer's initrd is ~382 MiB
+    because it carries the live environment, so it cannot live in a PE section.
+    """
     match = re.search(
-        r'ukify build\s+.*?--cmdline="([^"]+)"\s+'
-        r"[ \t\\\r\n]+--output=/layer/boot/efi/EFI/BOOT/BOOTX64\.EFI",
+        r"^\s*'options ([^']+)'\s*\\?\s*$",
         installer_element,
-        flags=re.DOTALL,
+        flags=re.MULTILINE,
     )
-    assert match, "published Installer UKI ukify command must be present"
+    assert match, "installer loader entry must declare an options= line"
     return match.group(1)
 
 
@@ -42,12 +49,12 @@ def test_installer_runtime_and_boot_contracts() -> None:
     installer_stack = INSTALLER_STACK.read_text(encoding="utf-8")
     installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
     justfile = JUSTFILE.read_text(encoding="utf-8")
-    published_uki_cmdline = _published_uki_cmdline(installer_element)
+    installer_boot_cmdline = _installer_boot_cmdline(installer_element)
     target_uki_cmdline = _target_uki_cmdline(installer_element)
 
     assert "freedesktop-sdk.bst:bootstrap/bash.bst" in installer_stack
     assert "console=ttyS0,115200 rw" in installer_element
-    assert "unattended" not in published_uki_cmdline
+    assert "unattended" not in installer_boot_cmdline
     assert target_uki_cmdline == "rw console=ttyS0,115200 console=tty0 quiet loglevel=3 audit=0"
     assert (
         '-append "systemd.unit=system-install.target '
@@ -146,3 +153,63 @@ def test_installer_and_ddi_strip_vmlinux_and_static_archives() -> None:
     assert "find /layer -type f -name '*.a' -delete" in installer_element
     assert 'rm -f "/layer/usr/lib/modules/${KVER}/vmlinux"' in ddi_element
     assert "find /layer -type f -name '*.a' -delete" in ddi_element
+
+
+def test_installer_medium_does_not_ship_an_unexecutable_fallback_image() -> None:
+    """EFI/BOOT/BOOTX64.EFI must be a loader, not a whole live environment.
+
+    The installer medium previously shipped a single UKI built with
+    ``ukify build --linux --initrd``. With a ~382 MiB initrd that produced a
+    434 MiB PE, and firmware loads it but never executes it. Measured against
+    one OVMF build, one ESP and one QEMU invocation, varying only the image:
+
+        SizeOfImage 0x020D1000 ( 34 MiB)  kernel boots
+        SizeOfImage 0x03CCA000 ( 64 MiB)  kernel boots
+        SizeOfImage 0x19E6D000 (434 MiB)  hangs after EntryPoint
+
+    All three share ImageBase 0x14DF90000, so size is the variable. OVMF logs
+    ``Loading driver at 0x0014DF90000 EntryPoint=0x0014DFA03C0`` and then goes
+    silent; an attached target disk stays byte-identical.
+
+    No other test can catch this. test-installer-artifact and the CI
+    installer-test both boot the installer with ``-kernel``/``-initrd``, so the
+    ESP is never executed and the medium's boot path is never exercised.
+    """
+    installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
+
+    assert "systemd-bootx64.efi" in installer_element, (
+        "the medium must boot via systemd-boot, which reads the kernel and "
+        "initrd as ordinary files rather than embedding them in a PE"
+    )
+    assert "/layer/boot/efi/loader/entries/bluefin-installer.conf" in installer_element, (
+        "systemd-boot needs a type-1 loader entry naming the kernel and initrd"
+    )
+    assert "/layer/boot/efi/bluefin/initrd" in installer_element, (
+        "the initrd must be a plain file on the ESP, not a PE section"
+    )
+
+    # The build must refuse to ship an oversized fallback image rather than
+    # producing another medium that loads and never runs.
+    assert "BOOT_BYTES" in installer_element and "16777216" in installer_element, (
+        "the build must fail when EFI/BOOT/BOOTX64.EFI exceeds a loader-sized "
+        "ceiling; a 434 MiB image reached real hardware because nothing checked"
+    )
+
+
+def test_no_ukify_writes_to_the_media_fallback_path() -> None:
+    """The regression, stated directly.
+
+    The target OS keeps its UKI — at 64 MiB it boots, and systemd-sysupdate is
+    built around replacing one. Only the *medium's* fallback path must not be a
+    UKI carrying the live environment.
+    """
+    installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
+
+    assert not re.search(
+        r"ukify build[^#]*?--output=/layer/boot/efi/EFI/BOOT/BOOTX64\.EFI",
+        installer_element,
+        flags=re.DOTALL,
+    ), (
+        "ukify must not write the medium's fallback image: with the installer "
+        "initrd embedded it produces a 434 MiB PE that firmware cannot execute"
+    )
