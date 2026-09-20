@@ -268,12 +268,40 @@ flash-installer DEVICE="":
         exit 1
     fi
     echo "Writing ${IMG} to {{DEVICE}}..."
+    # Hash and measure the payload in the same pass. Both are needed after the
+    # write: the byte count to know how much of the device to read back, the
+    # digest to compare it against.
+    CNTFILE=$(mktemp)
+    trap 'rm -f "${CNTFILE}"' EXIT
+    EXPECT_SHA=$(zstd -dc "${IMG}" | tee >(wc -c > "${CNTFILE}") | sha256sum | cut -d' ' -f1)
+    EXPECT_BYTES=$(tr -d ' ' < "${CNTFILE}")
     # bash with pipefail, not sh. Under POSIX sh the pipeline's status is dd's
     # alone, so zstd dying mid-stream leaves dd exiting 0 after writing a
     # partial image and the success line below printing anyway. The outer
     # `set -o pipefail` does not reach here — there is no pipeline in the outer
     # shell, only this nested one.
     sudo bash -c "set -o pipefail; zstd -dc '${IMG}' | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    # Read the device back and compare. Without this, "flashed" rests on dd's
+    # exit status, which says the writes were accepted, not that the medium
+    # kept them — the failure mode of a dying USB stick. Do it before the
+    # relocation below, which deliberately rewrites the headers and would make
+    # the digests differ for a legitimate reason.
+    # Drop the kernel's cached view of the device first, so the comparison
+    # reads the medium and not the pages just written through it. O_DIRECT
+    # would do the same but requires aligned reads, and the trailing block is
+    # partial whenever the image is not a multiple of the block size.
+    sudo blockdev --flushbufs {{DEVICE}}
+    echo "Verifying ${EXPECT_BYTES} bytes read back from {{DEVICE}}..."
+    ACTUAL_SHA=$(sudo dd if={{DEVICE}} bs=4M iflag=fullblock,count_bytes \
+        count="${EXPECT_BYTES}" status=none | sha256sum | cut -d' ' -f1)
+    if [ "${ACTUAL_SHA}" != "${EXPECT_SHA}" ]; then
+        echo "ERROR: {{DEVICE}} does not contain what was written." >&2
+        echo "  expected ${EXPECT_SHA}" >&2
+        echo "  read     ${ACTUAL_SHA}" >&2
+        echo "The medium did not retain the image. Replace it." >&2
+        exit 1
+    fi
+    echo "Content verified: ${EXPECT_SHA}"
     # Move the GPT backup header to the end of the DEVICE.
     #
     # dd writes the image verbatim, so the backup header lands at the end of the
@@ -284,14 +312,19 @@ flash-installer DEVICE="":
     #   Warning: Not all of the space available to /dev/sdb appears to be used,
     #   you can fix the GPT to use all of the space (an extra 115791863 blocks)
     #
-    # — and tools disagree about partition sizes between reads. Firmware that
-    # validates the backup header can refuse to boot the medium outright.
+    # — and tools disagree about partition sizes between reads.
     #
-    # This is invisible to every test we have. `just test-installer-artifact`
-    # and the CI installer-test attach the image as a drive sized exactly to the
-    # image, so device size always equals image size and the condition cannot
-    # arise. Only real media larger than the image exposes it, which is why a
-    # green installer-test still produced a stick with a broken table.
+    # This does NOT stop the medium booting, and it is worth being precise about
+    # that, because assuming otherwise cost a day of chasing a phantom. UEFI
+    # reads the PRIMARY header at LBA 1, which dd writes correctly; the backup
+    # is a redundancy copy consulted when the primary is damaged. A medium in
+    # this state was written to a 58.6 GB sparse file, reproduced the sfdisk
+    # error exactly, and booted to systemd PID 1 under OVMF.
+    #
+    # What it breaks is tooling, and it is invisible to every test we have:
+    # `just test-installer-artifact` and the CI installer-test attach the image
+    # as a drive sized exactly to the image, so device size always equals image
+    # size and the condition cannot arise.
     echo "Relocating the GPT backup header to the end of {{DEVICE}}..."
     sudo sfdisk --relocate gpt-bak-std {{DEVICE}}
     sudo partprobe {{DEVICE}} || true
