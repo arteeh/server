@@ -173,6 +173,83 @@ offline installation.
 | "Store the DDI in the ESP (FAT32)." | FAT32 has a 4 GiB per-file limit. Use a separate XFS partition. |
 | "Add an 8 GiB minimum size floor to the DDI." | The rootfs is immutable. It never grows in-place. Content + overhead is enough. |
 
+## What the smoke tests do not cover
+
+`just test-installer-artifact` and the CI `installer-test` job attach
+`installer.raw` as a read-only data disk and inject the kernel directly with
+`-kernel`/`-initrd` from the PXE artifacts. The medium's ESP is never executed.
+
+They prove the installer **installs**. They cannot prove the medium **boots**.
+
+`just test-installer-boot` closes that gap: it writes the exported image into a
+sparse file larger than itself, relocates the GPT backup header the way
+`flash-installer` does, and boots it through OVMF.
+
+Two things make its success criterion non-obvious, and both were got wrong
+before being got right:
+
+- The medium boots with `quiet loglevel=3`, so a **correct** boot prints almost
+  nothing on serial, while a **failing** boot prints dracut emergency-mode text.
+  Matching on `Linux version|initrd|systemd` therefore rewards failure.
+- Firmware and `systemd-stub` both emit CSI cursor sequences after handoff, so
+  "any output after the last `BdsDxe:` line" scores a medium whose bootloader is
+  corrupt — it falls through to PXE and prints `PXE-E16` — as a pass.
+
+The criterion is systemd's OSC 3008 identity record, which PID 1 writes
+regardless of log verbosity and which firmware cannot forge:
+
+```
+ESC ]3008;start=<id>;user=root;hostname=<h>;machineid=<id>;bootid=<id>;
+     pid=1;comm=systemd;type=boot
+```
+
+A medium that boots correctly and waits for an operator looks identical to a
+hung one on a `cat`-ed serial log. Dump the bytes before concluding anything:
+`strings serial.log` or `hexdump -C`, not `cat`.
+
+## Writing the medium
+
+`dd` copies the image verbatim, which places the GPT **backup header at the end
+of the image** rather than at the end of the device. On any medium larger than
+the image — every real USB stick — the table is then only half valid:
+
+```
+$ sfdisk --verify /dev/sdX
+The backup GPT table is not on the end of the device.
+MyLBA mismatch with real position at backup header.
+
+$ parted -s /dev/sdX print
+Warning: Not all of the space available to /dev/sdX appears to be used ...
+```
+
+**It does not stop the medium booting.** UEFI reads the *primary* GPT at LBA 1,
+which `dd` writes correctly; the backup header is a redundancy copy consulted
+only when the primary is damaged. A medium in this state boots normally —
+verified by writing the image to a 58.6 GB sparse file without relocating,
+which reproduces the `sfdisk` error exactly, and booting it: systemd PID 1
+came up.
+
+What it does break is tooling. `lsblk` and `udisksctl` can report different
+sizes for the same partition, disk utilities show most of the device
+unaccounted for, and any tool that trusts the backup header sees a stale
+geometry. Partition-table health is also easy to mistake for boot health: it
+says nothing either way, and reading it as a boot failure sends you chasing a
+defect that isn't there.
+
+`just flash-installer` repairs it automatically with
+`sfdisk --relocate gpt-bak-std` after the write. For a medium written with
+plain `dd`, apply it by hand:
+
+```
+sudo sfdisk --relocate gpt-bak-std /dev/sdX
+sudo partprobe /dev/sdX
+sudo sfdisk --verify /dev/sdX     # expect: No errors detected.
+```
+
+This is invisible to CI: the smoke tests attach a virtual disk sized exactly to
+the image, so device size always equals image size and the condition cannot
+arise.
+
 ## Verification
 
 - [ ] `just validate` resolves the BuildStream graph without errors.
@@ -188,6 +265,10 @@ offline installation.
       appears on the attached display even when serial is the primary console.
 - [ ] `bluefin-server-installer.bst` decompresses the DDI after the cpio step.
 - [ ] `files/installer/repart.d/20-root-a.conf` has `GrowFileSystem=yes`.
+- [ ] `just test-installer-boot` passes — the medium boots through firmware,
+      not just installs when the kernel is injected.
+- [ ] A medium written to real media has its GPT backup header relocated;
+      `sfdisk --verify` reports `No errors detected.`
 
 ## See also
 
