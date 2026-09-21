@@ -219,8 +219,9 @@ flash-installer DEVICE="":
     if lsblk -p -n -o PARTLABEL "{{DEVICE}}" 2>/dev/null | grep -q 'bluefin-installer-data'; then
         echo "Verified: 'bluefin-installer-data' partition present on {{DEVICE}}."
     else
-        echo "WARNING: 'bluefin-installer-data' partition label not detected on {{DEVICE}} after flashing!" >&2
+        echo "ERROR: 'bluefin-installer-data' partition label not detected on {{DEVICE}} after flashing!" >&2
         lsblk -p -o NAME,TYPE,PARTLABEL,SIZE "{{DEVICE}}" >&2 || true
+        exit 1
     fi
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
 # Build the installer artifacts, then run the reusable artifact smoke path.

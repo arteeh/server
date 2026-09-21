@@ -47,9 +47,8 @@ setup() {
     make_stub sudo 0
     make_stub dd 0
     make_stub zstd 0
-    make_stub lsblk 0
+    make_lsblk_stub "bluefin-installer-data"
 }
-
 # make_stub <name> <exit-code>
 #
 # Records the invocation in $LOG and exits with the requested status without
@@ -61,6 +60,19 @@ echo "$1 \$*" >> "${LOG}"
 exit $2
 EOF
     chmod +x "${STUB_DIR}/$1"
+}
+
+make_lsblk_stub() {
+    local label="${1:-}"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ " \$* " == *" -o PARTLABEL "* ]]; then
+    echo "${label}"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
 }
 
 # seed_image <filename>
@@ -246,4 +258,16 @@ refute_log() {
     assert_log "dist/bluefin-server-installer-1.0.raw.zst"
     refute_log "nested"
     [[ "$output" == *"Verifying partition table"* ]]
+    [[ "$output" == *"Verified: 'bluefin-installer-data'"* ]]
+    [[ "$output" == *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error and no success message when bluefin-installer-data is absent" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_lsblk_stub ""
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Verifying partition table"* ]]
+    [[ "$output" == *"ERROR: 'bluefin-installer-data' partition label not detected"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
 }
