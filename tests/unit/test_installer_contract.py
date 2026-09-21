@@ -208,3 +208,12 @@ def test_installer_smoke_probes_the_kiosk_over_tls_from_inside_the_guest() -> No
     assert "http://127.0.0.1:8080/healthz" not in smoke
     assert "KIOSK_CONSOLE_READY" in smoke
 
+
+def test_test_installer_boot_usb_contract() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    assert "test-installer-boot-usb:" in justfile
+    assert "-device qemu-xhci,id=xhci" in justfile
+    assert "-device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1" in justfile
+    assert 'sfdisk --json "$WORKDIR/target.raw"' in justfile
+    assert "bluefin-server-root-a" in justfile
+    assert "var" in justfile
