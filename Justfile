@@ -214,7 +214,10 @@ flash-installer DEVICE="":
     echo "Writing ${IMG} to {{DEVICE}}..."
     sudo sh -c "zstd -dc ${IMG} | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
     echo "Verifying partition table on {{DEVICE}}..."
-    sudo blockdev --rereadpt "{{DEVICE}}" 2>/dev/null || sudo partprobe "{{DEVICE}}" 2>/dev/null || true
+    sudo blockdev --rereadpt "{{DEVICE}}" 2>/dev/null || sudo partprobe "{{DEVICE}}" 2>/dev/null || {
+        echo "ERROR: Failed to reread partition table on {{DEVICE}} after flashing!" >&2
+        exit 1
+    }
     sudo udevadm trigger --subsystem-match=block || true
     sudo udevadm settle --timeout=10 || true
     if lsblk -p -n -o PARTLABEL "{{DEVICE}}" 2>/dev/null | grep -q 'bluefin-installer-data'; then

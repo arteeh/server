@@ -43,7 +43,12 @@ setup() {
     cp "${REPO_ROOT}/elements/freedesktop-sdk.bst" "${SANDBOX}/elements/"
 
     sed 's/\[ ! -b /[ ! -e /' "$JUSTFILE" > "${SANDBOX}/Justfile"
-    make_stub sudo 0
+    cat > "${STUB_DIR}/sudo" <<EOF
+#!/usr/bin/env bash
+echo "sudo \$*" >> "${LOG}"
+"\${@}"
+EOF
+    chmod +x "${STUB_DIR}/sudo"
     make_stub dd 0
     make_stub zstd 0
     make_stub blockdev 0
@@ -274,5 +279,15 @@ refute_log() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"Verifying partition table"* ]]
     [[ "$output" == *"ERROR: 'bluefin-installer-data' partition label not detected"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when both blockdev and partprobe fail" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_stub blockdev 1
+    make_stub partprobe 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ERROR: Failed to reread partition table"* ]]
     [[ "$output" != *"Successfully flashed"* ]]
 }
