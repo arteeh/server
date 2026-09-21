@@ -43,10 +43,12 @@ setup() {
     cp "${REPO_ROOT}/elements/freedesktop-sdk.bst" "${SANDBOX}/elements/"
 
     sed 's/\[ ! -b /[ ! -e /' "$JUSTFILE" > "${SANDBOX}/Justfile"
-
     make_stub sudo 0
     make_stub dd 0
     make_stub zstd 0
+    make_stub blockdev 0
+    make_stub partprobe 0
+    make_stub udevadm 0
     make_lsblk_stub "bluefin-installer-data"
 }
 # make_stub <name> <exit-code>
@@ -257,6 +259,9 @@ refute_log() {
     [ "$status" -eq 0 ]
     assert_log "dist/bluefin-server-installer-1.0.raw.zst"
     refute_log "nested"
+    assert_log "blockdev --rereadpt ${FAKE_DEV}"
+    assert_log "udevadm trigger --subsystem-match=block"
+    assert_log "udevadm settle --timeout=10"
     [[ "$output" == *"Verifying partition table"* ]]
     [[ "$output" == *"Verified: 'bluefin-installer-data'"* ]]
     [[ "$output" == *"Successfully flashed"* ]]
