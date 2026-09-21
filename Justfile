@@ -465,11 +465,18 @@ install-vm:
         -drive file="$TARGET_RAW",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS"
+      # The interactive installer is driven by hand, so it can be aborted or
+      # fail without a non-zero exit here. Marking the install complete in that
+      # case caches a broken target that every later run boots forever. Gate
+      # the marker on the partition labels files/repart.d creates; an aborted
+      # install now fails loudly and re-runs the installer next invocation
+      # instead of silently booting an unusable disk.
       echo "==> Verifying target partition layout before marking installation complete..."
       TARGET_PARTS=$(sfdisk --json "$TARGET_RAW" 2>/dev/null | jq -r '.partitiontable.partitions[]?.name // empty' || true)
       if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
          ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
         echo "ERROR: Target disk $TARGET_RAW does not contain expected partitions (bluefin-server-root-a, var)!" >&2
+        echo "The installation did not complete; re-run 'just install-vm' to install again." >&2
         echo "Observed partitions:" >&2
         echo "$TARGET_PARTS" >&2
         sfdisk -l "$TARGET_RAW" >&2 || true
@@ -498,6 +505,11 @@ install-vm:
     # is exactly "healthz ok and / returns 200", and it avoids embedding
     # quotes inside a systemd ExecStart= line, where escaping rules differ
     # from a plain shell.
+    # The installed image carries no fstab entry for /var and gpt-auto cannot
+    # mount it, so /var (which holds k0s state and therefore the kiosk proxy)
+    # stays empty unless the same SMBIOS fstab.extra credential
+    # test-installer-artifact passes is supplied here too. Without it k0s never
+    # starts and the readiness marker never appears.
     READY_MARKER="KIOSK_CONSOLE_READY"
     READY_UNIT=$(base64 -w0 <<'UNIT'
     [Unit]
@@ -522,6 +534,7 @@ install-vm:
       -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
       -drive if=pflash,format=raw,file="$OVMF_VARS" \
       -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443 \
+      -smbios "type=11,value=io.systemd.credential.binary:fstab.extra=L2Rldi9kaXNrL2J5LXBhcnRsYWJlbC92YXIgL3ZhciB4ZnMgZGVmYXVsdHMgMCAwCg==" \
       -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.bluefin-kiosk-ready.service=${READY_UNIT}" \
       -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 systemd.wants=bluefin-kiosk-ready.service" \
       -serial file:"$SERIAL_LOG" &
@@ -534,12 +547,32 @@ install-vm:
     }
     trap cleanup INT TERM
 
-    echo "==> Waiting for the KubeStellar Console to become ready inside the guest..."
+    READY_DEADLINE_SECS="${INSTALL_VM_READY_DEADLINE:-600}"
+    READY_START_TIME=$(date +%s)
+    echo "==> Waiting for the KubeStellar Console to become ready inside the guest (deadline: ${READY_DEADLINE_SECS}s)..."
     until grep -q "$READY_MARKER" "$SERIAL_LOG" 2>/dev/null; do
       if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        echo "ERROR: QEMU process ($QEMU_PID) died before the kiosk became ready!" >&2
+        if [ -f "$SERIAL_LOG" ]; then
+          echo "==> Serial log tail (last 100 lines):" >&2
+          tail -n 100 "$SERIAL_LOG" >&2
+        fi
         wait "$QEMU_PID"
         exit 1
       fi
+
+      NOW=$(date +%s)
+      ELAPSED=$((NOW - READY_START_TIME))
+      if [ "$ELAPSED" -ge "$READY_DEADLINE_SECS" ]; then
+        echo "ERROR: Timed out after ${READY_DEADLINE_SECS}s waiting for KubeStellar Console readiness!" >&2
+        if [ -f "$SERIAL_LOG" ]; then
+          echo "==> Serial log tail (last 100 lines):" >&2
+          tail -n 100 "$SERIAL_LOG" >&2
+        fi
+        cleanup
+        exit 1
+      fi
+
       sleep 2
     done
 

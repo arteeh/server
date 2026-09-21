@@ -69,6 +69,30 @@ def test_install_vm_probes_readiness_inside_the_guest_over_tls() -> None:
     assert 'if ! kill -0 "$QEMU_PID" 2>/dev/null; then' in recipe
 
 
+def test_install_vm_mounts_var_from_the_partlabel_credential() -> None:
+    recipe = _install_vm_recipe()
+
+    # The installed image has no fstab entry for /var and gpt-auto cannot
+    # mount it, so the boot needs the same SMBIOS fstab.extra credential
+    # test-installer-artifact passes. Without /var, k0s (and the kiosk proxy
+    # it runs) never starts and the readiness marker never appears.
+    assert (
+        "io.systemd.credential.binary:fstab.extra="
+        "L2Rldi9kaXNrL2J5LXBhcnRsYWJlbC92YXIgL3ZhciB4ZnMgZGVmYXVsdHMgMCAwCg=="
+    ) in recipe
+
+
+def test_install_vm_readiness_wait_has_a_deadline_and_diagnostics() -> None:
+    recipe = _install_vm_recipe()
+
+    # A broken guest boot must not hang forever silently: bound the wait and
+    # dump the serial log on both timeout and premature QEMU exit, matching
+    # test-installer-artifact.
+    assert 'READY_DEADLINE_SECS="${INSTALL_VM_READY_DEADLINE:-600}"' in recipe
+    assert 'if [ "$ELAPSED" -ge "$READY_DEADLINE_SECS" ]; then' in recipe
+    assert recipe.count('tail -n 100 "$SERIAL_LOG" >&2') == 2
+
+
 def test_install_vm_documents_ssh_tunnel_for_host_access() -> None:
     recipe = _install_vm_recipe()
 
