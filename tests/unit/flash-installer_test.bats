@@ -236,3 +236,14 @@ refute_log() {
     run_flash "$FAKE_DEV" "y"
     [[ "$output" == *"Successfully flashed"* ]]
 }
+
+@test "flash-installer finds only top-level dist artefacts and verifies partlabel" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    mkdir -p "${SANDBOX}/dist/nested"
+    : > "${SANDBOX}/dist/nested/bluefin-server-installer-9.9.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -eq 0 ]
+    assert_log "dist/bluefin-server-installer-1.0.raw.zst"
+    refute_log "nested"
+    [[ "$output" == *"Verifying partition table"* ]]
+}

@@ -196,7 +196,7 @@ flash-installer DEVICE="":
         echo "ERROR: {{DEVICE}} is not a valid block device!" >&2
         exit 1
     fi
-    IMG=$(find dist/ -type f -name 'bluefin-server-installer-*.raw.zst' | head -n1)
+    IMG=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | sort -V | tail -n1)
     if [ -z "${IMG}" ]; then
         echo "ERROR: No exported installer found in dist/." >&2
         echo "Please run: just build-installer && just export-installer" >&2
@@ -213,8 +213,16 @@ flash-installer DEVICE="":
     fi
     echo "Writing ${IMG} to {{DEVICE}}..."
     sudo sh -c "zstd -dc ${IMG} | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    echo "Verifying partition table on {{DEVICE}}..."
+    sudo udevadm trigger --subsystem-match=block || true
+    sudo udevadm settle --timeout=10 || true
+    if lsblk -p -n -o PARTLABEL "{{DEVICE}}" 2>/dev/null | grep -q 'bluefin-installer-data'; then
+        echo "Verified: 'bluefin-installer-data' partition present on {{DEVICE}}."
+    else
+        echo "WARNING: 'bluefin-installer-data' partition label not detected on {{DEVICE}} after flashing!" >&2
+        lsblk -p -o NAME,TYPE,PARTLABEL,SIZE "{{DEVICE}}" >&2 || true
+    fi
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
-
 # Build the installer artifacts, then run the reusable artifact smoke path.
 [group('test')]
 show-me-the-future:
