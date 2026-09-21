@@ -49,12 +49,12 @@ echo "sudo \$*" >> "${LOG}"
 "\${@}"
 EOF
     chmod +x "${STUB_DIR}/sudo"
-    make_stub dd 0
-    make_stub zstd 0
+    make_dd_stub 0
+    make_zstd_stub 0 0
     make_blockdev_stub 0 0
     make_stub partprobe 0
     make_stub udevadm 0
-    make_stub sfdisk 0
+    make_sfdisk_stub 0 0
     make_lsblk_stub "bluefin-installer-data"
 }
 # make_stub <name> <exit-code>
@@ -87,6 +87,66 @@ EOF
     chmod +x "${STUB_DIR}/blockdev"
 }
 
+make_sfdisk_stub() {
+    local relocate_exit="${1:-0}"
+    local verify_exit="${2:-0}"
+    cat > "${STUB_DIR}/sfdisk" <<EOF
+#!/usr/bin/env bash
+echo "sfdisk \$*" >> "\${LOG}"
+if [[ " \$* " == *"--relocate"* ]]; then
+    exit ${relocate_exit}
+fi
+if [[ " \$* " == *"--verify"* ]]; then
+    exit ${verify_exit}
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/sfdisk"
+}
+
+make_zstd_stub() {
+    local test_exit="${1:-0}"
+    local decompress_exit="${2:-0}"
+    cat > "${STUB_DIR}/zstd" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${LOG:-}" ]; then
+    echo "zstd \$*" >> "\${LOG}"
+fi
+if [[ " \$* " == *"-t "* ]]; then
+    exit ${test_exit}
+fi
+if [[ " \$* " == *"-dc "* ]]; then
+    if [ "${decompress_exit}" -ne 0 ]; then
+        exit ${decompress_exit}
+    fi
+    printf 'dummy-decompressed-payload\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/zstd"
+}
+
+make_dd_stub() {
+    local mismatch="${1:-0}"
+    cat > "${STUB_DIR}/dd" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${LOG:-}" ]; then
+    echo "dd \$*" >> "\${LOG}"
+fi
+if [[ " \$* " == *"of="* ]]; then
+    cat > /dev/null
+fi
+if [[ " \$* " == *"if="* ]]; then
+    if [ "${mismatch}" -ne 0 ]; then
+        printf 'corrupted-readback\n'
+    else
+        printf 'dummy-decompressed-payload\n'
+    fi
+fi
+EOF
+    chmod +x "${STUB_DIR}/dd"
+}
 make_lsblk_stub() {
     local label="${1:-}"
     cat > "${STUB_DIR}/lsblk" <<EOF
@@ -320,8 +380,25 @@ refute_log() {
 
 @test "flash-installer fails with error when sfdisk --verify fails" {
     seed_image "bluefin-server-installer-1.0.raw.zst"
-    make_stub sfdisk 1
+    make_sfdisk_stub 0 1
     run_flash "$FAKE_DEV" "y"
     [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when zstd -dc fails in write pipeline despite passing zstd -t" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_zstd_stub 0 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when readback bytes hash differently" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_dd_stub 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"does not contain what was written"* ]]
     [[ "$output" != *"Successfully flashed"* ]]
 }
