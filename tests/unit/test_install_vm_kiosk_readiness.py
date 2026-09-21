@@ -92,7 +92,7 @@ def test_install_vm_verifies_target_partition_layout_before_marking_complete() -
     recipe = _install_vm_recipe()
 
     assert "bluefin-server-root-a" in recipe
-    assert "lsblk -p -n -o PARTLABEL" in recipe
+    assert 'sfdisk --json "$TARGET_RAW"' in recipe
     assert 'grep -Fxq \'bluefin-server-root-a\'' in recipe
     assert 'grep -Fxq \'var\'' in recipe
     assert 'touch "$INSTALL_COMPLETE"' in recipe
