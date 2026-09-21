@@ -10,6 +10,7 @@ description: |
 
 build-depends:
   - base/base-stack.bst
+  - freedesktop-sdk.bst:components/sed.bst
   - freedesktop-sdk.bst:components/squashfs-tools.bst
 
 variables:
