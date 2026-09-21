@@ -50,8 +50,9 @@ systemd-sysupdate --component=kubernetes update
 systemd-sysext merge
 systemctl daemon-reload
 
-# 3. Bring the cluster up. bluefin-cluster-bootstrap pulls in kubeadm-init
-#    and bluefin-cluster-repo through its ordering and Requires= edges.
+# 3. Bring the cluster up. bluefin-cluster-bootstrap orders itself after
+#    kubeadm-init and bluefin-cluster-repo, and pulls both in (Wants= on the
+#    former, Requires= on the latter).
 systemctl enable --now bluefin-cluster-bootstrap.service
 ```
 
@@ -100,7 +101,7 @@ Inspecting sync state:
 
 ```bash
 kubectl -n argocd get applications
-kubectl -n argocd describe application root
+kubectl -n argocd describe application bluefin-cluster
 kubectl -n argocd logs deploy/argocd-repo-server
 kubectl -n argocd logs statefulset/argocd-application-controller
 ```
@@ -134,11 +135,15 @@ Updating the tree means updating the image: a new DDI re-seeds
   auto-approve serving CSRs. `kubelet-csr-approver` is mandatory, not optional. Check
   `kubectl get csr` for `Pending` entries and the approver's `--provider-regex`.
 - **Root Application will not sync**: check the git-daemon first —
-  `kubectl -n argocd logs deploy/gitd` — then the bare repo at
+  `kubectl -n bluefin-system logs deploy/bluefin-git-daemon` — then the bare repo at
   `/var/lib/bluefin/cluster.git` on the host.
 - **Bootstrap unit failed**: `journalctl -u bluefin-cluster-bootstrap -e`. The unit is
-  ordered `After=`/`Requires=` `kubeadm-init.service`, so an apiserver that never came up
-  surfaces as a `kubeadm-init` failure first.
+  ordered `After=kubeadm-init.service` but only `Wants=` it, so a control plane that
+  never came up shows here as the `ExecStartPre` readiness probe timing out against the
+  API server; `journalctl -u kubeadm-init -e` names the underlying cause. `Requires=` is
+  deliberately not used: a job killed with result `dependency` never runs, so its own
+  `Restart=on-failure` never engages and one transient `kubeadm init` failure would
+  strand the seed permanently.
 
 ## Runtime testing
 

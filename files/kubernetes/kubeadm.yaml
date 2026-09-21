@@ -37,6 +37,10 @@ networking:
   dnsDomain: cluster.local
   # Cilium's cluster-pool IPAM is configured with this same range.
   podSubnet: 10.244.0.0/16
+  # kubeadm derives the cluster DNS Service address from this range (10.96.0.10).
+  # The kiosk nginx.conf hardcodes that address as its resolver, because
+  # proxy_pass through a variable resolves at request time; changing this range
+  # means changing files/cluster/manifests/kiosk/assets/nginx.conf too.
   serviceSubnet: 10.96.0.0/12
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1

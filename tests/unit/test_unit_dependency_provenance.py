@@ -95,6 +95,11 @@ def test_kubelet_bridges_the_cni_plugin_directory() -> None:
 
     Without the bridge the loopback plugin is absent, every pod sandbox fails to
     get a network, and the node never leaves NotReady with no obvious cause.
+
+    The bridge must also refresh: /opt/cni/bin lives on /var and outlives a
+    sysext update, so a copy that can only ever add files would leave the node
+    running the plugins it first booted with while the version stamp advertises
+    newer ones.
     """
     kubelet = (UNIT_DIR / "kubelet.service").read_text(encoding="utf-8")
 
@@ -107,8 +112,14 @@ def test_kubelet_bridges_the_cni_plugin_directory() -> None:
         line for line in kubelet.splitlines() if "cp -a" in line and "cni" in line
     )
     assert "-an" in bridge or "--no-clobber" in bridge, (
-        "the copy must not clobber: the cilium agent installs its own binary "
-        "into /opt/cni/bin and overwriting it breaks the CNI chain"
+        "the copy must not clobber when the sysext is unchanged; cilium-cni is "
+        "not a name the sysext ships, but an unconditional overwrite of a "
+        "steady-state /opt/cni/bin buys nothing and widens the blast radius"
+    )
+    assert "/usr/local/share/kubernetes-cni-version" in bridge, (
+        "the bridge must key off the sysext's CNI version stamp, or a sysext "
+        "update never reaches /opt/cni/bin and the node runs stale plugins "
+        "while advertising the new version"
     )
 
     body = kubelet.split("[Service]", 1)[1]
