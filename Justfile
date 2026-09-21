@@ -465,6 +465,13 @@ install-vm:
         -drive file="$TARGET_RAW",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS"
+      echo "==> Verifying target partition layout before marking installation complete..."
+      if ! lsblk -p -n -o PARTLABEL "$TARGET_RAW" 2>/dev/null | grep -Fxq 'bluefin-server-root-a' || \
+         ! lsblk -p -n -o PARTLABEL "$TARGET_RAW" 2>/dev/null | grep -Fxq 'var'; then
+        echo "ERROR: Target disk $TARGET_RAW does not contain expected partitions (bluefin-server-root-a, var)!" >&2
+        lsblk -p -o NAME,TYPE,PARTLABEL,SIZE "$TARGET_RAW" >&2 || true
+        exit 1
+      fi
       touch "$INSTALL_COMPLETE"
     fi
 

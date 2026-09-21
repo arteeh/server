@@ -87,3 +87,12 @@ def test_kiosk_proxy_manifest_comment_matches_actual_reachability() -> None:
     # on the guest's loopback interface.
     assert "existing hostfwd of 127.0.0.1:8080" not in manifest
     assert "hostIP: 127.0.0.1" in manifest
+
+def test_install_vm_verifies_target_partition_layout_before_marking_complete() -> None:
+    recipe = _install_vm_recipe()
+
+    assert "bluefin-server-root-a" in recipe
+    assert "lsblk -p -n -o PARTLABEL" in recipe
+    assert 'grep -Fxq \'bluefin-server-root-a\'' in recipe
+    assert 'grep -Fxq \'var\'' in recipe
+    assert 'touch "$INSTALL_COMPLETE"' in recipe
