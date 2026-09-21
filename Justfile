@@ -281,26 +281,39 @@ test-installer-artifact:
     SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
     MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
 
-    echo "==> Booting installer media in QEMU..."
+    echo "==> Booting installer media via OVMF over emulated xHCI USB in QEMU..."
     # ponytail: we want QEMU to exit cleanly after install. Since QEMU's -no-reboot
     # suspends/halts on reboot signals, we override systemd-sysinstall.service SuccessAction/FailureAction
     # to poweroff. When the installer triggers poweroff, QEMU terminates, and we boot into the newly installed OS.
-    qemu-system-x86_64 \
+    INSTALLER_TIMEOUT="${SHOW_ME_THE_FUTURE_INSTALL_TIMEOUT:-600}"
+    timeout "${INSTALLER_TIMEOUT}" qemu-system-x86_64 \
         -enable-kvm \
         -m "${MEM_SIZE}" \
         -cpu host \
         -smp "${SMP_CPUS}" \
-        -drive file="$WORKDIR/installer.raw",format=raw,if=virtio,readonly=on \
-        -drive file="$WORKDIR/target.raw",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd" \
-        -kernel "$WORKDIR/installer.vmlinuz" \
-        -initrd "$WORKDIR/installer.initrd" \
-        -append "systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended" \
+        -device qemu-xhci,id=xhci \
+        -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on \
+        -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1 \
+        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk \
+        -device virtio-blk-pci,drive=target-disk,bootindex=2 \
+        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended" \
         -nographic \
         -serial mon:stdio \
         -no-reboot < /dev/null
 
+    echo "==> Validating target disk partitions after installer execution..."
+    TARGET_PARTS=$(sfdisk --json "$WORKDIR/target.raw" 2>/dev/null | jq -r '.partitiontable.partitions[]?.name // empty' || true)
+    if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
+       ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
+      echo "ERROR: Target disk did not receive expected partition layout from installer!" >&2
+      echo "Observed partitions:" >&2
+      echo "$TARGET_PARTS" >&2
+      sfdisk -l "$WORKDIR/target.raw" >&2 || true
+      exit 1
+    fi
+    echo "==> Target disk successfully partitioned and populated!"
     SERIAL_LOG="$WORKDIR/serial.log"
     TARGET_QEMU_PID=""
     cleanup() {
@@ -464,7 +477,8 @@ test-installer-boot-usb:
         -device qemu-xhci,id=xhci \
         -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on \
         -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1 \
-        -drive file="$WORKDIR/target.raw",format=raw,if=virtio,id=target-disk,bootindex=2 \
+        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk \
+        -device virtio-blk-pci,drive=target-disk,bootindex=2 \
         -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended" \
         -nographic \
         -serial mon:stdio \

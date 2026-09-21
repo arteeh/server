@@ -50,10 +50,12 @@ def test_installer_runtime_and_boot_contracts() -> None:
     assert "console=ttyS0,115200 rw" in installer_element
     assert "unattended" not in published_uki_cmdline
     assert target_uki_cmdline == "rw console=ttyS0,115200 console=tty0 quiet loglevel=3 audit=0"
-    assert (
-        '-append "systemd.unit=system-install.target '
-        'console=tty0 console=ttyS0,115200 rw unattended"'
-    ) in justfile
+    assert "test-installer-artifact:" in justfile
+    assert "-device qemu-xhci,id=xhci" in justfile
+    assert "-device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1" in justfile
+    assert "-device virtio-blk-pci,drive=target-disk,bootindex=2" in justfile
+    assert 'sfdisk --json "$WORKDIR/target.raw"' in justfile
+    assert "bluefin-server-root-a" in justfile
 
 
 def test_installer_wrapper_reads_kernel_command_line_without_cat() -> None:
@@ -214,6 +216,7 @@ def test_test_installer_boot_usb_contract() -> None:
     assert "test-installer-boot-usb:" in justfile
     assert "-device qemu-xhci,id=xhci" in justfile
     assert "-device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1" in justfile
+    assert "-device virtio-blk-pci,drive=target-disk,bootindex=2" in justfile
     assert 'sfdisk --json "$WORKDIR/target.raw"' in justfile
     assert "bluefin-server-root-a" in justfile
     assert "var" in justfile
