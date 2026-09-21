@@ -3,14 +3,17 @@
 default:
     @just --list
 
-# Bring up the single-node Kubernetes control plane on this host
+# Bring up the single-node Kubernetes control plane on this host (ROLE: controller, or its alias server)
 k8s ROLE="controller":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # 0. Reject unsupported roles before touching anything on the host.
+    # 0. Reject unsupported roles before touching anything on the host. This is
+    #    a single-node control plane, so "controller" is the only real role;
+    #    "server" is accepted as a backwards-compatible alias for it, and
+    #    tests/unit/os-justfile_test.bats pins both spellings.
     if [ "{{ROLE}}" != "controller" ] && [ "{{ROLE}}" != "server" ]; then
-        echo "ERROR: Invalid role '{{ROLE}}'. Supported: controller" >&2
+        echo "ERROR: Invalid role '{{ROLE}}'. Supported: controller (alias: server)" >&2
         exit 1
     fi
 

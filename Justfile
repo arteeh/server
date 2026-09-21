@@ -240,7 +240,14 @@ flash-installer DEVICE="":
     for mp in / /sysroot; do
         SRC=$(findmnt -no SOURCE "${mp}" 2>/dev/null | head -n1 || true)
         case "${SRC}" in /dev/*) ;; *) continue ;; esac
+        # PKNAME is the parent disk of a partition, and is empty when the
+        # filesystem sits directly on a whole-disk device (no partition table,
+        # or a device-mapper/loop node). Falling back to KNAME keeps the guard
+        # live on those hosts instead of silently skipping the comparison.
         SRC_DISK=$(lsblk -no PKNAME "${SRC}" 2>/dev/null | head -n1 || true)
+        if [ -z "${SRC_DISK}" ]; then
+            SRC_DISK=$(lsblk -no KNAME "${SRC}" 2>/dev/null | head -n1 || true)
+        fi
         if [ -n "${SRC_DISK}" ] && [ "${SRC_DISK}" = "${TARGET_NAME}" ]; then
             echo "ERROR: {{DEVICE}} is the disk backing the running system." >&2
             echo "  ${mp} is on ${SRC}, which lives on /dev/${SRC_DISK}." >&2

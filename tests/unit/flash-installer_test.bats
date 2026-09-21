@@ -63,6 +63,7 @@ setup() {
     export STUB_ROOT_SRC="composefs:0000"
     export STUB_SYSROOT_SRC="/dev/nvme0n1p2"
     export STUB_PKNAME="nvme0n1"
+    export STUB_SRC_KNAME=""
     export STUB_TARGET_KNAME="sdz"
     export STUB_MOUNTPOINTS=""
     # zstd -t succeeds unless a test says otherwise.
@@ -93,7 +94,17 @@ make_topology_stubs() {
 #!/usr/bin/env bash
 echo "lsblk \$*" >> "${LOG}"
 case " \$* " in
-    *" KNAME "*)        printf '%s\n' "\${STUB_TARGET_KNAME:-}" ;;
+    *" KNAME "*)
+        # The recipe asks for KNAME twice: once for the target device, and
+        # once for the / or /sysroot source when PKNAME came back empty.
+        # Answer by argument so a whole-disk root is distinguishable from
+        # the flash target.
+        for arg in "\$@"; do last="\$arg"; done
+        case "\${last}" in
+            /dev/*) printf '%s\n' "\${STUB_SRC_KNAME:-}" ;;
+            *)      printf '%s\n' "\${STUB_TARGET_KNAME:-}" ;;
+        esac
+        ;;
     *" PKNAME "*)       printf '%s\n' "\${STUB_PKNAME:-}" ;;
     *MOUNTPOINTS*)      printf '%s\n' "\${STUB_MOUNTPOINTS:-}" ;;
 esac
@@ -243,6 +254,36 @@ refute_log() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"/ is on /dev/sda1"* ]]
     assert_nothing_written
+}
+
+@test "flash-installer refuses a whole-disk root that PKNAME cannot resolve" {
+    # A filesystem directly on a whole-disk device has no parent, so
+    # `lsblk -no PKNAME` prints nothing. Without the KNAME fallback the
+    # comparison is skipped and the guard is inert on exactly the host it
+    # most needs to protect.
+    export STUB_ROOT_SRC="/dev/sda"
+    export STUB_SYSROOT_SRC=""
+    export STUB_PKNAME=""
+    export STUB_SRC_KNAME="sda"
+    export STUB_TARGET_KNAME="sda"
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"disk backing the running system"* ]]
+    [[ "$output" == *"/ is on /dev/sda"* ]]
+    assert_nothing_written
+}
+
+@test "flash-installer allows an unrelated disk when root is on a whole-disk device" {
+    export STUB_ROOT_SRC="/dev/sda"
+    export STUB_SYSROOT_SRC=""
+    export STUB_PKNAME=""
+    export STUB_SRC_KNAME="sda"
+    export STUB_TARGET_KNAME="sdb"
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -eq 0 ]
+    assert_log "of=${FAKE_DEV}"
 }
 
 @test "flash-installer allows an unrelated disk while the system disk is known" {
