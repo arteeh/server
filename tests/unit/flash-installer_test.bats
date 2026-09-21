@@ -51,9 +51,10 @@ EOF
     chmod +x "${STUB_DIR}/sudo"
     make_stub dd 0
     make_stub zstd 0
-    make_stub blockdev 0
+    make_blockdev_stub 0 0
     make_stub partprobe 0
     make_stub udevadm 0
+    make_stub sfdisk 0
     make_lsblk_stub "bluefin-installer-data"
 }
 # make_stub <name> <exit-code>
@@ -67,6 +68,23 @@ echo "$1 \$*" >> "${LOG}"
 exit $2
 EOF
     chmod +x "${STUB_DIR}/$1"
+}
+
+make_blockdev_stub() {
+    local flushbufs_exit="${1:-0}"
+    local rereadpt_exit="${2:-0}"
+    cat > "${STUB_DIR}/blockdev" <<EOF
+#!/usr/bin/env bash
+echo "blockdev \$*" >> "\${LOG}"
+if [[ " \$* " == *"--flushbufs"* ]]; then
+    exit ${flushbufs_exit}
+fi
+if [[ " \$* " == *"--rereadpt"* ]]; then
+    exit ${rereadpt_exit}
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/blockdev"
 }
 
 make_lsblk_stub() {
@@ -282,12 +300,28 @@ refute_log() {
     [[ "$output" != *"Successfully flashed"* ]]
 }
 
-@test "flash-installer fails with error when both blockdev and partprobe fail" {
+@test "flash-installer fails with error when both blockdev --rereadpt and partprobe fail" {
     seed_image "bluefin-server-installer-1.0.raw.zst"
-    make_stub blockdev 1
+    make_blockdev_stub 0 1
     make_stub partprobe 1
     run_flash "$FAKE_DEV" "y"
     [ "$status" -ne 0 ]
     [[ "$output" == *"ERROR: Failed to reread partition table"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when blockdev --flushbufs fails" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_blockdev_stub 1 0
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when sfdisk --verify fails" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_stub sfdisk 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
     [[ "$output" != *"Successfully flashed"* ]]
 }
