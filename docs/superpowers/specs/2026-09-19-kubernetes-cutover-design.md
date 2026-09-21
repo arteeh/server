@@ -371,3 +371,23 @@ not as base-DDI content.
    `quay.io`, `ghcr.io` and `docker.io`. Until images are pre-seeded, "fully automated
    first boot" means "with network present". This is a pre-existing condition, not a
    regression, and is tracked separately.
+3. **No OTA channel for the containerd sysext.** `elements/flatcar/containerd-sysext.bst`
+   pins one Flatcar runtime image (containerd 2.1.5, runc 1.3.3) and
+   `files/installer/repart.d/30-var.conf` seeds it to
+   `/var/lib/extensions/containerd-flatcar.raw`. There is no
+   `sysupdate.containerd.d` transfer, and the `ID=_any` repack means the seeded image
+   keeps merging across every OS update rather than being rejected, so an installed
+   host holds that exact containerd/runc until it is reinstalled — no patch path for a
+   runtime CVE. This is a regression against k0s, whose embedded runtime rode the
+   `k0s-@v` transfer.
+
+   It is deliberately not closed by pointing a transfer at Flatcar's published
+   `rootfs-included-sysexts/containerd-flatcar.raw`: that image carries
+   `ID=flatcar` with a concrete `VERSION_ID`, which is exactly the metadata this
+   element repacks away. Fetching it unmodified would reintroduce the os-release
+   mismatch, `systemd-sysext` would refuse the merge, and `containerd.service`
+   would vanish on the next boot. A transfer must therefore consume a
+   *repacked* image published on this repository's own release feed, alongside
+   `kubernetes-@v.raw.zst` — i.e. the sysext has to become a release artifact
+   before `70-containerd.transfer` can exist. Until then, runtime CVEs are
+   remediated by reinstall.

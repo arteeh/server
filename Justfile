@@ -393,11 +393,22 @@ test-installer-boot:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    IMG=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | head -n1)
-    if [ -z "${IMG}" ]; then
+    # Same refusal as `flash-installer`: a stale export beside a fresh one is
+    # ambiguous, and `head -n1` would quietly gate on whichever sorts first.
+    # A boot result is only evidence about a named artifact, so the artifact
+    # must not be picked by accident.
+    mapfile -t IMGS < <(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | sort)
+    if [ "${#IMGS[@]}" -eq 0 ]; then
         echo "ERROR: no exported installer in dist/. Run: just export-installer" >&2
         exit 1
     fi
+    if [ "${#IMGS[@]}" -gt 1 ]; then
+        echo "ERROR: ${#IMGS[@]} installer images in dist/; refusing to guess:" >&2
+        printf '  %s\n' "${IMGS[@]}" >&2
+        echo "Remove the stale one, then re-run." >&2
+        exit 1
+    fi
+    IMG="${IMGS[0]}"
 
     # This boots an EXPORTED ARTIFACT. It does not build, and `just validate`
     # only resolves the graph without building either. So a green result is

@@ -51,7 +51,10 @@ description: |
   systemd-sysext then refuses the merge, containerd.service disappears, and
   kubeadm-init.service fails — the cluster goes down after a routine OS update.
   kubernetes.raw is immune because 70-kubernetes.transfer replaces it in lockstep;
-  containerd has no such transfer.
+  containerd has no such transfer. That absence is also the runtime's patch path
+  gap — a seeded image that never updates holds this containerd/runc until the
+  host is reinstalled — and is tracked as open item 3 of
+  docs/superpowers/specs/2026-09-19-kubernetes-cutover-design.md.
 
   So the image is repacked with a single field changed: ID=_any. That is the same
   decoupling files/kubernetes/sysext/extension-release.kubernetes uses, for the
