@@ -265,18 +265,16 @@ test-installer-artifact:
 
     OVMF_VARS=$(first_existing \
       /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-vars.fd \
+      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-i386-vars.fd \
       /usr/share/edk2/ovmf/OVMF_VARS.fd \
       /usr/share/OVMF/OVMF_VARS.fd \
       /usr/share/OVMF/OVMF_VARS_4M.fd \
       /usr/share/edk2/x64/OVMF_VARS.4m.fd \
       /usr/share/qemu/edk2-x86_64-vars.fd \
+      /usr/share/qemu/edk2-i386-vars.fd \
       /usr/share/qemu/OVMF_VARS.fd) \
-      || true
-    if [ -n "$OVMF_VARS" ]; then
-      cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
-    else
-      truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$WORKDIR/ovmf-vars.fd"
-    fi
+      || { echo "ERROR: OVMF_VARS template not found"; exit 1; }
+    cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
 
     SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
     MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
@@ -408,93 +406,10 @@ test-installer-artifact:
 
 
 # Boot the exported installer media via firmware (OVMF) attached as an xHCI USB drive.
-# Verifies UEFI boot and bare-metal USB storage driver discovery into target disk.
+# Delegates to test-installer-artifact, which runs the authoritative OVMF/xHCI installer test.
 [group('test')]
 test-installer-boot-usb:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
-    mkdir -p "$CACHE_DIR"
-    WORKDIR="$(mktemp -d "${CACHE_DIR}/bluefin-usb-boot.XXXXXX")"
-    trap 'rm -rf "$WORKDIR"' EXIT
-
-    INSTALLER_ARCHIVE=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | sort -V | tail -n1)
-    [ -n "$INSTALLER_ARCHIVE" ] || { echo "ERROR: No exported installer found in dist/." >&2; exit 1; }
-    zstd -d "$INSTALLER_ARCHIVE" -o "$WORKDIR/installer.raw"
-
-    TARGET_SIZE="${SHOW_ME_THE_FUTURE_DISK_SIZE:-16G}"
-    truncate -s "${TARGET_SIZE}" "$WORKDIR/target.raw"
-
-    first_existing() {
-      for candidate in "$@"; do
-        if [ -f "$candidate" ]; then
-          echo "$candidate"
-          return 0
-        fi
-      done
-      return 1
-    }
-
-    OVMF_CODE=$(first_existing \
-      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-code.fd \
-      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-secure-code.fd \
-      /usr/share/edk2/ovmf/OVMF_CODE.fd \
-      /usr/share/OVMF/OVMF_CODE.fd \
-      /usr/share/OVMF/OVMF_CODE_4M.fd \
-      /usr/share/edk2/x64/OVMF_CODE.4m.fd \
-      /usr/share/qemu/edk2-x86_64-code.fd \
-      /usr/share/qemu/edk2-x86_64-secure-code.fd \
-      /usr/share/qemu/OVMF_CODE.fd) \
-      || { echo "ERROR: OVMF_CODE not found"; exit 1; }
-
-    OVMF_VARS=$(first_existing \
-      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-vars.fd \
-      /usr/share/edk2/ovmf/OVMF_VARS.fd \
-      /usr/share/OVMF/OVMF_VARS.fd \
-      /usr/share/OVMF/OVMF_VARS_4M.fd \
-      /usr/share/edk2/x64/OVMF_VARS.4m.fd \
-      /usr/share/qemu/edk2-x86_64-vars.fd \
-      /usr/share/qemu/OVMF_VARS.fd) \
-      || true
-    if [ -n "$OVMF_VARS" ]; then
-      cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
-    else
-      truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$WORKDIR/ovmf-vars.fd"
-    fi
-
-    SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
-    MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
-
-    echo "==> Booting installer media via OVMF over emulated xHCI USB in QEMU..."
-    qemu-system-x86_64 \
-        -enable-kvm \
-        -m "${MEM_SIZE}" \
-        -cpu host \
-        -smp "${SMP_CPUS}" \
-        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-        -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd" \
-        -device qemu-xhci,id=xhci \
-        -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on \
-        -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1 \
-        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk \
-        -device virtio-blk-pci,drive=target-disk,bootindex=2 \
-        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended" \
-        -nographic \
-        -serial mon:stdio \
-        -no-reboot < /dev/null
-
-    echo "==> Validating target disk partitions after USB installation..."
-    TARGET_PARTS=$(sfdisk --json "$WORKDIR/target.raw" 2>/dev/null | jq -r '.partitiontable.partitions[]?.name // empty' || true)
-    if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
-       ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
-      echo "ERROR: Target disk did not receive expected partition layout from USB installer!" >&2
-      echo "Observed partitions:" >&2
-      echo "$TARGET_PARTS" >&2
-      sfdisk -l "$WORKDIR/target.raw" >&2 || true
-      exit 1
-    fi
-    echo "==> Successfully installed from emulated USB media!"
+    just test-installer-artifact
 # Interactively install and boot a persistent local KubeStellar kiosk VM.
 [group('test')]
 install-vm:
@@ -533,18 +448,16 @@ install-vm:
     if [ ! -f "$OVMF_VARS" ]; then
       OVMF_TEMPLATE=$(first_existing \
         /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-vars.fd \
+        /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-i386-vars.fd \
         /usr/share/edk2/ovmf/OVMF_VARS.fd \
         /usr/share/OVMF/OVMF_VARS.fd \
         /usr/share/OVMF/OVMF_VARS_4M.fd \
         /usr/share/edk2/x64/OVMF_VARS.4m.fd \
         /usr/share/qemu/edk2-x86_64-vars.fd \
+        /usr/share/qemu/edk2-i386-vars.fd \
         /usr/share/qemu/OVMF_VARS.fd) \
-        || true
-      if [ -n "$OVMF_TEMPLATE" ]; then
-        cp "$OVMF_TEMPLATE" "$OVMF_VARS"
-      else
-        truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$OVMF_VARS"
-      fi
+        || { echo "ERROR: OVMF_VARS template not found"; exit 1; }
+      cp "$OVMF_TEMPLATE" "$OVMF_VARS"
     fi
 
     SMP_CPUS="${INSTALL_VM_SMP:-$(nproc)}"

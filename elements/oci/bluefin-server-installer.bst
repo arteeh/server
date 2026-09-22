@@ -192,12 +192,22 @@ config:
       modprobe -q ahci || true
       modprobe -q sd_mod || true
       modprobe -q xfs || true
-      udevadm trigger --subsystem-match=block || true
-      udevadm settle --timeout=15 || true
-      # Hard preflight: abort with diagnostics if installer data partition is absent or not a block device
+      # Hard preflight: wait up to 30s for storage settle and installer data partition to become available
       INSTALLER_PART_PATH="/dev/disk/by-partlabel/bluefin-installer-data"
+      DEADLINE=$((SECONDS + 30))
+      udevadm trigger --subsystem-match=block || true
+      udevadm settle --timeout=5 || true
+      while [ ! -b "${INSTALLER_PART_PATH}" ] && [ "${SECONDS}" -lt "${DEADLINE}" ]; do
+        sleep 1
+        udevadm trigger --subsystem-match=block || true
+        REMAINING=$((DEADLINE - SECONDS))
+        [ "${REMAINING}" -gt 0 ] || break
+        SETTLE_TIMEOUT=$(( REMAINING < 5 ? REMAINING : 5 ))
+        udevadm settle --timeout="${SETTLE_TIMEOUT}" || true
+      done
+
       if [ ! -b "${INSTALLER_PART_PATH}" ]; then
-        echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device!" >&2
+        echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device after 30s deadline!" >&2
         echo "==> Block devices visible at failure:" >&2
         lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE >&2 || true
         echo "==> Partition label symlinks visible under /dev/disk/by-partlabel/:" >&2
@@ -205,7 +215,7 @@ config:
         exit 1
       fi
       INSTALLER_PART="$(readlink -f "${INSTALLER_PART_PATH}")"
-
+      echo "==> Found installer partition at ${INSTALLER_PART_PATH} -> ${INSTALLER_PART}"
       # Auto-detect target disk for unattended install (any raw disk of type "disk" that is not the installer, is not read-only, and has size > 0)
       TARGET_DISK=""
       while read -r name type ro size; do
@@ -309,8 +319,10 @@ config:
       FailureAction=poweroff
 
       [Service]
-      # Keep the interactive installer on the attached display. The kernel
-      # still uses the final serial console for boot diagnostics.
+      # Mirror installer service output to journal+console so progress and diagnostics
+      # are captured on serial console in headless/automated test runs.
+      StandardOutput=journal+console
+      StandardError=journal+console
       TTYPath=/dev/tty0
       ExecStart=
       ExecStart=/usr/bin/bluefin-sysinstall

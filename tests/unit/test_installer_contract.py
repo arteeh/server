@@ -121,7 +121,7 @@ def test_installer_loads_storage_drivers_and_settles_udev() -> None:
     assert "modprobe -q nvme_core || true" in installer_element
     assert "modprobe -q usb-storage || true" in installer_element
     assert "modprobe -q uas || true" in installer_element
-    assert "udevadm settle --timeout=15 || true" in installer_element
+    assert 'udevadm settle --timeout="${SETTLE_TIMEOUT}" || true' in installer_element
     assert "After=systemd-udev-settle.service" in installer_element
     assert "Wants=systemd-udev-settle.service" in installer_element
 
@@ -129,14 +129,17 @@ def test_installer_loads_storage_drivers_and_settles_udev() -> None:
 def test_installer_hard_preflight_aborts_on_missing_installer_data_part() -> None:
     installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
 
+    assert 'DEADLINE=$((SECONDS + 30))' in installer_element
+    assert 'while [ ! -b "${INSTALLER_PART_PATH}" ] && [ "${SECONDS}" -lt "${DEADLINE}" ]; do' in installer_element
     assert '[ ! -b "${INSTALLER_PART_PATH}" ]' in installer_element
     assert "/dev/disk/by-partlabel/bluefin-installer-data" in installer_element
     assert "lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE" in installer_element
-
 def test_interactive_installer_uses_local_virtual_console() -> None:
     installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
 
     assert "TTYPath=/dev/tty0" in installer_element
+    assert "StandardOutput=journal+console" in installer_element
+    assert "StandardError=journal+console" in installer_element
 
 
 def test_installer_and_ddi_strip_vmlinux_and_static_archives() -> None:
@@ -213,10 +216,7 @@ def test_installer_smoke_probes_the_kiosk_over_tls_from_inside_the_guest() -> No
 
 def test_test_installer_boot_usb_contract() -> None:
     justfile = JUSTFILE.read_text(encoding="utf-8")
-    assert "test-installer-boot-usb:" in justfile
-    assert "-device qemu-xhci,id=xhci" in justfile
-    assert "-device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1" in justfile
-    assert "-device virtio-blk-pci,drive=target-disk,bootindex=2" in justfile
-    assert 'sfdisk --json "$WORKDIR/target.raw"' in justfile
-    assert "bluefin-server-root-a" in justfile
-    assert "var" in justfile
+    start = justfile.index("test-installer-boot-usb:")
+    end = justfile.index("install-vm:", start)
+    recipe = justfile[start:end]
+    assert "just test-installer-artifact" in recipe
