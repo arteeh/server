@@ -196,8 +196,14 @@ flash-installer DEVICE="":
         echo "ERROR: {{DEVICE}} is not a valid block device!" >&2
         exit 1
     fi
-    # Refuse the disk backing the running system outright.
-    TARGET_NAME=$(lsblk -no KNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    # Refuse the disk backing the running system outright. Resolve the target
+    # to its parent disk first, the same way the root source is resolved below,
+    # so naming a partition (/dev/sda3) is caught just like naming the whole
+    # disk it lives on.
+    TARGET_NAME=$(lsblk -no PKNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    if [ -z "${TARGET_NAME}" ]; then
+        TARGET_NAME=$(lsblk -no KNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    fi
     for mp in / /sysroot; do
         SRC=$(findmnt -no SOURCE "${mp}" 2>/dev/null | head -n1 || true)
         # btrfs reports the source as /dev/sdXn[/subvolume]; strip the suffix
@@ -267,8 +273,16 @@ flash-installer DEVICE="":
     fi
     echo "Writing ${IMG} to {{DEVICE}}..."
     echo "Hashing ${IMG}..."
-    EXPECT_SHA=$(zstd -dc "${IMG}" | sha256sum | cut -d' ' -f1)
-    EXPECT_BYTES=$(zstd -dc "${IMG}" | wc -c | tr -d ' ')
+    # One decompression pass feeds both the digest and the byte count; a FIFO
+    # plus an explicit wait keeps the hash file complete before it is read.
+    HASH_DIR=$(mktemp -d)
+    trap 'rm -rf "${HASH_DIR}"' EXIT
+    mkfifo "${HASH_DIR}/stream"
+    ( sha256sum < "${HASH_DIR}/stream" | cut -d' ' -f1 > "${HASH_DIR}/sha" ) &
+    HASH_PID=$!
+    EXPECT_BYTES=$(zstd -dc "${IMG}" | tee "${HASH_DIR}/stream" | wc -c | tr -d ' ')
+    wait "${HASH_PID}"
+    EXPECT_SHA=$(cat "${HASH_DIR}/sha")
     sudo bash -c 'set -o pipefail; zstd -dc "$1" | dd of="$2" bs=4M iflag=fullblock oflag=direct status=progress conv=fsync' \
         bash "${IMG}" "{{DEVICE}}"
     sudo blockdev --flushbufs "{{DEVICE}}"

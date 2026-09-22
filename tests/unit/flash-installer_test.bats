@@ -457,6 +457,42 @@ EOF
     assert_nothing_written
 }
 
+@test "flash-installer refuses a partition on the disk backing the running system" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    cat > "${STUB_DIR}/findmnt" <<EOF
+#!/usr/bin/env bash
+echo "findmnt \$*" >> "${LOG}"
+if [[ " \$* " == *" / "* ]]; then
+    echo "/dev/sda2"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/findmnt"
+    # The target is a partition node: its KNAME is sda3, which never matches
+    # the sda that / resolves to. Only resolving the target to its parent disk
+    # catches this.
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ "\$*" == "-no PKNAME ${FAKE_DEV}" ]]; then
+    echo "sda"
+fi
+if [[ "\$*" == "-no KNAME ${FAKE_DEV}" ]]; then
+    echo "sda3"
+fi
+if [[ "\$*" == "-no PKNAME /dev/sda2" ]]; then
+    echo "sda"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is the disk backing the running system"* ]]
+    assert_log "lsblk -no PKNAME ${FAKE_DEV}"
+    assert_nothing_written
+}
+
 # --- guard: nothing may be mounted off the device -------------------------
 
 # make_mount_lsblk_stub <mountpoints-exit> <mountpoint-exit> <mount-output>
