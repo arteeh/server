@@ -196,12 +196,67 @@ flash-installer DEVICE="":
         echo "ERROR: {{DEVICE}} is not a valid block device!" >&2
         exit 1
     fi
-    IMG=$(find dist/ -type f -name 'bluefin-server-installer-*.raw.zst' | head -n1)
-    if [ -z "${IMG}" ]; then
+    # Refuse the disk backing the running system outright. Resolve the target
+    # to its parent disk first, the same way the root source is resolved below,
+    # so naming a partition (/dev/sda3) is caught just like naming the whole
+    # disk it lives on.
+    TARGET_NAME=$(lsblk -no PKNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    if [ -z "${TARGET_NAME}" ]; then
+        TARGET_NAME=$(lsblk -no KNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
+    fi
+    for mp in / /sysroot; do
+        SRC=$(findmnt -no SOURCE "${mp}" 2>/dev/null | head -n1 || true)
+        # btrfs reports the source as /dev/sdXn[/subvolume]; strip the suffix
+        # so lsblk is handed a real device node.
+        SRC="${SRC%%\[*}"
+        case "${SRC}" in /dev/*) ;; *) continue ;; esac
+        SRC_DISK=$(lsblk -no PKNAME "${SRC}" 2>/dev/null | head -n1 || true)
+        if [ -z "${SRC_DISK}" ]; then
+            SRC_DISK=$(lsblk -no KNAME "${SRC}" 2>/dev/null | head -n1 || true)
+        fi
+        if [ -n "${SRC_DISK}" ] && [ "${SRC_DISK}" = "${TARGET_NAME}" ]; then
+            echo "ERROR: {{DEVICE}} is the disk backing the running system." >&2
+            echo "  ${mp} is on ${SRC}, which lives on /dev/${SRC_DISK}." >&2
+            echo "Refusing to overwrite it." >&2
+            exit 1
+        fi
+    done
+    # Refuse a device with anything mounted off it. The MOUNTPOINTS column
+    # requires util-linux >= 2.37, so fall back to the older MOUNTPOINT column
+    # and refuse outright if neither can be read, rather than assuming the
+    # device is idle.
+    if MOUNTED=$(lsblk -n -o MOUNTPOINTS "{{DEVICE}}" 2>/dev/null); then
+        MOUNT_COL="MOUNTPOINTS"
+    elif MOUNTED=$(lsblk -n -o MOUNTPOINT "{{DEVICE}}" 2>/dev/null); then
+        MOUNT_COL="MOUNTPOINT"
+    else
+        echo "ERROR: Could not read the mount state of {{DEVICE}} with lsblk." >&2
+        echo "Refusing to write to a device whose mounts cannot be checked." >&2
+        exit 1
+    fi
+    MOUNTED=$(printf '%s\n' "${MOUNTED}" | grep -v '^[[:space:]]*$' || true)
+    if [ -n "${MOUNTED}" ]; then
+        echo "ERROR: {{DEVICE}} has mounted partitions:" >&2
+        lsblk -p -o "NAME,SIZE,${MOUNT_COL}" "{{DEVICE}}" >&2
+        echo >&2
+        echo "Unmount them first, e.g.:" >&2
+        lsblk -p -n -l -o "NAME,${MOUNT_COL}" "{{DEVICE}}" \
+            | awk 'NF>1 {printf "  udisksctl unmount -b %s\n", $1}' >&2
+        exit 1
+    fi
+    mapfile -t IMGS < <(find dist/ -maxdepth 1 -type f -name 'bluefin-server-installer-*.raw.zst' | sort -V)
+    if [ "${#IMGS[@]}" -eq 0 ]; then
         echo "ERROR: No exported installer found in dist/." >&2
         echo "Please run: just build-installer && just export-installer" >&2
         exit 1
     fi
+    if [ "${#IMGS[@]}" -gt 1 ]; then
+        echo "ERROR: ${#IMGS[@]} installer images in dist/; refusing to guess:" >&2
+        printf '  %s\n' "${IMGS[@]}" >&2
+        echo "Remove the stale one, then re-run." >&2
+        exit 1
+    fi
+    IMG="${IMGS[0]}"
     echo "WARNING: All data on {{DEVICE}} will be COMPLETELY DESTROYED!"
     echo "Double-checking device information:"
     lsblk -p "{{DEVICE}}"
@@ -211,10 +266,55 @@ flash-installer DEVICE="":
         echo "Aborted."
         exit 1
     fi
+    echo "Verifying ${IMG}..."
+    if ! zstd -t "${IMG}"; then
+        echo "ERROR: ${IMG} failed its integrity check; refusing to write it." >&2
+        exit 1
+    fi
     echo "Writing ${IMG} to {{DEVICE}}..."
-    sudo sh -c "zstd -dc ${IMG} | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    echo "Hashing ${IMG}..."
+    # One decompression pass feeds both the digest and the byte count; a FIFO
+    # plus an explicit wait keeps the hash file complete before it is read.
+    HASH_DIR=$(mktemp -d)
+    trap 'rm -rf "${HASH_DIR}"' EXIT
+    mkfifo "${HASH_DIR}/stream"
+    ( sha256sum < "${HASH_DIR}/stream" | cut -d' ' -f1 > "${HASH_DIR}/sha" ) &
+    HASH_PID=$!
+    EXPECT_BYTES=$(zstd -dc "${IMG}" | tee "${HASH_DIR}/stream" | wc -c | tr -d ' ')
+    wait "${HASH_PID}"
+    EXPECT_SHA=$(cat "${HASH_DIR}/sha")
+    sudo bash -c 'set -o pipefail; zstd -dc "$1" | dd of="$2" bs=4M iflag=fullblock oflag=direct status=progress conv=fsync' \
+        bash "${IMG}" "{{DEVICE}}"
+    sudo blockdev --flushbufs "{{DEVICE}}"
+    echo "Verifying ${EXPECT_BYTES} bytes read back from {{DEVICE}}..."
+    ACTUAL_SHA=$(sudo dd if="{{DEVICE}}" bs=4M iflag=fullblock,count_bytes \
+        count="${EXPECT_BYTES}" status=none | sha256sum | cut -d' ' -f1)
+    if [ "${ACTUAL_SHA}" != "${EXPECT_SHA}" ]; then
+        echo "ERROR: {{DEVICE}} does not contain what was written." >&2
+        echo "  expected ${EXPECT_SHA}" >&2
+        echo "  read     ${ACTUAL_SHA}" >&2
+        echo "The medium did not retain the image. Replace it." >&2
+        exit 1
+    fi
+    echo "Content verified: ${EXPECT_SHA}"
+    echo "Relocating the GPT backup header to the end of {{DEVICE}}..."
+    sudo sfdisk --relocate gpt-bak-std "{{DEVICE}}"
+    echo "Verifying partition table on {{DEVICE}}..."
+    sudo blockdev --rereadpt "{{DEVICE}}" 2>/dev/null || sudo partprobe "{{DEVICE}}" 2>/dev/null || {
+        echo "ERROR: Failed to reread partition table on {{DEVICE}} after flashing!" >&2
+        exit 1
+    }
+    sudo udevadm trigger --subsystem-match=block || true
+    sudo udevadm settle --timeout=10 || true
+    if lsblk -p -n -o PARTLABEL "{{DEVICE}}" 2>/dev/null | grep -Fxq 'bluefin-installer-data'; then
+        echo "Verified: 'bluefin-installer-data' partition present on {{DEVICE}}."
+    else
+        echo "ERROR: 'bluefin-installer-data' partition label not detected on {{DEVICE}} after flashing!" >&2
+        lsblk -p -o NAME,TYPE,PARTLABEL,SIZE "{{DEVICE}}" >&2 || true
+        exit 1
+    fi
+    sudo sfdisk --verify "{{DEVICE}}"
     echo "Successfully flashed the Bluefin Server installer to {{DEVICE}}!"
-
 # Build the installer artifacts, then run the reusable artifact smoke path.
 [group('test')]
 show-me-the-future:

@@ -71,8 +71,12 @@ that can be written directly to a USB drive.
 just flash-installer /dev/sdX
 ```
 
-The wrapper validates the image, lists devices if you omit one, asks for
-confirmation, and writes the image with direct I/O and an explicit sync.
+The wrapper validates the image, lists devices if you omit one, refuses a
+device that backs the running system or has mounted partitions, requires
+exactly one installer image in `dist/`, asks for confirmation, writes the
+image with direct I/O and an explicit sync, verifies the written bytes by
+sha256 readback, relocates the GPT backup header to the end of the device,
+and confirms the `bluefin-installer-data` partition is present.
 
 ### Manual `dd` flashing
 
