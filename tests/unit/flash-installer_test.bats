@@ -4,14 +4,19 @@
 #
 # `flash-installer` is the only recipe in the repository that destroys data: it
 # pipes an exported installer image straight onto a block device with `dd`.
-# Its four guards (device argument required, device must be a block device, an
-# exported image must exist, and the operator must confirm) are the only thing
-# standing between a typo and a wiped disk, and none of them were exercised.
+# Its guards (device argument required, device must be a block device, the
+# device must not back the running system, nothing may be mounted off it,
+# exactly one exported image must exist, the image must pass `zstd -t`, the
+# operator must confirm, and the write must survive a sha256 readback plus a
+# partition-table and PARTLABEL check) are the only thing standing between a
+# typo and a wiped disk, and none of them were exercised.
 #
 # The recipe is never run against a real device. Each test runs `just` inside a
-# private sandbox directory holding a copy of the Justfile, and `sudo`, `dd`,
-# `zstd` and `lsblk` are replaced by logging stubs on PATH, so the write path
-# records its arguments instead of performing them.
+# private sandbox directory holding a copy of the Justfile, and `dd`, `zstd`,
+# `lsblk`, `blockdev`, `sfdisk`, `partprobe` and `udevadm` are replaced by
+# stubs on PATH that log their arguments and return a scripted exit status
+# instead of touching a device. The `sudo` stub logs its arguments and then
+# executes them, so privileged steps land on those same stubs.
 #
 # Only one edit is applied to the copied Justfile: the block-device guard
 # `[ ! -b ... ]` becomes `[ ! -e ... ]`, because an unprivileged test cannot
@@ -209,7 +214,7 @@ refute_log() {
 }
 
 @test "the recipe still writes through dd so the stubs intercept the real path" {
-    grep -qF 'dd of={{DEVICE}}' "$JUSTFILE"
+    grep -qF 'zstd -dc "$1" | dd of="$2"' "$JUSTFILE"
 }
 
 # --- guard 1: device argument is mandatory --------------------------------
@@ -316,7 +321,23 @@ refute_log() {
     run_flash "$FAKE_DEV" "y"
     [ "$status" -eq 0 ]
     assert_log "dist/bluefin-server-installer-1.0.raw.zst"
-    assert_log "of=${FAKE_DEV}"
+    # The image and the device are passed as positional arguments to the root
+    # shell, never interpolated into the script it runs.
+    assert_log "conv=fsync bash dist/bluefin-server-installer-1.0.raw.zst ${FAKE_DEV}"
+}
+
+@test "flash-installer never interpolates the image path into the root shell script" {
+    grep -qF "zstd -dc \"\$1\"" "$JUSTFILE"
+    ! grep -qF "zstd -dc '\${IMG}'" "$JUSTFILE"
+}
+
+@test "flash-installer refuses when dist/ holds more than one installer image" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    seed_image "bluefin-server-installer-2.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"installer images in dist/; refusing to guess"* ]]
+    assert_nothing_written
 }
 
 @test "flash-installer writes with the flags that make the image bootable" {
@@ -401,4 +422,82 @@ refute_log() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"does not contain what was written"* ]]
     [[ "$output" != *"Successfully flashed"* ]]
+}
+
+# --- guard: the device must not back the running system -------------------
+
+@test "flash-installer refuses a device backing a btrfs root with a subvolume source" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    cat > "${STUB_DIR}/findmnt" <<EOF
+#!/usr/bin/env bash
+echo "findmnt \$*" >> "${LOG}"
+if [[ " \$* " == *" / "* ]]; then
+    echo "/dev/sda2[/root]"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/findmnt"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ "\$*" == "-no KNAME ${FAKE_DEV}" ]]; then
+    echo "sda"
+fi
+# Only an unbracketed device node resolves; /dev/sda2[/root] must not.
+if [[ "\$*" == "-no PKNAME /dev/sda2" ]]; then
+    echo "sda"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is the disk backing the running system"* ]]
+    assert_log "lsblk -no PKNAME /dev/sda2"
+    assert_nothing_written
+}
+
+# --- guard: nothing may be mounted off the device -------------------------
+
+# make_mount_lsblk_stub <mountpoints-exit> <mountpoint-exit> <mount-output>
+#
+# Models lsblk versions with and without the MOUNTPOINTS column (util-linux
+# >= 2.37) so the fallback and the fail-closed path can both be exercised.
+make_mount_lsblk_stub() {
+    local mountpoints_exit="$1" mountpoint_exit="$2" mount_output="${3:-}"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ " \$* " == *" -o MOUNTPOINTS "* ]]; then
+    [ ${mountpoints_exit} -ne 0 ] && exit ${mountpoints_exit}
+    echo "${mount_output}"
+    exit 0
+fi
+if [[ " \$* " == *" -o MOUNTPOINT "* ]]; then
+    [ ${mountpoint_exit} -ne 0 ] && exit ${mountpoint_exit}
+    echo "${mount_output}"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+}
+
+@test "flash-installer falls back to MOUNTPOINT when lsblk predates MOUNTPOINTS" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_mount_lsblk_stub 1 0 "/run/media/operator/usb"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"has mounted partitions"* ]]
+    assert_log "lsblk -n -o MOUNTPOINT ${FAKE_DEV}"
+    assert_nothing_written
+}
+
+@test "flash-installer refuses when the mount state cannot be read at all" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_mount_lsblk_stub 1 1 ""
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not read the mount state"* ]]
+    assert_nothing_written
 }

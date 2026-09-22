@@ -200,6 +200,9 @@ flash-installer DEVICE="":
     TARGET_NAME=$(lsblk -no KNAME "{{DEVICE}}" 2>/dev/null | head -n1 || true)
     for mp in / /sysroot; do
         SRC=$(findmnt -no SOURCE "${mp}" 2>/dev/null | head -n1 || true)
+        # btrfs reports the source as /dev/sdXn[/subvolume]; strip the suffix
+        # so lsblk is handed a real device node.
+        SRC="${SRC%%\[*}"
         case "${SRC}" in /dev/*) ;; *) continue ;; esac
         SRC_DISK=$(lsblk -no PKNAME "${SRC}" 2>/dev/null | head -n1 || true)
         if [ -z "${SRC_DISK}" ]; then
@@ -212,14 +215,26 @@ flash-installer DEVICE="":
             exit 1
         fi
     done
-    # Refuse a device with anything mounted off it.
-    MOUNTED=$(lsblk -n -o MOUNTPOINTS "{{DEVICE}}" | grep -v '^\s*$' || true)
+    # Refuse a device with anything mounted off it. The MOUNTPOINTS column
+    # requires util-linux >= 2.37, so fall back to the older MOUNTPOINT column
+    # and refuse outright if neither can be read, rather than assuming the
+    # device is idle.
+    if MOUNTED=$(lsblk -n -o MOUNTPOINTS "{{DEVICE}}" 2>/dev/null); then
+        MOUNT_COL="MOUNTPOINTS"
+    elif MOUNTED=$(lsblk -n -o MOUNTPOINT "{{DEVICE}}" 2>/dev/null); then
+        MOUNT_COL="MOUNTPOINT"
+    else
+        echo "ERROR: Could not read the mount state of {{DEVICE}} with lsblk." >&2
+        echo "Refusing to write to a device whose mounts cannot be checked." >&2
+        exit 1
+    fi
+    MOUNTED=$(printf '%s\n' "${MOUNTED}" | grep -v '^[[:space:]]*$' || true)
     if [ -n "${MOUNTED}" ]; then
         echo "ERROR: {{DEVICE}} has mounted partitions:" >&2
-        lsblk -p -o NAME,SIZE,MOUNTPOINTS "{{DEVICE}}" >&2
+        lsblk -p -o "NAME,SIZE,${MOUNT_COL}" "{{DEVICE}}" >&2
         echo >&2
         echo "Unmount them first, e.g.:" >&2
-        lsblk -p -n -l -o NAME,MOUNTPOINTS "{{DEVICE}}" \
+        lsblk -p -n -l -o "NAME,${MOUNT_COL}" "{{DEVICE}}" \
             | awk 'NF>1 {printf "  udisksctl unmount -b %s\n", $1}' >&2
         exit 1
     fi
@@ -254,7 +269,8 @@ flash-installer DEVICE="":
     echo "Hashing ${IMG}..."
     EXPECT_SHA=$(zstd -dc "${IMG}" | sha256sum | cut -d' ' -f1)
     EXPECT_BYTES=$(zstd -dc "${IMG}" | wc -c | tr -d ' ')
-    sudo bash -c "set -o pipefail; zstd -dc '${IMG}' | dd of={{DEVICE}} bs=4M iflag=fullblock oflag=direct status=progress conv=fsync"
+    sudo bash -c 'set -o pipefail; zstd -dc "$1" | dd of="$2" bs=4M iflag=fullblock oflag=direct status=progress conv=fsync' \
+        bash "${IMG}" "{{DEVICE}}"
     sudo blockdev --flushbufs "{{DEVICE}}"
     echo "Verifying ${EXPECT_BYTES} bytes read back from {{DEVICE}}..."
     ACTUAL_SHA=$(sudo dd if="{{DEVICE}}" bs=4M iflag=fullblock,count_bytes \
