@@ -184,6 +184,19 @@ config:
       #!/bin/bash
       set -euo pipefail
 
+      CMDLINE="$(< /proc/cmdline)"
+
+      # The service drop-in uses StandardOutput=journal+console so unattended runs
+      # land on the serial console that automated tests capture. /dev/console follows
+      # the last console= argument, which is ttyS0, so an interactive bare-metal
+      # install would otherwise print to serial rather than the attached display.
+      # Keep the interactive installer on the attached display by redirecting this
+      # script's own output to /dev/tty0, falling back to journal+console when there
+      # is no local VT (headless serial-only installs).
+      if [[ " ${CMDLINE} " != *" unattended "* ]] && [ -w /dev/tty0 ]; then
+        exec > /dev/tty0 2>&1
+      fi
+
       # Ensure storage controller modules and filesystems are loaded before probing devices
       modprobe -q nvme || true
       modprobe -q nvme_core || true
@@ -274,7 +287,6 @@ config:
       }
 
       # Check for unattended in kernel command line
-      CMDLINE="$(< /proc/cmdline)"
       if [[ " ${CMDLINE} " == *" unattended "* ]]; then
         echo "==> Running in UNATTENDED mode..."
         if [ -n "${TARGET_DISK}" ]; then
@@ -320,7 +332,10 @@ config:
 
       [Service]
       # Mirror installer service output to journal+console so progress and diagnostics
-      # are captured on serial console in headless/automated test runs.
+      # are captured on the serial console in headless/automated test runs. TTYPath is
+      # only honoured for Standard*=tty, so it does not steer this output; the wrapper
+      # keeps the interactive installer on the attached display by redirecting itself
+      # to /dev/tty0 when 'unattended' is absent from the kernel command line.
       StandardOutput=journal+console
       StandardError=journal+console
       TTYPath=/dev/tty0

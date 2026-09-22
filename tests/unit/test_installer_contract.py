@@ -134,12 +134,20 @@ def test_installer_hard_preflight_aborts_on_missing_installer_data_part() -> Non
     assert '[ ! -b "${INSTALLER_PART_PATH}" ]' in installer_element
     assert "/dev/disk/by-partlabel/bluefin-installer-data" in installer_element
     assert "lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE" in installer_element
+
+
 def test_interactive_installer_uses_local_virtual_console() -> None:
     installer_element = INSTALLER_ELEMENT.read_text(encoding="utf-8")
 
     assert "TTYPath=/dev/tty0" in installer_element
     assert "StandardOutput=journal+console" in installer_element
     assert "StandardError=journal+console" in installer_element
+    # journal+console follows the last console= argument (ttyS0), so the wrapper has
+    # to put interactive runs back on the attached display itself.
+    assert (
+        'if [[ " ${CMDLINE} " != *" unattended "* ]] && [ -w /dev/tty0 ]; then\n'
+        "        exec > /dev/tty0 2>&1"
+    ) in installer_element
 
 
 def test_installer_and_ddi_strip_vmlinux_and_static_archives() -> None:

@@ -236,8 +236,8 @@ test-installer-artifact:
     # Only the raw installer image is needed: this recipe boots it through OVMF as
     # a USB drive rather than via QEMU -kernel/-initrd, so the PXE vmlinuz/initrd
     # are not consumed here. Copying them would make the test fail on hosts that
-    # have the installer image but no PXE artifacts. `just export-installer`
-    # already asserts the PXE pair was exported.
+    # have the installer image but no PXE artifacts. `just export-pxe` is where a
+    # missing PXE pair is caught.
     cp dist/bluefin-server-installer-*.raw.zst "$WORKDIR/installer.raw.zst"
     zstd -d "$WORKDIR/installer.raw.zst" -o "$WORKDIR/installer.raw"
     TARGET_SIZE="${SHOW_ME_THE_FUTURE_DISK_SIZE:-16G}"
@@ -312,7 +312,24 @@ test-installer-artifact:
         -no-reboot < /dev/null
 
     echo "==> Validating target disk partitions after installer execution..."
-    TARGET_PARTS=$(sfdisk --json "$WORKDIR/target.raw" 2>/dev/null | jq -r '.partitiontable.partitions[]?.name // empty' || true)
+    for tool in sfdisk jq; do
+      command -v "$tool" >/dev/null 2>&1 \
+        || { echo "ERROR: '$tool' is required to validate the target disk layout but is not installed." >&2; exit 1; }
+    done
+
+    # Keep sfdisk and jq failures distinguishable from "the installer did not
+    # partition the disk", otherwise a broken host tool is misreported as a
+    # failed install.
+    if ! TARGET_TABLE=$(sfdisk --json "$WORKDIR/target.raw"); then
+      echo "ERROR: sfdisk could not read a partition table from $WORKDIR/target.raw!" >&2
+      sfdisk -l "$WORKDIR/target.raw" >&2 || true
+      exit 1
+    fi
+    if ! TARGET_PARTS=$(jq -r '.partitiontable.partitions[]?.name // empty' <<<"$TARGET_TABLE"); then
+      echo "ERROR: jq failed to parse the sfdisk JSON output!" >&2
+      echo "$TARGET_TABLE" >&2
+      exit 1
+    fi
     if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
        ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
       echo "ERROR: Target disk did not receive expected partition layout from installer!" >&2
@@ -414,12 +431,12 @@ test-installer-artifact:
       sleep 2
     done
 
-
 # Boot the exported installer media via firmware (OVMF) attached as an xHCI USB drive.
 # Delegates to test-installer-artifact, which runs the authoritative OVMF/xHCI installer test.
 [group('test')]
 test-installer-boot-usb:
     just test-installer-artifact
+
 # Interactively install and boot a persistent local KubeStellar kiosk VM.
 [group('test')]
 install-vm:

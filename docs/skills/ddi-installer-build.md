@@ -44,7 +44,9 @@ provided so the USB boot path is discoverable by name.
 
 The recipe prefers a real `OVMF_VARS` template but falls back to a blank variable store
 sized to `OVMF_CODE` on hosts that ship CODE only, so a missing template is a warning
-rather than a hard failure.
+rather than a hard failure. It needs `qemu-system-x86_64`, `zstd`, `sfdisk` and `jq` on
+the host; the last two are used to assert that the installer actually partitioned the
+target disk, and the recipe fails with a named error if either is missing.
 
 ## Mandatory build path: ghost cluster
 
