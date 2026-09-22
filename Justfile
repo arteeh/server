@@ -222,23 +222,46 @@ show-me-the-future:
     just export-installer
     just test-installer-artifact
 
+# INSTALLER_BOOT_MODE selects how the installer itself is started:
+#   usb (default) — firmware (OVMF) boots the raw image off an emulated xHCI USB
+#                   drive, the bare-metal USB install path.
+#   pxe           — QEMU boots the exported PXE vmlinuz/initrd pair directly with
+#                   -kernel/-initrd/-append, the network install path.
+# Everything after the install (target partition check, booting the installed
+# system, kiosk readiness probe) is identical for both modes.
 # Install and reboot already-exported server artifacts in QEMU.
 [group('test')]
 test-installer-artifact:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    BOOT_MODE="${INSTALLER_BOOT_MODE:-usb}"
+    case "${BOOT_MODE}" in
+      usb|pxe) ;;
+      *) echo "ERROR: INSTALLER_BOOT_MODE must be 'usb' or 'pxe', got '${BOOT_MODE}'." >&2; exit 1 ;;
+    esac
+
     CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
     mkdir -p "$CACHE_DIR"
     WORKDIR="$(mktemp -d "${CACHE_DIR}/bluefin-show-future.XXXXXX")"
     trap 'rm -rf "$WORKDIR"' EXIT
 
-    # Only the raw installer image is needed: this recipe boots it through OVMF as
-    # a USB drive rather than via QEMU -kernel/-initrd, so the PXE vmlinuz/initrd
-    # are not consumed here. Copying them would make the test fail on hosts that
-    # have the installer image but no PXE artifacts. `just export-pxe` is where a
-    # missing PXE pair is caught.
+    # The raw installer image is always needed; usb mode boots it through firmware
+    # so it consumes nothing else. The PXE vmlinuz/initrd pair is only copied in pxe
+    # mode, because copying it unconditionally would fail the usb test on hosts that
+    # have the installer image but no PXE artifacts.
     cp dist/bluefin-server-installer-*.raw.zst "$WORKDIR/installer.raw.zst"
+    if [ "${BOOT_MODE}" = "pxe" ]; then
+      PXE_KERNEL=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-pxe-vmlinuz-*' | head -n1)
+      PXE_INITRD=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-pxe-initrd-*.cpio.gz' | head -n1)
+      if [ -z "${PXE_KERNEL}" ] || [ -z "${PXE_INITRD}" ]; then
+        echo "ERROR: INSTALLER_BOOT_MODE=pxe needs an exported PXE kernel and initrd in dist/." >&2
+        echo "Please run: just build-installer && just export-pxe" >&2
+        exit 1
+      fi
+      cp "${PXE_KERNEL}" "$WORKDIR/installer.vmlinuz"
+      cp "${PXE_INITRD}" "$WORKDIR/installer.initrd"
+    fi
     zstd -d "$WORKDIR/installer.raw.zst" -o "$WORKDIR/installer.raw"
     TARGET_SIZE="${SHOW_ME_THE_FUTURE_DISK_SIZE:-16G}"
     truncate -s "${TARGET_SIZE}" "$WORKDIR/target.raw"
@@ -289,24 +312,49 @@ test-installer-artifact:
     SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
     MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
 
-    echo "==> Booting installer media via OVMF over emulated xHCI USB in QEMU..."
+    echo "==> Booting installer media in QEMU (mode: ${BOOT_MODE})..."
     # ponytail: we want QEMU to exit cleanly after install. Since QEMU's -no-reboot
     # suspends/halts on reboot signals, we override systemd-sysinstall.service SuccessAction/FailureAction
     # to poweroff. When the installer triggers poweroff, QEMU terminates, and we boot into the newly installed OS.
     INSTALLER_TIMEOUT="${SHOW_ME_THE_FUTURE_INSTALL_TIMEOUT:-600}"
+    INSTALL_ARGS=(
+        -enable-kvm
+        -m "${MEM_SIZE}"
+        -cpu host
+        -smp "${SMP_CPUS}"
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
+        -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd"
+    )
+    if [ "${BOOT_MODE}" = "usb" ]; then
+      # Firmware boots the image's own bootloader, so the unattended flag has to
+      # reach the UKI through systemd-stub rather than QEMU's -append.
+      #
+      # NOTE: systemd-stub deliberately ignores io.systemd.stub.kernel-cmdline-extra
+      # when Secure Boot is enabled, because the SMBIOS string is not covered by the
+      # signature. Point $OVMF_CODE at a secure-boot firmware build and this run
+      # boots interactive instead of unattended, then sits there until
+      # SHOW_ME_THE_FUTURE_INSTALL_TIMEOUT expires with a misleading "install did
+      # not finish" failure. Use INSTALLER_BOOT_MODE=pxe (-append is always honoured)
+      # to exercise unattended installs under Secure Boot firmware.
+      INSTALL_ARGS+=(
+        -device qemu-xhci,id=xhci
+        -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on
+        -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1
+        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk
+        -device virtio-blk-pci,drive=target-disk,bootindex=2
+        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended"
+      )
+    else
+      INSTALL_ARGS+=(
+        -drive file="$WORKDIR/installer.raw",format=raw,if=virtio,readonly=on
+        -drive file="$WORKDIR/target.raw",format=raw,if=virtio
+        -kernel "$WORKDIR/installer.vmlinuz"
+        -initrd "$WORKDIR/installer.initrd"
+        -append "systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended"
+      )
+    fi
     timeout "${INSTALLER_TIMEOUT}" qemu-system-x86_64 \
-        -enable-kvm \
-        -m "${MEM_SIZE}" \
-        -cpu host \
-        -smp "${SMP_CPUS}" \
-        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-        -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd" \
-        -device qemu-xhci,id=xhci \
-        -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on \
-        -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1 \
-        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk \
-        -device virtio-blk-pci,drive=target-disk,bootindex=2 \
-        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended" \
+        "${INSTALL_ARGS[@]}" \
         -nographic \
         -serial mon:stdio \
         -no-reboot < /dev/null
@@ -431,11 +479,19 @@ test-installer-artifact:
       sleep 2
     done
 
-# Boot the exported installer media via firmware (OVMF) attached as an xHCI USB drive.
-# Delegates to test-installer-artifact, which runs the authoritative OVMF/xHCI installer test.
+# This is the default mode of test-installer-artifact; the recipe exists so the USB
+# boot path is discoverable by name.
+# Boot the exported installer media via firmware (OVMF) as an xHCI USB drive.
 [group('test')]
 test-installer-boot-usb:
-    just test-installer-artifact
+    INSTALLER_BOOT_MODE=usb just test-installer-artifact
+
+# `just export-pxe` only checks that the two files exist, so this recipe is the only
+# thing that proves they still boot and install.
+# Boot the exported PXE kernel/initrd pair directly (QEMU -kernel/-initrd/-append).
+[group('test')]
+test-installer-boot-pxe:
+    INSTALLER_BOOT_MODE=pxe just test-installer-artifact
 
 # Interactively install and boot a persistent local KubeStellar kiosk VM.
 [group('test')]

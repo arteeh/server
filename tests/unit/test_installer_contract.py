@@ -56,6 +56,11 @@ def test_installer_runtime_and_boot_contracts() -> None:
     assert "-device virtio-blk-pci,drive=target-disk,bootindex=2" in justfile
     assert 'sfdisk --json "$WORKDIR/target.raw"' in justfile
     assert "bluefin-server-root-a" in justfile
+    # The PXE pair is still exported, so the direct-kernel boot path stays covered.
+    assert (
+        '-append "systemd.unit=system-install.target '
+        'console=tty0 console=ttyS0,115200 rw unattended"'
+    ) in justfile
 
 
 def test_installer_wrapper_reads_kernel_command_line_without_cat() -> None:
@@ -143,9 +148,13 @@ def test_interactive_installer_uses_local_virtual_console() -> None:
     assert "StandardOutput=journal+console" in installer_element
     assert "StandardError=journal+console" in installer_element
     # journal+console follows the last console= argument (ttyS0), so the wrapper has
-    # to put interactive runs back on the attached display itself.
+    # to put interactive runs back on the attached display itself — but only when the
+    # kernel actually registered tty0 as a console, otherwise serial-only machines
+    # lose the install output to a VT nobody is watching.
     assert (
-        'if [[ " ${CMDLINE} " != *" unattended "* ]] && [ -w /dev/tty0 ]; then\n'
+        'if [[ " ${CMDLINE} " != *" unattended "* ]] \\\n'
+        "         && [ -w /dev/tty0 ] \\\n"
+        "         && grep -qw tty0 /sys/class/tty/console/active 2>/dev/null; then\n"
         "        exec > /dev/tty0 2>&1"
     ) in installer_element
 
@@ -225,6 +234,18 @@ def test_installer_smoke_probes_the_kiosk_over_tls_from_inside_the_guest() -> No
 def test_test_installer_boot_usb_contract() -> None:
     justfile = JUSTFILE.read_text(encoding="utf-8")
     start = justfile.index("test-installer-boot-usb:")
+    end = justfile.index("test-installer-boot-pxe:", start)
+    recipe = justfile[start:end]
+    assert "INSTALLER_BOOT_MODE=usb just test-installer-artifact" in recipe
+
+
+def test_test_installer_boot_pxe_recipe_exercises_direct_kernel_boot() -> None:
+    justfile = JUSTFILE.read_text(encoding="utf-8")
+    start = justfile.index("test-installer-boot-pxe:")
     end = justfile.index("install-vm:", start)
     recipe = justfile[start:end]
-    assert "just test-installer-artifact" in recipe
+    assert "INSTALLER_BOOT_MODE=pxe just test-installer-artifact" in recipe
+    assert '-kernel "$WORKDIR/installer.vmlinuz"' in justfile
+    assert '-initrd "$WORKDIR/installer.initrd"' in justfile
+    assert "bluefin-server-pxe-vmlinuz-*" in justfile
+    assert "bluefin-server-pxe-initrd-*.cpio.gz" in justfile

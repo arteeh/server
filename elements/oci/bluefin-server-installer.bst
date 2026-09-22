@@ -191,9 +191,15 @@ config:
       # the last console= argument, which is ttyS0, so an interactive bare-metal
       # install would otherwise print to serial rather than the attached display.
       # Keep the interactive installer on the attached display by redirecting this
-      # script's own output to /dev/tty0, falling back to journal+console when there
-      # is no local VT (headless serial-only installs).
-      if [[ " ${CMDLINE} " != *" unattended "* ]] && [ -w /dev/tty0 ]; then
+      # script's own output to /dev/tty0 — but only when the kernel actually drives
+      # tty0 as a console. On serial-only machines the VT device still exists and is
+      # writable, so a -w test alone would send the whole install to a display nobody
+      # is watching; /sys/class/tty/console/active lists the consoles the kernel
+      # really registered, and omits tty0 when the boot was serial-only. If that file
+      # is unreadable the redirect is skipped and output stays on journal+console.
+      if [[ " ${CMDLINE} " != *" unattended "* ]] \
+         && [ -w /dev/tty0 ] \
+         && grep -qw tty0 /sys/class/tty/console/active 2>/dev/null; then
         exec > /dev/tty0 2>&1
       fi
 
