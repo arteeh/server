@@ -85,12 +85,11 @@ config:
       printf 'root:x:0:\n' > /layer/etc/group
       chmod 0644 /layer/etc/group
 
-      # Pre-generate SSH host keys for first boot remote diagnostics
+      # SSH host keys are generated per device on first sshd start
+      # (ssh-host-keygen.service), never at build time: this DDI is published
+      # as a public release asset, so baked-in keys would expose every
+      # deployment's host private keys.
       mkdir -p /layer/etc/ssh
-      ssh-keygen -q -N "" -t ed25519 -f /layer/etc/ssh/ssh_host_ed25519_key
-      ssh-keygen -q -N "" -t rsa -b 3072 -f /layer/etc/ssh/ssh_host_rsa_key
-      chmod 0600 /layer/etc/ssh/ssh_host_*_key
-      chmod 0644 /layer/etc/ssh/ssh_host_*.pub
 
       # Sum actual file sizes across bind mounts (du -sb reports content bytes, not overlay blocks).
       ROOT_BYTES=$(du -sb /layer | cut -f1)

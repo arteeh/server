@@ -4,14 +4,19 @@
 #
 # `flash-installer` is the only recipe in the repository that destroys data: it
 # pipes an exported installer image straight onto a block device with `dd`.
-# Its four guards (device argument required, device must be a block device, an
-# exported image must exist, and the operator must confirm) are the only thing
-# standing between a typo and a wiped disk, and none of them were exercised.
+# Its guards (device argument required, device must be a block device, the
+# device must not back the running system, nothing may be mounted off it,
+# exactly one exported image must exist, the image must pass `zstd -t`, the
+# operator must confirm, and the write must survive a sha256 readback plus a
+# partition-table and PARTLABEL check) are the only thing standing between a
+# typo and a wiped disk, and none of them were exercised.
 #
 # The recipe is never run against a real device. Each test runs `just` inside a
-# private sandbox directory holding a copy of the Justfile, and `sudo`, `dd`,
-# `zstd` and `lsblk` are replaced by logging stubs on PATH, so the write path
-# records its arguments instead of performing them.
+# private sandbox directory holding a copy of the Justfile, and `dd`, `zstd`,
+# `lsblk`, `blockdev`, `sfdisk`, `partprobe` and `udevadm` are replaced by
+# stubs on PATH that log their arguments and return a scripted exit status
+# instead of touching a device. The `sudo` stub logs its arguments and then
+# executes them, so privileged steps land on those same stubs.
 #
 # Only one edit is applied to the copied Justfile: the block-device guard
 # `[ ! -b ... ]` becomes `[ ! -e ... ]`, because an unprivileged test cannot
@@ -43,13 +48,20 @@ setup() {
     cp "${REPO_ROOT}/elements/freedesktop-sdk.bst" "${SANDBOX}/elements/"
 
     sed 's/\[ ! -b /[ ! -e /' "$JUSTFILE" > "${SANDBOX}/Justfile"
-
-    make_stub sudo 0
-    make_stub dd 0
-    make_stub zstd 0
-    make_stub lsblk 0
+    cat > "${STUB_DIR}/sudo" <<EOF
+#!/usr/bin/env bash
+echo "sudo \$*" >> "${LOG}"
+"\${@}"
+EOF
+    chmod +x "${STUB_DIR}/sudo"
+    make_dd_stub 0
+    make_zstd_stub 0 0
+    make_blockdev_stub 0 0
+    make_stub partprobe 0
+    make_stub udevadm 0
+    make_sfdisk_stub 0 0
+    make_lsblk_stub "bluefin-installer-data"
 }
-
 # make_stub <name> <exit-code>
 #
 # Records the invocation in $LOG and exits with the requested status without
@@ -61,6 +73,96 @@ echo "$1 \$*" >> "${LOG}"
 exit $2
 EOF
     chmod +x "${STUB_DIR}/$1"
+}
+
+make_blockdev_stub() {
+    local flushbufs_exit="${1:-0}"
+    local rereadpt_exit="${2:-0}"
+    cat > "${STUB_DIR}/blockdev" <<EOF
+#!/usr/bin/env bash
+echo "blockdev \$*" >> "\${LOG}"
+if [[ " \$* " == *"--flushbufs"* ]]; then
+    exit ${flushbufs_exit}
+fi
+if [[ " \$* " == *"--rereadpt"* ]]; then
+    exit ${rereadpt_exit}
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/blockdev"
+}
+
+make_sfdisk_stub() {
+    local relocate_exit="${1:-0}"
+    local verify_exit="${2:-0}"
+    cat > "${STUB_DIR}/sfdisk" <<EOF
+#!/usr/bin/env bash
+echo "sfdisk \$*" >> "\${LOG}"
+if [[ " \$* " == *"--relocate"* ]]; then
+    exit ${relocate_exit}
+fi
+if [[ " \$* " == *"--verify"* ]]; then
+    exit ${verify_exit}
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/sfdisk"
+}
+
+make_zstd_stub() {
+    local test_exit="${1:-0}"
+    local decompress_exit="${2:-0}"
+    cat > "${STUB_DIR}/zstd" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${LOG:-}" ]; then
+    echo "zstd \$*" >> "\${LOG}"
+fi
+if [[ " \$* " == *"-t "* ]]; then
+    exit ${test_exit}
+fi
+if [[ " \$* " == *"-dc "* ]]; then
+    if [ "${decompress_exit}" -ne 0 ]; then
+        exit ${decompress_exit}
+    fi
+    printf 'dummy-decompressed-payload\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/zstd"
+}
+
+make_dd_stub() {
+    local mismatch="${1:-0}"
+    cat > "${STUB_DIR}/dd" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${LOG:-}" ]; then
+    echo "dd \$*" >> "\${LOG}"
+fi
+if [[ " \$* " == *"of="* ]]; then
+    cat > /dev/null
+fi
+if [[ " \$* " == *"if="* ]]; then
+    if [ "${mismatch}" -ne 0 ]; then
+        printf 'corrupted-readback\n'
+    else
+        printf 'dummy-decompressed-payload\n'
+    fi
+fi
+EOF
+    chmod +x "${STUB_DIR}/dd"
+}
+make_lsblk_stub() {
+    local label="${1:-}"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ " \$* " == *" -o PARTLABEL "* ]]; then
+    echo "${label}"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
 }
 
 # seed_image <filename>
@@ -112,7 +214,7 @@ refute_log() {
 }
 
 @test "the recipe still writes through dd so the stubs intercept the real path" {
-    grep -qF 'dd of={{DEVICE}}' "$JUSTFILE"
+    grep -qF 'zstd -dc "$1" | dd of="$2"' "$JUSTFILE"
 }
 
 # --- guard 1: device argument is mandatory --------------------------------
@@ -219,7 +321,23 @@ refute_log() {
     run_flash "$FAKE_DEV" "y"
     [ "$status" -eq 0 ]
     assert_log "dist/bluefin-server-installer-1.0.raw.zst"
-    assert_log "of=${FAKE_DEV}"
+    # The image and the device are passed as positional arguments to the root
+    # shell, never interpolated into the script it runs.
+    assert_log "conv=fsync bash dist/bluefin-server-installer-1.0.raw.zst ${FAKE_DEV}"
+}
+
+@test "flash-installer never interpolates the image path into the root shell script" {
+    grep -qF "zstd -dc \"\$1\"" "$JUSTFILE"
+    ! grep -qF "zstd -dc '\${IMG}'" "$JUSTFILE"
+}
+
+@test "flash-installer refuses when dist/ holds more than one installer image" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    seed_image "bluefin-server-installer-2.0.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"installer images in dist/; refusing to guess"* ]]
+    assert_nothing_written
 }
 
 @test "flash-installer writes with the flags that make the image bootable" {
@@ -235,4 +353,187 @@ refute_log() {
     seed_image "bluefin-server-installer-1.0.raw.zst"
     run_flash "$FAKE_DEV" "y"
     [[ "$output" == *"Successfully flashed"* ]]
+}
+
+@test "flash-installer finds only top-level dist artefacts and verifies partlabel" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    mkdir -p "${SANDBOX}/dist/nested"
+    : > "${SANDBOX}/dist/nested/bluefin-server-installer-9.9.raw.zst"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -eq 0 ]
+    assert_log "dist/bluefin-server-installer-1.0.raw.zst"
+    refute_log "nested"
+    assert_log "blockdev --rereadpt ${FAKE_DEV}"
+    assert_log "udevadm trigger --subsystem-match=block"
+    assert_log "udevadm settle --timeout=10"
+    [[ "$output" == *"Verifying partition table"* ]]
+    [[ "$output" == *"Verified: 'bluefin-installer-data'"* ]]
+    [[ "$output" == *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error and no success message when bluefin-installer-data is absent" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_lsblk_stub ""
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Verifying partition table"* ]]
+    [[ "$output" == *"ERROR: 'bluefin-installer-data' partition label not detected"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when both blockdev --rereadpt and partprobe fail" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_blockdev_stub 0 1
+    make_stub partprobe 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ERROR: Failed to reread partition table"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when blockdev --flushbufs fails" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_blockdev_stub 1 0
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when sfdisk --verify fails" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_sfdisk_stub 0 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when zstd -dc fails in write pipeline despite passing zstd -t" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_zstd_stub 0 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+@test "flash-installer fails with error when readback bytes hash differently" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_dd_stub 1
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"does not contain what was written"* ]]
+    [[ "$output" != *"Successfully flashed"* ]]
+}
+
+# --- guard: the device must not back the running system -------------------
+
+@test "flash-installer refuses a device backing a btrfs root with a subvolume source" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    cat > "${STUB_DIR}/findmnt" <<EOF
+#!/usr/bin/env bash
+echo "findmnt \$*" >> "${LOG}"
+if [[ " \$* " == *" / "* ]]; then
+    echo "/dev/sda2[/root]"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/findmnt"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ "\$*" == "-no KNAME ${FAKE_DEV}" ]]; then
+    echo "sda"
+fi
+# Only an unbracketed device node resolves; /dev/sda2[/root] must not.
+if [[ "\$*" == "-no PKNAME /dev/sda2" ]]; then
+    echo "sda"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is the disk backing the running system"* ]]
+    assert_log "lsblk -no PKNAME /dev/sda2"
+    assert_nothing_written
+}
+
+@test "flash-installer refuses a partition on the disk backing the running system" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    cat > "${STUB_DIR}/findmnt" <<EOF
+#!/usr/bin/env bash
+echo "findmnt \$*" >> "${LOG}"
+if [[ " \$* " == *" / "* ]]; then
+    echo "/dev/sda2"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/findmnt"
+    # The target is a partition node: its KNAME is sda3, which never matches
+    # the sda that / resolves to. Only resolving the target to its parent disk
+    # catches this.
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ "\$*" == "-no PKNAME ${FAKE_DEV}" ]]; then
+    echo "sda"
+fi
+if [[ "\$*" == "-no KNAME ${FAKE_DEV}" ]]; then
+    echo "sda3"
+fi
+if [[ "\$*" == "-no PKNAME /dev/sda2" ]]; then
+    echo "sda"
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is the disk backing the running system"* ]]
+    assert_log "lsblk -no PKNAME ${FAKE_DEV}"
+    assert_nothing_written
+}
+
+# --- guard: nothing may be mounted off the device -------------------------
+
+# make_mount_lsblk_stub <mountpoints-exit> <mountpoint-exit> <mount-output>
+#
+# Models lsblk versions with and without the MOUNTPOINTS column (util-linux
+# >= 2.37) so the fallback and the fail-closed path can both be exercised.
+make_mount_lsblk_stub() {
+    local mountpoints_exit="$1" mountpoint_exit="$2" mount_output="${3:-}"
+    cat > "${STUB_DIR}/lsblk" <<EOF
+#!/usr/bin/env bash
+echo "lsblk \$*" >> "${LOG}"
+if [[ " \$* " == *" -o MOUNTPOINTS "* ]]; then
+    [ ${mountpoints_exit} -ne 0 ] && exit ${mountpoints_exit}
+    echo "${mount_output}"
+    exit 0
+fi
+if [[ " \$* " == *" -o MOUNTPOINT "* ]]; then
+    [ ${mountpoint_exit} -ne 0 ] && exit ${mountpoint_exit}
+    echo "${mount_output}"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/lsblk"
+}
+
+@test "flash-installer falls back to MOUNTPOINT when lsblk predates MOUNTPOINTS" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_mount_lsblk_stub 1 0 "/run/media/operator/usb"
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"has mounted partitions"* ]]
+    assert_log "lsblk -n -o MOUNTPOINT ${FAKE_DEV}"
+    assert_nothing_written
+}
+
+@test "flash-installer refuses when the mount state cannot be read at all" {
+    seed_image "bluefin-server-installer-1.0.raw.zst"
+    make_mount_lsblk_stub 1 1 ""
+    run_flash "$FAKE_DEV" "y"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Could not read the mount state"* ]]
+    assert_nothing_written
 }
