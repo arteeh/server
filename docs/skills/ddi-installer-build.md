@@ -31,8 +31,20 @@ just export-sysext         # export sysext artifacts to dist/sysext/
 just flash-installer       # write the installer image to a USB device
 just show-me-the-future    # end-to-end QEMU installer smoke test
 just test-installer-artifact # test already-exported artifacts in QEMU without rebuilding
+just test-installer-boot-usb # alias for test-installer-artifact, named for the USB boot path
 just tags                  # show FSDK-derived version tags
 ```
+
+`just test-installer-artifact` boots the exported raw installer image through OVMF
+firmware as an emulated xHCI USB drive (`-device qemu-xhci` plus `-device usb-storage`),
+with the target disk on virtio-blk. This is the bare-metal USB install path: firmware
+picks the bootloader off the image itself rather than QEMU injecting a kernel through
+`-kernel`/`-initrd`. `just test-installer-boot-usb` is an alias for the same recipe,
+provided so the USB boot path is discoverable by name.
+
+The recipe prefers a real `OVMF_VARS` template but falls back to a blank variable store
+sized to `OVMF_CODE` on hosts that ship CODE only, so a missing template is a warning
+rather than a hard failure.
 
 ## Mandatory build path: ghost cluster
 

@@ -233,9 +233,12 @@ test-installer-artifact:
     WORKDIR="$(mktemp -d "${CACHE_DIR}/bluefin-show-future.XXXXXX")"
     trap 'rm -rf "$WORKDIR"' EXIT
 
+    # Only the raw installer image is needed: this recipe boots it through OVMF as
+    # a USB drive rather than via QEMU -kernel/-initrd, so the PXE vmlinuz/initrd
+    # are not consumed here. Copying them would make the test fail on hosts that
+    # have the installer image but no PXE artifacts. `just export-installer`
+    # already asserts the PXE pair was exported.
     cp dist/bluefin-server-installer-*.raw.zst "$WORKDIR/installer.raw.zst"
-    cp dist/bluefin-server-pxe-vmlinuz-* "$WORKDIR/installer.vmlinuz"
-    cp dist/bluefin-server-pxe-initrd-*.cpio.gz "$WORKDIR/installer.initrd"
     zstd -d "$WORKDIR/installer.raw.zst" -o "$WORKDIR/installer.raw"
     TARGET_SIZE="${SHOW_ME_THE_FUTURE_DISK_SIZE:-16G}"
     truncate -s "${TARGET_SIZE}" "$WORKDIR/target.raw"
@@ -273,8 +276,15 @@ test-installer-artifact:
       /usr/share/qemu/edk2-x86_64-vars.fd \
       /usr/share/qemu/edk2-i386-vars.fd \
       /usr/share/qemu/OVMF_VARS.fd) \
-      || { echo "ERROR: OVMF_VARS template not found"; exit 1; }
-    cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
+      || true
+    if [ -n "${OVMF_VARS}" ]; then
+      cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
+    else
+      # Hosts that ship only OVMF_CODE still boot: firmware initialises a blank
+      # variable store on first use, it just has no preseeded boot entries.
+      echo "WARNING: no OVMF_VARS template found; using a blank variable store sized to $OVMF_CODE" >&2
+      truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$WORKDIR/ovmf-vars.fd"
+    fi
 
     SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
     MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
@@ -456,8 +466,15 @@ install-vm:
         /usr/share/qemu/edk2-x86_64-vars.fd \
         /usr/share/qemu/edk2-i386-vars.fd \
         /usr/share/qemu/OVMF_VARS.fd) \
-        || { echo "ERROR: OVMF_VARS template not found"; exit 1; }
-      cp "$OVMF_TEMPLATE" "$OVMF_VARS"
+        || true
+      if [ -n "${OVMF_TEMPLATE}" ]; then
+        cp "$OVMF_TEMPLATE" "$OVMF_VARS"
+      else
+        # Hosts that ship only OVMF_CODE still boot: firmware initialises a blank
+        # variable store on first use, it just has no preseeded boot entries.
+        echo "WARNING: no OVMF_VARS template found; using a blank variable store sized to $OVMF_CODE" >&2
+        truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$OVMF_VARS"
+      fi
     fi
 
     SMP_CPUS="${INSTALL_VM_SMP:-$(nproc)}"
