@@ -55,6 +55,7 @@ tags:
 validate:
     python3 .github/scripts/check-release-version.py
     python3 .github/scripts/check-k0s-version.py
+    python3 .github/scripts/check-renovate-series.py
     just bst show --deps all oci/bluefin-server-ddi.bst
     just bst show --deps all oci/bluefin-server-installer.bst
     just bst show --deps all oci/k0s-sysext.bst
@@ -317,6 +318,30 @@ test-installer-artifact:
     }
     trap cleanup EXIT INT TERM
 
+    # The kiosk proxy publishes hostPort 8080 on the guest's loopback only
+    # (files/k0s/manifests/kubestellar/41-kubestellar-kiosk-proxy.yaml), and a
+    # QEMU hostfwd with an unspecified guest address is delivered to the guest's
+    # DHCP address, never to 127.0.0.1 — so no host-side probe can reach it
+    # without exposing the console on the guest's external interface. Probe from
+    # inside the guest instead and report the verdict on the system console,
+    # which is already captured in $SERIAL_LOG. The proxy terminates TLS with the
+    # self-signed certificate baked into the k0s sysext, so the probe speaks
+    # https and skips certificate verification, matching tests/e2e.
+    READY_MARKER="KIOSK_CONSOLE_READY"
+    READY_UNIT=$(base64 -w0 <<'UNIT'
+    [Unit]
+    Description=Report KubeStellar Console readiness on the system console
+    ConditionPathExists=!/etc/initrd-release
+    After=k0s-first-boot.service
+
+    [Service]
+    Type=oneshot
+    TimeoutStartSec=infinity
+    StandardOutput=journal+console
+    ExecStart=/usr/bin/bash -c 'echo "<4>kiosk-ready: polling https://127.0.0.1:8080"; i=0; until [ "$(curl --silent --fail --insecure --max-time 2 https://127.0.0.1:8080/healthz | jq -r .status)" = ok ] && [ "$(curl --silent --fail --insecure --max-time 2 --output /dev/null --write-out "%%{http_code}" https://127.0.0.1:8080/)" = 200 ]; do i=$((i+1)); if [ $((i %% 15)) -eq 0 ]; then echo "<4>kiosk-ready: waiting k0s=$(systemctl is-active k0scontroller.service) hz=$(curl -sk -o /dev/null -w "%%{http_code}" --max-time 2 https://127.0.0.1:8080/healthz) root=$(curl -sk -o /dev/null -w "%%{http_code}" --max-time 2 https://127.0.0.1:8080/) pods=$(k0s kubectl get pods -A --no-headers 2>/dev/null | wc -l) running=$(k0s kubectl get pods -A --no-headers 2>/dev/null | grep -c Running)"; fi; sleep 2; done; echo "<4>KIOSK_CONSOLE_READY"'
+    UNIT
+    )
+
     echo "==> Booting the installed server in QEMU (background)..."
     qemu-system-x86_64 \
         -enable-kvm \
@@ -326,9 +351,10 @@ test-installer-artifact:
         -drive file="$WORKDIR/target.raw",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd" \
-        -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:8080-:8080 \
+        -nic user,model=virtio-net-pci \
         -smbios "type=11,value=io.systemd.credential.binary:fstab.extra=L2Rldi9kaXNrL2J5LXBhcnRsYWJlbC92YXIgL3ZhciB4ZnMgZGVmYXVsdHMgMCAwCg==" \
-        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 systemd.mask=systemd-firstboot.service" \
+        -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.bluefin-kiosk-ready.service=${READY_UNIT}" \
+        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 systemd.mask=systemd-firstboot.service systemd.mask=systemd-homed-firstboot.service systemd.wants=bluefin-kiosk-ready.service" \
         -nographic \
         -serial file:"$SERIAL_LOG" \
         -monitor none &
@@ -336,7 +362,7 @@ test-installer-artifact:
 
     DEADLINE_SECS="${SHOW_ME_THE_FUTURE_DEADLINE:-${SHOW_ME_THE_FUTURE_TIMEOUT:-600}}"
     START_TIME=$(date +%s)
-    echo "==> Polling KubeStellar Console readiness at http://127.0.0.1:8080 (deadline: ${DEADLINE_SECS}s)..."
+    echo "==> Polling KubeStellar Console readiness from inside the guest (deadline: ${DEADLINE_SECS}s)..."
 
     while true; do
       if ! kill -0 "$TARGET_QEMU_PID" 2>/dev/null; then
@@ -348,13 +374,9 @@ test-installer-artifact:
         exit 1
       fi
 
-      HEALTHZ_JSON=$(curl --silent --fail --max-time 2 http://127.0.0.1:8080/healthz 2>/dev/null || true)
-      if [ -n "$HEALTHZ_JSON" ] && echo "$HEALTHZ_JSON" | jq -e '.status == "ok"' >/dev/null 2>&1; then
-        ROOT_CODE=$(curl --silent --fail --max-time 2 --output /dev/null --write-out "%{http_code}" http://127.0.0.1:8080/ 2>/dev/null || true)
-        if [ "$ROOT_CODE" = "200" ]; then
-          echo "==> KubeStellar Console is healthy: /healthz status ok, / returned HTTP 200"
-          break
-        fi
+      if grep -q "$READY_MARKER" "$SERIAL_LOG" 2>/dev/null; then
+        echo "==> KubeStellar Console is healthy: /healthz status ok, / returned HTTP 200"
+        break
       fi
 
       NOW=$(date +%s)
@@ -443,10 +465,66 @@ install-vm:
         -drive file="$TARGET_RAW",format=raw,if=virtio \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS"
+      # The interactive installer is driven by hand, so it can be aborted or
+      # fail without a non-zero exit here. Marking the install complete in that
+      # case caches a broken target that every later run boots forever. Gate
+      # the marker on the partition labels files/repart.d creates; an aborted
+      # install now fails loudly and re-runs the installer next invocation
+      # instead of silently booting an unusable disk.
+      echo "==> Verifying target partition layout before marking installation complete..."
+      TARGET_PARTS=$(sfdisk --json "$TARGET_RAW" 2>/dev/null | jq -r '.partitiontable.partitions[]?.name // empty' || true)
+      if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
+         ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
+        echo "ERROR: Target disk $TARGET_RAW does not contain expected partitions (bluefin-server-root-a, var)!" >&2
+        echo "The installation did not complete; re-run 'just install-vm' to install again." >&2
+        echo "Observed partitions:" >&2
+        echo "$TARGET_PARTS" >&2
+        sfdisk -l "$TARGET_RAW" >&2 || true
+        exit 1
+      fi
       touch "$INSTALL_COMPLETE"
     fi
 
     echo "==> Booting the installed kiosk..."
+    SERIAL_LOG="$STATE_DIR/kiosk-serial.log"
+    : > "$SERIAL_LOG"
+
+    # The kiosk proxy binds hostPort 8080 on the guest's loopback interface only
+    # (files/k0s/manifests/kubestellar/41-kubestellar-kiosk-proxy.yaml) and
+    # terminates TLS (files/k0s/kiosk/nginx.conf, `listen 8080 ssl`). A
+    # QEMU/libslirp hostfwd with an unspecified guest address is delivered to
+    # the guest's DHCP address, never to 127.0.0.1, so a host-side forward of
+    # 8080 can never reach the proxy, and a plaintext probe would fail against
+    # its TLS listener regardless. Probe readiness from inside the guest
+    # instead and report the verdict on the system console, which is captured
+    # in $SERIAL_LOG — the same in-guest-probe approach proposed for
+    # test-installer-artifact in #220. Host access, when wanted, goes over
+    # the existing SSH hostfwd rather than a direct (non-working) 8080
+    # forward. The readiness check deliberately does not parse the /healthz
+    # response body: curl --fail already fails on a non-2xx response, which
+    # is exactly "healthz ok and / returns 200", and it avoids embedding
+    # quotes inside a systemd ExecStart= line, where escaping rules differ
+    # from a plain shell.
+    # The installed image carries no fstab entry for /var and gpt-auto cannot
+    # mount it, so /var (which holds k0s state and therefore the kiosk proxy)
+    # stays empty unless the same SMBIOS fstab.extra credential
+    # test-installer-artifact passes is supplied here too. Without it k0s never
+    # starts and the readiness marker never appears.
+    READY_MARKER="KIOSK_CONSOLE_READY"
+    READY_UNIT=$(base64 -w0 <<'UNIT'
+    [Unit]
+    Description=Report KubeStellar Console readiness on the system console
+    ConditionPathExists=!/etc/initrd-release
+    After=k0s-first-boot.service
+
+    [Service]
+    Type=oneshot
+    TimeoutStartSec=infinity
+    StandardOutput=journal+console
+    ExecStart=/usr/bin/bash -c 'until curl --silent --fail --insecure --max-time 2 --output /dev/null https://127.0.0.1:8080/healthz && curl --silent --fail --insecure --max-time 2 --output /dev/null https://127.0.0.1:8080/; do sleep 2; done; echo KIOSK_CONSOLE_READY'
+    UNIT
+    )
+
     qemu-system-x86_64 \
       -enable-kvm \
       -m "${MEM_SIZE}" \
@@ -455,7 +533,11 @@ install-vm:
       -drive file="$TARGET_RAW",format=raw,if=virtio \
       -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
       -drive if=pflash,format=raw,file="$OVMF_VARS" \
-      -nic user,model=virtio-net-pci,hostfwd=tcp::8080-:8080,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443 &
+      -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443 \
+      -smbios "type=11,value=io.systemd.credential.binary:fstab.extra=L2Rldi9kaXNrL2J5LXBhcnRsYWJlbC92YXIgL3ZhciB4ZnMgZGVmYXVsdHMgMCAwCg==" \
+      -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.bluefin-kiosk-ready.service=${READY_UNIT}" \
+      -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 systemd.wants=bluefin-kiosk-ready.service" \
+      -serial file:"$SERIAL_LOG" &
     QEMU_PID=$!
     cleanup() {
       if kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -465,19 +547,42 @@ install-vm:
     }
     trap cleanup INT TERM
 
-    until curl --silent --show-error --max-time 2 --output /dev/null http://127.0.0.1:8080/; do
+    READY_DEADLINE_SECS="${INSTALL_VM_READY_DEADLINE:-600}"
+    READY_START_TIME=$(date +%s)
+    echo "==> Waiting for the KubeStellar Console to become ready inside the guest (deadline: ${READY_DEADLINE_SECS}s)..."
+    until grep -q "$READY_MARKER" "$SERIAL_LOG" 2>/dev/null; do
       if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        echo "ERROR: QEMU process ($QEMU_PID) died before the kiosk became ready!" >&2
+        if [ -f "$SERIAL_LOG" ]; then
+          echo "==> Serial log tail (last 100 lines):" >&2
+          tail -n 100 "$SERIAL_LOG" >&2
+        fi
         wait "$QEMU_PID"
         exit 1
       fi
+
+      NOW=$(date +%s)
+      ELAPSED=$((NOW - READY_START_TIME))
+      if [ "$ELAPSED" -ge "$READY_DEADLINE_SECS" ]; then
+        echo "ERROR: Timed out after ${READY_DEADLINE_SECS}s waiting for KubeStellar Console readiness!" >&2
+        if [ -f "$SERIAL_LOG" ]; then
+          echo "==> Serial log tail (last 100 lines):" >&2
+          tail -n 100 "$SERIAL_LOG" >&2
+        fi
+        cleanup
+        exit 1
+      fi
+
       sleep 2
     done
 
-    HOST_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)"
     echo "==> KubeStellar Console is ready!"
-    echo "==> Access URL (LAN): http://${HOST_IP:-localhost}:8080/"
-    echo "==> Access URL (Local): http://localhost:8080/"
-    xdg-open "http://${HOST_IP:-localhost}:8080/" || xdg-open http://localhost:8080/ || true
+    echo "==> The kiosk proxy binds the guest's loopback interface only and terminates"
+    echo "==> TLS with a self-signed certificate, so it is not directly reachable from"
+    echo "==> the host. To view it in a host browser, start sshd inside the VM"
+    echo "==> (systemctl start sshd) and open a tunnel over the forwarded SSH port:"
+    echo "==>   ssh -p 2222 -L 8080:127.0.0.1:8080 <your-user>@127.0.0.1"
+    echo "==> then browse https://localhost:8080/ and accept the self-signed certificate."
     wait "$QEMU_PID"
 
 # Set up KubeStellar kc-agent for the user in ONE command.

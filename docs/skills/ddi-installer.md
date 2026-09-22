@@ -48,8 +48,10 @@ terminal-based interactive installation that:
 
 User provisioning is handled on the target system's first boot via systemd
 system credentials (`systemd-sysusers`, `systemd-tmpfiles`) so the base image
-remains stateless. `systemd-firstboot.service` is masked on the target image
-(`/etc/systemd/system/systemd-firstboot.service -> /dev/null`) to guarantee
+remains stateless. `systemd-firstboot.service` and
+`systemd-homed-firstboot.service` are masked on the target image
+(`/etc/systemd/system/systemd-firstboot.service -> /dev/null` and
+`/etc/systemd/system/systemd-homed-firstboot.service -> /dev/null`) to guarantee
 unattended, prompt-free startup. The target DDI also pre-stages the extracted CA
 certificate bundle (`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` and
 `/etc/ssl/certs/ca-certificates.crt`) and a standard `/etc/hosts` file for
@@ -94,7 +96,7 @@ container runtime pod sandboxes.
 | Partition | Type | Size | Contents |
 |---|---|---|---|
 | ESP | vfat | 500 MiB – 1 GiB | `systemd-boot` + target OS UKI (`bluefin-server.efi`) |
-| `bluefin-server-root-a` | XFS | 4 GiB – 16 GiB | OS root filesystem (copied from installer data partition) |
+| `bluefin-server-root-a` | XFS | 4 GiB – 8 GiB | OS root filesystem (copied from installer data partition) |
 | `var` | XFS | ≥ 4 GiB | Writable persistent `/var`; grows to fill remaining disk |
 
 ## Installer Boot Flow
