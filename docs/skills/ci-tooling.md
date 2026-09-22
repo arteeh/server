@@ -42,11 +42,20 @@ before adding an action.
 
 ### Installing `just` — taiki-e/install-action, not snap/cargo/apt
 
+Pin the tool version too, not only the action SHA. Without `@<version>`,
+`install-action` resolves `just@latest` at run time, so the CI contract
+(`just validate`, `just test-unit`, the DDI/kernel export recipes) runs against
+a binary chosen by an upstream release rather than by a commit in this repo.
+
 ```yaml
 - uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2
   with:
-    tool: just
+    tool: just@1.58.0
 ```
+
+The version is repeated at each call site — currently `build.yml` (two jobs),
+`kernel.yml` and `unit-tests.yml`. Bumping `just` means changing all of them in
+one commit, so CI never runs two versions at once.
 
 ### Workflow permissions
 
@@ -59,12 +68,18 @@ permissions:
 
 The workflow checks out and executes PR-controlled code (the `Justfile` and
 build scripts come from the PR head), so no job that runs on `pull_request`
-may hold a write token. `contents: write` is granted per job only to:
+may hold a write token. In `build.yml`, `contents: write` is granted to exactly
+one job:
 
-- `track-refs` — pushes resolved BuildStream refs back to the PR branch; gated
-  to `renovate/*` PRs.
 - `release` — creates the GitHub Release and uploads assets; gated to
   `refs/heads/main`.
+
+Junction ref tracking must never run on `pull_request`. It used to, as a
+`track-refs` job gated on `startsWith(github.head_ref, 'renovate/')`, and a
+branch name is not an identity. It also pushed its result onto whatever PR
+branch happened to be open, so unrelated dependency PRs silently carried
+freedesktop-sdk and gnome-build-meta bumps. It now lives in
+`track-junctions.yml` on a schedule, opening its own PR on its own branch.
 
 The `build` job (validation, compile, signing) runs with the read-only default
 on every event. If a new job needs additional permissions, keep them as narrow
@@ -83,18 +98,23 @@ The `sudo_cmd` Just variable auto-detects at recipe startup:
 sudo_cmd := if `podman info >/dev/null 2>&1 && echo 1 || echo 0` == "1" { "" } else { "sudo" }
 ```
 
-### No PAT/App credentials in CI
+### No PATs; GitHub App tokens for automation that must trigger CI
 
 - Personal Access Tokens (PATs) are banned.
 - `repository_dispatch` is not used for build handoff.
-- Build/release triggers are driven cleanly by Renovate PR merges or manual
-  dispatches. The workflow uses `secrets.GITHUB_TOKEN` for release uploads.
+- `secrets.GITHUB_TOKEN` is used for release uploads inside `build.yml`.
+- Automation that pushes a branch and opens a PR uses the org-wide
+  `mergeraptor` GitHub App (`secrets.MERGERAPTOR_APP_ID` /
+  `secrets.MERGERAPTOR_PRIVATE_KEY`) via `actions/create-github-app-token`, as
+  `projectbluefin/dakota` does. This is not cosmetic: pushes made with
+  `secrets.GITHUB_TOKEN` do not dispatch workflow runs, so a PR built that way
+  sits at `action_required` with zero jobs and never gets checks.
 
 ## Workflow Structure
 
 | Job | Workflow | Trigger | Purpose |
 |-----|----------|---------|---------|
-| `track-refs` | `build.yml` | `pull_request` (`renovate/*` only) | Resolves BuildStream junction refs and pushes them back to the PR branch. Sole `contents: write` grant on `pull_request`. |
+| `track-junctions` | `track-junctions.yml` | `schedule` (08:00 UTC), `workflow_dispatch` | Resolves the `freedesktop-sdk.bst` + `gnome-build-meta.bst` junction refs, syncs `project.conf`'s `release-version`, and opens/updates its own PR on `auto/track-junctions`. `contents: write` + `pull-requests: write`, never on `pull_request`. |
 | `build` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Resolves the element graph, runs the full BuildStream compile (including Flatcar LTS Kernel & ZFS), and signs the release manifest on pushes to `main`. Read-only token. |
 | `installer-test` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Downloads the build job's exported installer/PXE artifact and calls the shared `projectbluefin/actions` QEMU workflow. No Lima or second BuildStream build. |
 | `release` | `build.yml` | `push/main`, `workflow_dispatch` | Downloads the signed assets handed off by `build` and publishes them to the GitHub Release (`if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/main' }}`). `contents: write`. |
@@ -111,9 +131,10 @@ uploaded to a GitHub Release tagged `installer-v<FSDK-RELEASE>`.
 1. **Renovate tracking:** `renovate.json` is configured with a custom regex
    manager to scan BuildStream junction files (`freedesktop-sdk.bst` and
    `gnome-build-meta.bst`) using the `git-refs` datasource.
-2. **Auto-resolution:** On Renovate PRs, GitHub Actions executes
-   `just bst source track` to resolve raw tags to full `git-describe` refs and
-   commits them back to the PR branch.
+2. **Auto-resolution:** The scheduled `track-junctions` workflow executes
+   `just bst source track` to resolve raw tags to full `git-describe` refs,
+   syncs `release-version` to the tracked FSDK point release, and proposes the
+   result as its own pull request against `main`.
 3. **Full Compilation:** Builds the standalone DDI OS image, live installer, and
    k0s systemd-sysext on every pull request and push to `main`.
 4. **Installer boot test:** Uploads the already-built installer and PXE artifacts and calls `projectbluefin/actions/.github/workflows/server-installer-test.yml`. The shared workflow prepares QEMU/KVM and runs this repository's `just test-installer-artifact`; Lima remains local-only.
@@ -130,10 +151,13 @@ uploaded to a GitHub Release tagged `installer-v<FSDK-RELEASE>`.
 |---|---|
 | "It's just a minor version tag, supply-chain risk is low." | One compromised tag push owns every repo using it. Pin to SHA. |
 | "I'll check what SHA other repos use later." | Check now — it's one `gh api` call and takes a few seconds. |
+| "`tool: just` always installs a working version." | It installs whatever is latest that day. A `just` release can change recipe parsing or `--fmt` output and break CI with no commit in this repo. |
 
 ## Red Flags
 
 - Any `uses:` line with a mutable ref (`@v2`, `@main`, `@latest`).
+- An `install-action` step whose `tool:` has no `@<version>` — the pin is half
+  done, since the action is fixed but the binary it installs is not.
 - `sudo podman` in one step and plain `podman` in another step doing the same
   operation.
 - A new action not present in any sibling repo — check upstream first.
@@ -141,6 +165,7 @@ uploaded to a GitHub Release tagged `installer-v<FSDK-RELEASE>`.
 ## Verification
 
 - [ ] Every `uses:` line has a full 40-character SHA and a `# vX` comment.
+- [ ] Every `install-action` `tool:` names an explicit version (`just@1.58.0`).
 - [ ] `just validate` passes after workflow changes.
 - [ ] No new mutable action refs introduced.
 - [ ] The release signing step uploads detached `.gpg` signatures for every
