@@ -1,4 +1,4 @@
 Bluefin Server (\l)
-KubeStellar Console: https://\4:8080/ (or https://127.0.0.1:8080 from host)
-
+KubeStellar Console: https://127.0.0.1:8080/ (loopback, TLS only)
+Remote access: ssh -L 8080:127.0.0.1:8080 core@<host>
 
