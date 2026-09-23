@@ -56,6 +56,7 @@ validate:
     python3 .github/scripts/check-release-version.py
     python3 .github/scripts/check-k0s-version.py
     python3 .github/scripts/check-renovate-series.py
+    python3 .github/scripts/check-flatcar-version.py
     just bst show --deps all oci/bluefin-server-ddi.bst
     just bst show --deps all oci/bluefin-server-installer.bst
     just bst show --deps all oci/k0s-sysext.bst
