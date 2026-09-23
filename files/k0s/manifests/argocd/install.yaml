@@ -41,7 +41,12 @@ spec:
       serviceAccountName: argocd-server
       containers:
       - name: argocd-server
-        image: quay.io/argoproj/argocd:v2.12.3
+        # pinned by digest so a re-pointed tag cannot silently change what runs
+        # (sec-check #74: was mutable tag v2.12.3, EOL with unbackported CVEs)
+        image: quay.io/argoproj/argocd:v2.14.9@sha256:f5885af084da62a952e73cf68df355b28af62894e3779ef4da4ed93a717d8f70
+        # --insecure serves plaintext HTTP; acceptable only because the Service
+        # below is ClusterIP-only and must stay that way. Expose this externally
+        # only behind a TLS-terminating proxy, then drop --insecure.
         command: [argocd-server, --insecure, --staticassets, /shared/app]
         ports:
         - containerPort: 8080

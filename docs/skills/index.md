@@ -27,7 +27,7 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 | [`bump-fsdk-version.md`](bump-fsdk-version.md) | Pinning or retagging the FSDK junction | Update the pinned FSDK release and derived tags. |
 | [`ci-tooling.md`](ci-tooling.md) | GitHub Actions, workflow SHA pinning, CI conventions | CI conventions and release pipeline rules. |
 | [`ddi-installer-build.md`](ddi-installer-build.md) | Building the installer or DDI on the cluster | Cluster build pipeline and local installer/DDI build. |
-| [`ddi-installer.md`](ddi-installer.md) | Installer boot flow, `systemd-sysinstall`, `systemd-repart` | High-level DDI install architecture and local smoke test. |
+| [`ddi-installer.md`](ddi-installer.md) | Installer boot flow, `systemd-sysinstall`, `systemd-repart`, PXE network DDI pull | High-level DDI install architecture and local smoke test. |
 | [`factory-integration.md`](factory-integration.md) | Lab integration, boot-test workflow, factory role | How Bluefin Server is consumed by the CI lab. |
 | [`flatcar-parity-matrix.md`](flatcar-parity-matrix.md) | Flatcar version audit, component parity, substitution order | Version parity matrix and gap audit against Flatcar 4593.2.5. |
 | [`gap-analysis-distros.md`](gap-analysis-distros.md) | Comparing Bluefin Server to other server OSes | Source-verified comparison to Ubuntu, Talos, Flatcar, FCOS. |
@@ -44,4 +44,4 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 - **Publish registry:** factory OCI registry at `<registry-host>:30500` (or configured by operator).
 - **Cluster build workflow:** `bluefin-server-build-pipeline` in the downstream factory CI repository.
 - **Cluster boot-test workflow:** `bluefin-server-boot-test` in the downstream factory CI repository.
-- **Version scheme:** FSDK-derived only; no separate application version axis.
+- **Version scheme:** two axes — `installer-version` (FSDK-derived, `project.conf`) and `flatcar-version` (OS payload, `include/flatcar.yml`); no application version axis.

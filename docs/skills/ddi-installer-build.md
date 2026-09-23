@@ -24,7 +24,7 @@ just cluster-build         # submit an Argo workflow to build/publish
 just build-installer       # build the installer locally
 just export-installer      # export installer + UKI + SHA256SUMS to dist/
 just export-pxe            # export standalone PXE vmlinuz/initrd to dist/
-just build-ddi             # build the OS DDI payload
+just build-ddi             # build the OS DDI payload (see "Payload base" below)
 just export-ddi            # export DDI + SHA256SUMS to dist/ddi/
 just build-sysext          # build the k0s sysext
 just export-sysext         # export sysext artifacts to dist/sysext/
@@ -58,6 +58,28 @@ rather than a hard failure. It needs `qemu-system-x86_64`, `zstd`, `sfdisk` and 
 the host; the last two are used to assert that the installer actually partitioned the
 target disk, and the recipe fails with a named error if either is missing.
 
+### Payload base
+
+`build-ddi` takes an optional `os-base` argument selecting which payload it
+composes. It backs the FSDK-vs-Flatcar parity harness
+(projectbluefin/server#129), where the two bases are built and compared:
+
+```bash
+just build-ddi                    # os-base=fsdk (default)
+just build-ddi fsdk               # FSDK-composed payload -- the shipped base
+just build-ddi flatcar-reference  # imported Flatcar reference tree -- the control
+```
+
+`flatcar-reference` routes to `oci/bluefin-server-ddi-flatcar-reference.bst`.
+That element arrives with the imported Flatcar reference tree
+(projectbluefin/server#126); until it does, `build-ddi flatcar-reference`
+refuses with a message naming #126 rather than building anything. Anything
+other than these two values is rejected.
+
+`export-ddi` always exports the default `fsdk` payload -- it does not forward
+`os-base`, so the reference tree is a comparison input, never a release
+artifact.
+
 ## Mandatory build path: ghost cluster
 
 This project MUST always build on the ghost cluster using distributed BuildStream:
@@ -82,7 +104,8 @@ projects:
         push: true
 ```
 
-Then run `just build-installer` or `just build-ddi`.
+Then run `just build-installer` or `just build-ddi` (add `flatcar-reference` to
+build the parity-harness control instead of the shipped payload).
 
 ## Flashing the installer media
 
@@ -119,7 +142,8 @@ The release process is driven by `.github/workflows/build.yml`:
 - CI builds the DDI payload, installer, target UKI, k0s sysext, and standalone
   PXE boot inputs (`bluefin-server-pxe-vmlinuz-*`, `bluefin-server-pxe-initrd-*.cpio.gz`).
 - CI uploads the versioned release assets to the corresponding
-  `installer-v<release-version>` GitHub Release.
+  `installer-v<installer-version>` GitHub Release. The release tag tracks the
+  installer axis, while the DDI and UKI inside it track the Flatcar payload axis (`flatcar-version`).
 - CI also produces a combined `dist/release/SHA256SUMS` manifest and signs it
   to create `SHA256SUMS.gpg` for `systemd-sysupdate` verification. The PXE
   inputs are included in this manifest, per `docs/skills/ddi-installer.md`.

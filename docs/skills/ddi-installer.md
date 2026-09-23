@@ -24,13 +24,14 @@ metadata:
 - OCI-only image work (no installer involvement).
 - Bootc-specific changes.
 - Desktop or nspawn machine image work.
-- Adding network DDI fetching — the DDI remains embedded as a data partition.
 
 ## Architecture
 
-The installer is offline, self-contained, and systemd-native. The OS DDI payload
-(`bluefin-server-ddi.bst`) is embedded as a data partition on the installer
-media at build time. No network access is required at install time.
+The installer is systemd-native and offline by default. The OS DDI payload
+(`bluefin-server-ddi.bst`) is embedded as a data partition on installer media
+at build time; no network access is required for the default install. PXE/
+netboot clients may opt into downloading the DDI over the LAN instead (see
+"PXE network installs" below), but the embedded path stays the default.
 
 The installer UI is systemd's built-in `systemd-sysinstall` which provides a
 terminal-based interactive installation that:
@@ -47,13 +48,21 @@ terminal-based interactive installation that:
 - Reboots into the installed system.
 
 User provisioning is handled on the target system's first boot via systemd
-system credentials (`systemd-sysusers`, `systemd-tmpfiles`) so the base image
-remains stateless. `systemd-firstboot.service` and
-`systemd-homed-firstboot.service` are masked on the target image
-(`/etc/systemd/system/systemd-firstboot.service -> /dev/null` and
-`/etc/systemd/system/systemd-homed-firstboot.service -> /dev/null`) to guarantee
-unattended, prompt-free startup. The target DDI also pre-stages the extracted CA
-certificate bundle (`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` and
+system credentials so the base image remains stateless. `systemd-sysusers`
+consumes root account records, `systemd-tmpfiles` consumes `tmpfiles.extra`
+for arbitrary first-boot files, and `systemd-network-generator` consumes
+`network.conf.*` / `network.link.*` / `network.netdev.*` /
+`network.network.*` credentials before networkd starts. The stock interactive
+`systemd-firstboot.service` stays masked, but
+`bluefin-firstboot-credentials.service` runs `systemd-firstboot`
+non-interactively when `firstboot.locale`, `firstboot.timezone`,
+`firstboot.hostname`, or related credentials are present. When
+`firstboot.hostname` is supplied, the service also applies the live kernel
+hostname before `systemd-networkd` starts so first-boot DHCP uses it. With no
+credentials, the target keeps the default DHCP network and does not prompt. The
+target DDI
+also pre-stages the extracted CA certificate bundle
+(`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` and
 `/etc/ssl/certs/ca-certificates.crt`) and a standard `/etc/hosts` file for
 container runtime pod sandboxes.
 
@@ -156,9 +165,42 @@ clients can add `unattended` to the installer command line, for example:
 systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended
 ```
 
-The DDI is still required on `bluefin-installer-data`; standalone network DDI
-fetching is not supported yet. Use the raw installer image for complete,
-offline installation.
+The DDI remains on `bluefin-installer-data` for the default embedded install.
+
+## PXE network installs
+
+PXE clients boot the standalone kernel and initrd (published as
+`bluefin-server-pxe-vmlinuz-<ver>` and
+`bluefin-server-pxe-initrd-<ver>.cpio.gz`) and opt into downloading the DDI
+over the LAN with `inst.*` kernel parameters:
+
+- `inst.ddi_url=<https-url>` — download the zstd-compressed DDI instead of the
+  embedded installer partition.
+- `inst.ddi_sha256=<hex>` — **mandatory** when `inst.ddi_url` is set; verify the
+  downloaded DDI before touching the target disk (fail closed if absent).
+- `inst.target_disk=/dev/...` — explicit target disk, overriding
+  first-writable-disk auto-detection.
+
+Without `inst.ddi_url`, behavior is unchanged and uses the embedded DDI. The
+wrapper (`bluefin-sysinstall`) brings up DHCP via `systemd-networkd-wait-online`,
+streams the DDI down with `curl`, stream-decompresses it with `zstd`, and feeds
+it into the **native** `systemd-sysinstall` flow by staging a temporary
+`/usr/lib/repart.sysinstall.d/` override whose `20-root-a.conf` `CopyBlocks=`
+points at the downloaded image — no custom installer logic.
+
+Example iPXE stanza (the PXE server mirrors the three assets, verified against
+the signed `SHA256SUMS`):
+
+```ipxe
+#!ipxe
+set base http://pxe-server:8080/data
+kernel ${base}/bluefin-server-pxe-vmlinuz-<ver> systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended inst.ddi_url=${base}/bluefin-server-ddi-<ver>.raw.zst inst.ddi_sha256=<sha256>
+initrd ${base}/bluefin-server-pxe-initrd-<ver>.cpio.gz
+boot
+```
+
+RAM floor: the whole live env is a RAM-resident cpio rootfs and the DDI stages
+in tmpfs, so plan roughly `live-env + DDI` of free RAM (~8 GiB guidance).
 
 ## Common Rationalizations
 
@@ -170,7 +212,7 @@ offline installation.
 | "Initrd archive tools (gzip, cpio) are in base-stack." | In FSDK 26.08, gzip and cpio are standalone components; elements packing or unpacking initrds must explicitly declare `components/gzip.bst` and `components/cpio.bst` in `build-depends`. |
 | "Use knuckle instead." | knuckle is deprecated in favor of native `systemd-sysinstall` (systemd 261+). |
 | "Hardcode `root=/dev/vda2` for QEMU." | Bare metal has different device names. Always use PARTUUID. |
-| "Pull the DDI from the network at install time." | Network failures = broken installs. The DDI is embedded in the installer media. |
+| "Pull the DDI from the network at install time." | Network pull is opt-in via `inst.ddi_url`; verification is mandatory and failures abort before any disk change, while the embedded installer media stays the default. |
 | "Put the DDI in the initrd cpio." | The DDI is 2 GiB+. The initrd cpio step must run before the DDI is placed in `/layer`. |
 | "Store the DDI in the ESP (FAT32)." | FAT32 has a 4 GiB per-file limit. Use a separate XFS partition. |
 | "Add an 8 GiB minimum size floor to the DDI." | The rootfs is immutable. It never grows in-place. Content + overhead is enough. |

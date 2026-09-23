@@ -38,6 +38,7 @@ spec:
       labels:
         app.kubernetes.io/name: kubestellar-console
     spec:
+      serviceAccountName: kubestellar-console
       containers:
       - name: console
         image: ghcr.io/kubestellar/console:v0.3.34
@@ -48,6 +49,21 @@ spec:
           value: "true"
         - name: DEV_USER_LOGIN
           value: "admin"
+        # First-boot fix (#193): on a freshly installed single-node k0s cluster
+        # no client kc-agent is connected yet, so the console must read the local
+        # embedded k0s API directly instead of defaulting to mock/demo cards.
+        # The fix is the ServiceAccount above plus the read-only ClusterRole in
+        # 42-kubestellar-console-rbac.yaml; NO_LOCAL_AGENT is set only to make
+        # that intent explicit, since the console backend already forces it on
+        # when it detects it is running in-cluster. SKIP_ONBOARDING skips the
+        # onboarding questionnaire so the kiosk shows the dashboard immediately
+        # (sign-in is bypassed separately by DEV_MODE/DEV_USER_LOGIN above).
+        - name: SKIP_ONBOARDING
+          value: "true"
+        - name: NO_LOCAL_AGENT
+          value: "true"
+        - name: POD_NAMESPACE
+          value: "kubestellar-console"
         - name: GITHUB_CLIENT_ID
           valueFrom:
             secretKeyRef:
