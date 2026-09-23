@@ -194,17 +194,84 @@ config:
       modprobe -q xfs || true
       udevadm trigger --subsystem-match=block || true
       udevadm settle --timeout=15 || true
-      # Hard preflight: abort with diagnostics if installer data partition is absent or not a block device
-      INSTALLER_PART_PATH="/dev/disk/by-partlabel/bluefin-installer-data"
-      if [ ! -b "${INSTALLER_PART_PATH}" ]; then
-        echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device!" >&2
-        echo "==> Block devices visible at failure:" >&2
-        lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE >&2 || true
-        echo "==> Partition label symlinks visible under /dev/disk/by-partlabel/:" >&2
-        ls -la /dev/disk/by-partlabel/ >&2 || true
-        exit 1
+
+      # Parse the kernel command line for PXE/netboot parameters. The inst.*
+      # namespace follows the Anaconda convention PXE operators already guess.
+      # Without inst.ddi_url the embedded installer-media path is unchanged.
+      CMDLINE="$(< /proc/cmdline)"
+      DDI_URL=""
+      DDI_SHA256=""
+      TARGET_DISK_OVERRIDE=""
+      for arg in ${CMDLINE}; do
+        case "${arg}" in
+          inst.ddi_url=*) DDI_URL="${arg#inst.ddi_url=}" ;;
+          inst.ddi_sha256=*) DDI_SHA256="${arg#inst.ddi_sha256=}" ;;
+          inst.target_disk=*) TARGET_DISK_OVERRIDE="${arg#inst.target_disk=}" ;;
+        esac
+      done
+
+      # Opt-in network DDI pull (PXE/netboot). Absence of inst.ddi_url leaves
+      # the embedded installer-media path byte-for-byte unchanged (offline-first
+      # preserved). Any fetch/verification failure aborts here, before the target
+      # disk is touched.
+      if [ -n "${DDI_URL}" ]; then
+        # Verification is mandatory for network installs: fail closed when no
+        # checksum is supplied, so no unsigned/unchecked install can proceed.
+        if [ -z "${DDI_SHA256}" ]; then
+          echo "ERROR: inst.ddi_url is set but inst.ddi_sha256 is missing; verification is mandatory for network installs." >&2
+          exit 1
+        fi
+        mkdir -p /run/installer
+        echo "==> Fetching DDI from ${DDI_URL}..."
+        if command -v systemd-networkd-wait-online >/dev/null 2>&1; then
+          systemd-networkd-wait-online --timeout=90 || {
+            echo "ERROR: network did not come up before the DDI download timeout." >&2
+            exit 1
+          }
+        fi
+        # Stream-decompress: decompress straight to the final image and remove
+        # the compressed copy, so only one DDI-sized blob lives in tmpfs at a time.
+        curl --fail --silent --show-error --location --retry 3 \
+          --output /run/installer/bluefin-server-ddi.raw.zst "${DDI_URL}"
+        printf '%s  %s\n' "${DDI_SHA256}" /run/installer/bluefin-server-ddi.raw.zst \
+          | sha256sum --check --status || {
+            echo "ERROR: downloaded DDI SHA256 verification failed." >&2
+            exit 1
+          }
+        zstd -d -q --rm \
+          /run/installer/bluefin-server-ddi.raw.zst \
+          -o /run/installer/bluefin-server-ddi.raw || {
+            echo "ERROR: failed to decompress downloaded DDI." >&2
+            exit 1
+          }
+        ls -lh /run/installer/bluefin-server-ddi.raw
+        # Feed the downloaded image into the native systemd-sysinstall flow by
+        # overriding only the root recipe's CopyBlocks=. systemd-sysinstall
+        # reads /usr/lib/repart.sysinstall.d/ when populated, else /usr/lib/
+        # repart.d/, so stage all three recipes with 20-root-a.conf repointed.
+        mkdir -p /usr/lib/repart.sysinstall.d
+        cp -a /usr/lib/repart.d/10-esp.conf /usr/lib/repart.sysinstall.d/
+        cp -a /usr/lib/repart.d/30-var.conf /usr/lib/repart.sysinstall.d/
+        sed 's#^CopyBlocks=.*#CopyBlocks=/run/installer/bluefin-server-ddi.raw#' \
+          /usr/lib/repart.d/20-root-a.conf \
+          > /usr/lib/repart.sysinstall.d/20-root-a.conf
       fi
-      INSTALLER_PART="$(readlink -f "${INSTALLER_PART_PATH}")"
+
+      # Hard preflight: the embedded installer-media path needs the
+      # bluefin-installer-data partition. Under PXE (inst.ddi_url=) there is no
+      # installer media, so the check is skipped when inst.ddi_url is set.
+      if [ -z "${DDI_URL}" ]; then
+        INSTALLER_PART_PATH="/dev/disk/by-partlabel/bluefin-installer-data"
+        if [ ! -b "${INSTALLER_PART_PATH}" ]; then
+          echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device!" >&2
+          echo "==> Block devices visible at failure:" >&2
+          lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE >&2 || true
+          echo "==> Partition label symlinks visible under /dev/disk/by-partlabel/:" >&2
+          ls -la /dev/disk/by-partlabel/ >&2 || true
+          exit 1
+        fi
+        INSTALLER_PART="$(readlink -f "${INSTALLER_PART_PATH}")"
+      fi
 
       # Auto-detect target disk for unattended install (any raw disk of type "disk" that is not the installer, is not read-only, and has size > 0)
       TARGET_DISK=""
@@ -221,6 +288,15 @@ config:
         TARGET_DISK="${name}"
         break
       done < <(lsblk -p -d -n -o NAME,TYPE,RO,SIZE -b)
+
+      # inst.target_disk= overrides auto-detection (explicit target under PXE).
+      if [ -n "${TARGET_DISK_OVERRIDE}" ]; then
+        if [ ! -b "${TARGET_DISK_OVERRIDE}" ]; then
+          echo "ERROR: inst.target_disk is not a block device: ${TARGET_DISK_OVERRIDE}" >&2
+          exit 1
+        fi
+        TARGET_DISK="${TARGET_DISK_OVERRIDE}"
+      fi
 
       stage_fallback_bootloader() {
         udevadm settle --timeout=10 || true
@@ -263,8 +339,6 @@ config:
         fi
       }
 
-      # Check for unattended in kernel command line
-      CMDLINE="$(< /proc/cmdline)"
       if [[ " ${CMDLINE} " == *" unattended "* ]]; then
         echo "==> Running in UNATTENDED mode..."
         if [ -n "${TARGET_DISK}" ]; then

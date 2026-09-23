@@ -34,6 +34,11 @@ depends:
   - freedesktop-sdk.bst:components/xfsprogs.bst
   - freedesktop-sdk.bst:components/dosfstools.bst
 
+  # Network DDI pull for PXE/netboot installs (fetch + stream-decompress the
+  # zstd-compressed DDI over the LAN, per inst.ddi_url in the wrapper).
+  - freedesktop-sdk.bst:components/curl.bst
+  - freedesktop-sdk.bst:components/zstd.bst
+
   # Kernel (installer boots from this; vmlinuz used as the UKI --linux= arg)
   - flatcar/flatcar-kernel.bst
   - flatcar/flatcar-zfs.bst
