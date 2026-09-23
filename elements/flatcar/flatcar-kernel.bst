@@ -43,7 +43,7 @@ config:
       install -D -m 0644 flatcar_production_image.vmlinuz "${TARGET_MODDIR}/vmlinuz"
 
       # Extract modules from container rootfs
-      tar -zxvf flatcar-container.tar.gz \
+      tar --no-same-owner -zxvf flatcar-container.tar.gz \
         --strip-components=5 \
         -C "${TARGET_MODDIR}" \
         "./usr/lib/modules/%{flatcar-kver}"

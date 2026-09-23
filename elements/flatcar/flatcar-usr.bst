@@ -31,7 +31,7 @@ config:
       mkdir -p "%{install-root}"
 
       # Extract the complete Flatcar /usr into the element install root.
-      tar -xzf flatcar-container.tar.gz -C "%{install-root}" ./usr
+      tar --no-same-owner -xzf flatcar-container.tar.gz -C "%{install-root}" ./usr
 
       # Remove kernel modules; elements/flatcar/flatcar-kernel.bst extracts and owns
       # /usr/lib/modules/%{flatcar-kver} (uncompressing .ko.xz modules and running depmod)
