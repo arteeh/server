@@ -272,7 +272,7 @@ def test_main_rejects_fname_on_the_os_release_axis(checker):
         GOOD_SYSEXT.replace("%{k0s-version}.raw", "%{release-version}.raw", 1),
         encoding="utf-8",
     )
-    assert "names the k0s sysext on the OS release" in _run(checker)
+    assert "names the k0s sysext on an OS release" in _run(checker)
 
 
 def test_main_rejects_fname_not_derived_from_k0s_version(checker):
