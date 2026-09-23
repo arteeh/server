@@ -18,6 +18,9 @@ class BluefinKubestellar < Formula
       To start kc-agent with Bluefin Server console defaults:
         bluefin-kubestellar start
 
+      To bridge VM guest loopback (kiosk-proxy) via SSH:
+        bluefin-kubestellar tunnel
+
       To check status:
         bluefin-kubestellar status
     EOS

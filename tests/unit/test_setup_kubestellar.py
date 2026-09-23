@@ -31,3 +31,11 @@ def test_formulas_exist_and_configure_service_or_binary() -> None:
     agent_text = FORMULA_AGENT.read_text(encoding="utf-8")
     assert "service do" in agent_text
     assert "KAGENTI_CONTROLLER_URL" in agent_text
+
+
+def test_bluefin_kubestellar_supports_ssh_tunnel() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "tunnel" in text
+    assert "--tunnel" in text
+    assert "--ssh-port" in text
+    assert "-L" in text
