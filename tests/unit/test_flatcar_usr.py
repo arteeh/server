@@ -257,7 +257,7 @@ def test_flatcar_usr_contract_execution(tmp_path: Path) -> None:
     script = script.replace("%{flatcar-kver}", kver)
 
     # In test environment, the mock files are already populated, so bypass tar extraction
-    script = re.sub(r"tar\s+-xzf\s+flatcar-container\.tar\.gz\s+-C\s+.*", "# tar extract bypassed", script)
+    script = re.sub(r"tar\s+.*flatcar-container\.tar\.gz\s+-C\s+.*", "# tar extract bypassed", script)
 
     # Run the script in bash
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
