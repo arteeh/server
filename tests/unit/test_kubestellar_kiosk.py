@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 KIOSK = ROOT / "files" / "k0s" / "kiosk"
 KIOSK_CONF = KIOSK / "nginx.conf"
@@ -87,6 +89,14 @@ def test_console_provides_local_and_oauth_login_options() -> None:
     assert 'value: "true"' in console
     assert "name: ALLOW_DEV_MODE_IN_CLUSTER" in console
     assert "hostPort:" not in console
+    # #193: on first boot the console must read the local k0s cluster directly
+    # (no connected kc-agent yet) and skip the onboarding questionnaire.
+    # SKIP_ONBOARDING skips the questionnaire, not sign-in; sign-in is bypassed
+    # by DEV_MODE/DEV_USER_LOGIN.
+    assert "name: SKIP_ONBOARDING" in console
+    assert "name: NO_LOCAL_AGENT" in console
+    assert "name: POD_NAMESPACE" in console
+    assert "serviceAccountName: kubestellar-console" in console
     assert "name: GITHUB_CLIENT_ID" in console
     assert "name: GITHUB_CLIENT_SECRET" in console
     assert "name: kubestellar-console-github-oauth" in console
@@ -107,3 +117,68 @@ def test_proxy_is_the_only_public_console_endpoint() -> None:
         "nginx@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8"
         in proxy
     )
+
+
+def test_console_rbac_reads_only_the_local_cluster() -> None:
+    rbac = (
+        ROOT
+        / "files"
+        / "k0s"
+        / "manifests"
+        / "kubestellar"
+        / "42-kubestellar-console-rbac.yaml"
+    ).read_text(encoding="utf-8")
+    docs = list(yaml.safe_load_all(rbac))
+    kinds = [d.get("kind") for d in docs if d]
+    assert kinds == [
+        "ServiceAccount",
+        "ClusterRole",
+        "ClusterRoleBinding",
+    ]
+
+    sa = next(d for d in docs if d["kind"] == "ServiceAccount")
+    assert sa["metadata"]["namespace"] == "kubestellar-console"
+
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    # Read-only: never grant write verbs to the console's account.
+    for rule in role["rules"]:
+        assert set(rule["verbs"]) <= {"get", "list", "watch"}
+    resources = {r for rule in role["rules"] for r in rule["resources"]}
+    assert {"nodes", "namespaces", "pods"} <= resources
+    # Kubernetes silently ignores resource names that do not exist in the named
+    # apiGroup, so a typo (e.g. "limitquotas") drops the grant with no error.
+    # Pin every name to the real resource for its group.
+    known_resources = {
+        "": {
+            "configmaps",
+            "endpoints",
+            "events",
+            "limitranges",
+            "namespaces",
+            "nodes",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+            "pods",
+            "replicationcontrollers",
+            "resourcequotas",
+            "serviceaccounts",
+            "services",
+        },
+        "apps": {"daemonsets", "deployments", "replicasets", "statefulsets"},
+        "batch": {"cronjobs", "jobs"},
+    }
+    for rule in role["rules"]:
+        for group in rule["apiGroups"]:
+            assert group in known_resources, f"unexpected apiGroup {group!r}"
+            unknown = set(rule["resources"]) - known_resources[group]
+            assert not unknown, f"not real resources in apiGroup {group!r}: {unknown}"
+    # The kiosk dashboard never needs secrets; keep them out of the grant.
+    assert "secrets" not in resources
+
+    binding = next(d for d in docs if d["kind"] == "ClusterRoleBinding")
+    assert binding["roleRef"]["kind"] == "ClusterRole"
+    assert binding["roleRef"]["name"] == role["metadata"]["name"]
+    subject = binding["subjects"][0]
+    assert subject["kind"] == "ServiceAccount"
+    assert subject["name"] == "kubestellar-console"
+    assert subject["namespace"] == "kubestellar-console"
