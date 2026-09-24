@@ -89,6 +89,7 @@ config:
       mkdir -p sysext/usr/share/k0s/kubeflex
       cp -a kubeflex-src/. sysext/usr/share/k0s/kubeflex/
       chmod 0755 sysext/usr/share/k0s/kubeflex/generate-postgres-secret.sh
+      chmod 0755 sysext/usr/share/k0s/kubeflex/generate-console-secret.sh
 
       # Generate self-signed TLS certificate for local kiosk proxy
       openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \

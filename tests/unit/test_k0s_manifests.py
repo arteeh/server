@@ -91,3 +91,53 @@ def test_generate_postgres_secret_is_idempotent(tmp_path):
     first = secret_file.read_text()
     run()
     assert secret_file.read_text() == first, "password changed on re-run; DB would lose access"
+
+
+def test_console_jwt_secret_not_hardcoded():
+    # #72: the console JWT signing secret must not be committed to git. The
+    # 01- manifest only creates the namespace; the Secret itself is generated
+    # at first boot with a random jwt-secret.
+    manifest = ROOT / "files" / "k0s" / "manifests" / "kubestellar" / "01-kubestellar-console-github-oauth.yaml"
+    text = manifest.read_text()
+    assert "kind: Secret" not in text
+    assert "jwt-secret" not in yaml_values(text)
+    docs = [d for d in yaml.safe_load_all(text) if d]
+    assert [d["kind"] for d in docs] == ["Namespace"]
+
+
+def yaml_values(text):
+    # Collapse to non-comment lines so doc comments may still mention keys.
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+def test_k0s_first_boot_generates_console_secret_before_k0s():
+    unit = ROOT / "files" / "os" / "systemd" / "system" / "k0s-first-boot.service"
+    lines = [l for l in unit.read_text().splitlines() if l.startswith("ExecStart")]
+    gen = next((i for i, l in enumerate(lines) if "generate-console-secret.sh" in l), None)
+    k0s = next((i for i, l in enumerate(lines) if "k0scontroller.service" in l), None)
+    assert gen is not None, "first-boot service never runs the console secret generator"
+    assert k0s is not None
+    assert gen < k0s, "console secret generator must run before k0s applies manifests"
+
+
+def test_generate_console_secret_is_idempotent(tmp_path):
+    # Re-running must not rotate the jwt-secret (sessions would break) and
+    # must not clobber operator-supplied OAuth credentials.
+    script = ROOT / "files" / "k0s" / "kubeflex" / "generate-console-secret.sh"
+    env = dict(os.environ, KUBESTELLAR_MANIFEST_DIR=str(tmp_path))
+    run = lambda: subprocess.run(["/bin/bash", str(script)], env=env, check=True, capture_output=True, text=True)
+    run()
+    secret_file = tmp_path / "02-kubestellar-console-secret.yaml"
+    assert secret_file.is_file()
+    assert (secret_file.stat().st_mode & 0o777) == 0o600
+    secret = yaml.safe_load(secret_file.read_text())
+    assert secret["kind"] == "Secret"
+    assert secret["metadata"]["name"] == "kubestellar-console-github-oauth"
+    assert secret["metadata"]["namespace"] == "kubestellar-console"
+    jwt = secret["stringData"]["jwt-secret"]
+    assert len(jwt) == 64 and all(c in "0123456789abcdef" for c in jwt)
+    assert secret["stringData"]["client-id"] == ""
+    assert secret["stringData"]["client-secret"] == ""
+    first = secret_file.read_text()
+    run()
+    assert secret_file.read_text() == first, "jwt-secret changed on re-run"
