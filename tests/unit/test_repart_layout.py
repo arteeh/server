@@ -171,11 +171,11 @@ def test_root_slot_copies_blocks_from_a_label_the_installer_media_stamps():
     )
 
 
-def test_root_slot_grows_and_is_bounded_below_the_var_partition():
+def test_root_slot_is_bounded_below_the_var_partition():
     root = next(s for s in partitions().values() if s["Type"] == "root")
-    assert root.get("GrowFileSystem") == "yes", (
-        "the root filesystem must grow to its partition, the DDI payload is "
-        "smaller than SizeMinBytes"
+    assert root.get("GrowFileSystem") == "no", (
+        "the immutable DDI payload must not auto-grow at boot, which risks "
+        "interrupted first-boot metadata corruption"
     )
     assert "SizeMaxBytes" in root, (
         "the root slot must be capped, otherwise /var gets no space on small disks"

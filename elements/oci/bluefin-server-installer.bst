@@ -280,6 +280,7 @@ config:
           > /usr/lib/repart.sysinstall.d/20-root-a.conf
       fi
 
+      INSTALLER_PART=""
       # Hard preflight: the embedded installer-media path needs the
       # bluefin-installer-data partition. Under PXE (inst.ddi_url=) there is no
       # installer media, so the check is skipped when inst.ddi_url is set.

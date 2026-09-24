@@ -100,9 +100,8 @@ config:
       ROOT_BYTES=$(du -sb /layer | cut -f1)
       echo "Computed root filesystem size: ${ROOT_BYTES} bytes"
 
-      # 25% overhead and 100MB margin for XFS metadata, journal, and structures.
-      # ponytail: 25% overhead + 100MB margin for XFS.
-      TARGET_BYTES=$(( ROOT_BYTES + ROOT_BYTES / 4 + 100 * 1024 * 1024 ))
+      # 30% overhead and 250MB margin for XFS metadata, journal, and structures.
+      TARGET_BYTES=$(( ROOT_BYTES + ROOT_BYTES * 3 / 10 + 250 * 1024 * 1024 ))
 
       # Align TARGET_BYTES to 4096-byte boundary (multiple of 512/4096) for sector compatibility
       # ponytail: sector alignment is required by systemd-repart CopyBlocks=.
@@ -113,7 +112,7 @@ config:
       truncate -s "${TARGET_BYTES}" "${OUT}/${FNAME}"
 
       echo "Allocating XFS image of ${TARGET_BYTES} bytes"
-      mkfs.xfs -f -L bluefin-root -p /layer "${OUT}/${FNAME}"
+      mkfs.xfs -f -L bluefin-root -m reflink=0,rmapbt=0 -n parent=0 -i exchange=0 -p /layer "${OUT}/${FNAME}"
 
       zstd --rm -T0 -19 -q "${OUT}/${FNAME}" -o "${OUT}/${FNAME}.zst"
       (
