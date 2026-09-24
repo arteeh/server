@@ -86,6 +86,7 @@ setup() {
     make_zstd_stub
     make_qemu_stub
     make_curl_stub
+    make_sfdisk_stub
 }
 
 # The OVMF_CODE lookup (`Justfile:254`, duplicated verbatim at the same
@@ -134,6 +135,35 @@ done
 exit 0
 EOF
     chmod +x "${STUB_DIR}/zstd"
+}
+make_sfdisk_stub() {
+    cat > "${STUB_DIR}/sfdisk" <<EOF
+#!/usr/bin/env bash
+echo "sfdisk \$*" >> "${LOG}"
+for ((i = 1; i <= \$#; i++)); do
+    arg="\${!i}"
+    if [ "\$arg" = "--json" ]; then
+        cat <<'JSON'
+{
+   "partitiontable": {
+      "label": "gpt",
+      "id": "12345678-1234-1234-1234-123456789abc",
+      "device": "target.raw",
+      "unit": "sectors",
+      "partitions": [
+         {"node": "target.raw1", "start": 2048, "size": 204800, "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "name": "ESP"},
+         {"node": "target.raw2", "start": 206848, "size": 8388608, "type": "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709", "name": "bluefin-server-root-a"},
+         {"node": "target.raw3", "start": 8595456, "size": 8388608, "type": "4D21B016-B534-45C2-A9FB-5C16E091FD2D", "name": "var"}
+      ]
+   }
+}
+JSON
+        exit 0
+    fi
+done
+exit 0
+EOF
+    chmod +x "${STUB_DIR}/sfdisk"
 }
 
 # make_qemu_stub

@@ -31,8 +31,32 @@ just export-sysext         # export sysext artifacts to dist/sysext/
 just flash-installer       # write the installer image to a USB device
 just show-me-the-future    # end-to-end QEMU installer smoke test
 just test-installer-artifact # test already-exported artifacts in QEMU without rebuilding
+just test-installer-boot-usb # test-installer-artifact in USB/firmware boot mode
+just test-installer-boot-pxe # test-installer-artifact in PXE -kernel/-initrd boot mode
 just tags                  # show FSDK-derived version tags
 ```
+
+`just test-installer-artifact` boots the exported raw installer image through OVMF
+firmware as an emulated xHCI USB drive (`-device qemu-xhci` plus `-device usb-storage`),
+with the target disk on virtio-blk. This is the bare-metal USB install path: firmware
+picks the bootloader off the image itself rather than QEMU injecting a kernel through
+`-kernel`/`-initrd`. The boot method is selected by `INSTALLER_BOOT_MODE` (`usb`, the
+default, or `pxe`); everything after the install is identical for both. `just
+test-installer-boot-usb` and `just test-installer-boot-pxe` are the named entry points.
+
+Use `pxe` mode to exercise the exported `bluefin-server-pxe-vmlinuz-*` /
+`bluefin-server-pxe-initrd-*.cpio.gz` pair, which is booted with `-kernel`/`-initrd`
+and an explicit `-append` command line. `just export-pxe` only asserts that those two
+files exist, so the PXE recipe is what proves they still boot and install. PXE mode is
+also the way to test an unattended install under Secure Boot firmware: in USB mode the
+unattended flag travels via `-smbios type=11 io.systemd.stub.kernel-cmdline-extra`, and
+systemd-stub ignores that credential when Secure Boot is enabled.
+
+The recipe prefers a real `OVMF_VARS` template but falls back to a blank variable store
+sized to `OVMF_CODE` on hosts that ship CODE only, so a missing template is a warning
+rather than a hard failure. It needs `qemu-system-x86_64`, `zstd`, `sfdisk` and `jq` on
+the host; the last two are used to assert that the installer actually partitioned the
+target disk, and the recipe fails with a named error if either is missing.
 
 ### Payload base
 

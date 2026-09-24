@@ -350,20 +350,46 @@ show-me-the-future:
     just export-installer
     just test-installer-artifact
 
+# INSTALLER_BOOT_MODE selects how the installer itself is started:
+#   usb (default) — firmware (OVMF) boots the raw image off an emulated xHCI USB
+#                   drive, the bare-metal USB install path.
+#   pxe           — QEMU boots the exported PXE vmlinuz/initrd pair directly with
+#                   -kernel/-initrd/-append, the network install path.
+# Everything after the install (target partition check, booting the installed
+# system, kiosk readiness probe) is identical for both modes.
 # Install and reboot already-exported server artifacts in QEMU.
 [group('test')]
 test-installer-artifact:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    BOOT_MODE="${INSTALLER_BOOT_MODE:-usb}"
+    case "${BOOT_MODE}" in
+      usb|pxe) ;;
+      *) echo "ERROR: INSTALLER_BOOT_MODE must be 'usb' or 'pxe', got '${BOOT_MODE}'." >&2; exit 1 ;;
+    esac
+
     CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
     mkdir -p "$CACHE_DIR"
     WORKDIR="$(mktemp -d "${CACHE_DIR}/bluefin-show-future.XXXXXX")"
     trap 'rm -rf "$WORKDIR"' EXIT
 
+    # The raw installer image is always needed; usb mode boots it through firmware
+    # so it consumes nothing else. The PXE vmlinuz/initrd pair is only copied in pxe
+    # mode, because copying it unconditionally would fail the usb test on hosts that
+    # have the installer image but no PXE artifacts.
     cp dist/bluefin-server-installer-*.raw.zst "$WORKDIR/installer.raw.zst"
-    cp dist/bluefin-server-pxe-vmlinuz-* "$WORKDIR/installer.vmlinuz"
-    cp dist/bluefin-server-pxe-initrd-*.cpio.gz "$WORKDIR/installer.initrd"
+    if [ "${BOOT_MODE}" = "pxe" ]; then
+      PXE_KERNEL=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-pxe-vmlinuz-*' | head -n1)
+      PXE_INITRD=$(find dist/ -maxdepth 1 -type f -name 'bluefin-server-pxe-initrd-*.cpio.gz' | head -n1)
+      if [ -z "${PXE_KERNEL}" ] || [ -z "${PXE_INITRD}" ]; then
+        echo "ERROR: INSTALLER_BOOT_MODE=pxe needs an exported PXE kernel and initrd in dist/." >&2
+        echo "Please run: just build-installer && just export-pxe" >&2
+        exit 1
+      fi
+      cp "${PXE_KERNEL}" "$WORKDIR/installer.vmlinuz"
+      cp "${PXE_INITRD}" "$WORKDIR/installer.initrd"
+    fi
     zstd -d "$WORKDIR/installer.raw.zst" -o "$WORKDIR/installer.raw"
     TARGET_SIZE="${SHOW_ME_THE_FUTURE_DISK_SIZE:-16G}"
     truncate -s "${TARGET_SIZE}" "$WORKDIR/target.raw"
@@ -393,42 +419,102 @@ test-installer-artifact:
 
     OVMF_VARS=$(first_existing \
       /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-vars.fd \
+      /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-i386-vars.fd \
       /usr/share/edk2/ovmf/OVMF_VARS.fd \
       /usr/share/OVMF/OVMF_VARS.fd \
       /usr/share/OVMF/OVMF_VARS_4M.fd \
       /usr/share/edk2/x64/OVMF_VARS.4m.fd \
       /usr/share/qemu/edk2-x86_64-vars.fd \
+      /usr/share/qemu/edk2-i386-vars.fd \
       /usr/share/qemu/OVMF_VARS.fd) \
       || true
-    if [ -n "$OVMF_VARS" ]; then
+    if [ -n "${OVMF_VARS}" ]; then
       cp "$OVMF_VARS" "$WORKDIR/ovmf-vars.fd"
     else
+      # Hosts that ship only OVMF_CODE still boot: firmware initialises a blank
+      # variable store on first use, it just has no preseeded boot entries.
+      echo "WARNING: no OVMF_VARS template found; using a blank variable store sized to $OVMF_CODE" >&2
       truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$WORKDIR/ovmf-vars.fd"
     fi
 
     SMP_CPUS="${SHOW_ME_THE_FUTURE_SMP:-$(nproc)}"
     MEM_SIZE="${SHOW_ME_THE_FUTURE_MEM:-8192}"
 
-    echo "==> Booting installer media in QEMU..."
+    echo "==> Booting installer media in QEMU (mode: ${BOOT_MODE})..."
     # ponytail: we want QEMU to exit cleanly after install. Since QEMU's -no-reboot
     # suspends/halts on reboot signals, we override systemd-sysinstall.service SuccessAction/FailureAction
     # to poweroff. When the installer triggers poweroff, QEMU terminates, and we boot into the newly installed OS.
-    qemu-system-x86_64 \
-        -enable-kvm \
-        -m "${MEM_SIZE}" \
-        -cpu host \
-        -smp "${SMP_CPUS}" \
-        -drive file="$WORKDIR/installer.raw",format=raw,if=virtio,readonly=on \
-        -drive file="$WORKDIR/target.raw",format=raw,if=virtio \
-        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-        -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd" \
-        -kernel "$WORKDIR/installer.vmlinuz" \
-        -initrd "$WORKDIR/installer.initrd" \
-        -append "systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended" \
+    INSTALLER_TIMEOUT="${SHOW_ME_THE_FUTURE_INSTALL_TIMEOUT:-600}"
+    INSTALL_ARGS=(
+        -enable-kvm
+        -m "${MEM_SIZE}"
+        -cpu host
+        -smp "${SMP_CPUS}"
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
+        -drive if=pflash,format=raw,file="$WORKDIR/ovmf-vars.fd"
+    )
+    if [ "${BOOT_MODE}" = "usb" ]; then
+      # Firmware boots the image's own bootloader, so the unattended flag has to
+      # reach the UKI through systemd-stub rather than QEMU's -append.
+      #
+      # NOTE: systemd-stub deliberately ignores io.systemd.stub.kernel-cmdline-extra
+      # when Secure Boot is enabled, because the SMBIOS string is not covered by the
+      # signature. Point $OVMF_CODE at a secure-boot firmware build and this run
+      # boots interactive instead of unattended, then sits there until
+      # SHOW_ME_THE_FUTURE_INSTALL_TIMEOUT expires with a misleading "install did
+      # not finish" failure. Use INSTALLER_BOOT_MODE=pxe (-append is always honoured)
+      # to exercise unattended installs under Secure Boot firmware.
+      INSTALL_ARGS+=(
+        -device qemu-xhci,id=xhci
+        -drive file="$WORKDIR/installer.raw",format=raw,if=none,id=installer-disk,readonly=on
+        -device usb-storage,bus=xhci.0,drive=installer-disk,bootindex=1
+        -drive file="$WORKDIR/target.raw",format=raw,if=none,id=target-disk
+        -device virtio-blk-pci,drive=target-disk,bootindex=2
+        -smbios "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=tty0 console=ttyS0,,115200 rw unattended"
+      )
+    else
+      INSTALL_ARGS+=(
+        -drive file="$WORKDIR/installer.raw",format=raw,if=virtio,readonly=on
+        -drive file="$WORKDIR/target.raw",format=raw,if=virtio
+        -kernel "$WORKDIR/installer.vmlinuz"
+        -initrd "$WORKDIR/installer.initrd"
+        -append "systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended"
+      )
+    fi
+    timeout "${INSTALLER_TIMEOUT}" qemu-system-x86_64 \
+        "${INSTALL_ARGS[@]}" \
         -nographic \
         -serial mon:stdio \
         -no-reboot < /dev/null
 
+    echo "==> Validating target disk partitions after installer execution..."
+    for tool in sfdisk jq; do
+      command -v "$tool" >/dev/null 2>&1 \
+        || { echo "ERROR: '$tool' is required to validate the target disk layout but is not installed." >&2; exit 1; }
+    done
+
+    # Keep sfdisk and jq failures distinguishable from "the installer did not
+    # partition the disk", otherwise a broken host tool is misreported as a
+    # failed install.
+    if ! TARGET_TABLE=$(sfdisk --json "$WORKDIR/target.raw"); then
+      echo "ERROR: sfdisk could not read a partition table from $WORKDIR/target.raw!" >&2
+      sfdisk -l "$WORKDIR/target.raw" >&2 || true
+      exit 1
+    fi
+    if ! TARGET_PARTS=$(jq -r '.partitiontable.partitions[]?.name // empty' <<<"$TARGET_TABLE"); then
+      echo "ERROR: jq failed to parse the sfdisk JSON output!" >&2
+      echo "$TARGET_TABLE" >&2
+      exit 1
+    fi
+    if ! echo "$TARGET_PARTS" | grep -Fxq 'bluefin-server-root-a' || \
+       ! echo "$TARGET_PARTS" | grep -Fxq 'var'; then
+      echo "ERROR: Target disk did not receive expected partition layout from installer!" >&2
+      echo "Observed partitions:" >&2
+      echo "$TARGET_PARTS" >&2
+      sfdisk -l "$WORKDIR/target.raw" >&2 || true
+      exit 1
+    fi
+    echo "==> Target disk successfully partitioned and populated!"
     SERIAL_LOG="$WORKDIR/serial.log"
     TARGET_QEMU_PID=""
     cleanup() {
@@ -521,6 +607,20 @@ test-installer-artifact:
       sleep 2
     done
 
+# This is the default mode of test-installer-artifact; the recipe exists so the USB
+# boot path is discoverable by name.
+# Boot the exported installer media via firmware (OVMF) as an xHCI USB drive.
+[group('test')]
+test-installer-boot-usb:
+    INSTALLER_BOOT_MODE=usb just test-installer-artifact
+
+# `just export-pxe` only checks that the two files exist, so this recipe is the only
+# thing that proves they still boot and install.
+# Boot the exported PXE kernel/initrd pair directly (QEMU -kernel/-initrd/-append).
+[group('test')]
+test-installer-boot-pxe:
+    INSTALLER_BOOT_MODE=pxe just test-installer-artifact
+
 # Interactively install and boot a persistent local KubeStellar kiosk VM.
 [group('test')]
 install-vm:
@@ -559,16 +659,21 @@ install-vm:
     if [ ! -f "$OVMF_VARS" ]; then
       OVMF_TEMPLATE=$(first_existing \
         /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-x86_64-vars.fd \
+        /home/linuxbrew/.linuxbrew/Cellar/qemu/*/share/qemu/edk2-i386-vars.fd \
         /usr/share/edk2/ovmf/OVMF_VARS.fd \
         /usr/share/OVMF/OVMF_VARS.fd \
         /usr/share/OVMF/OVMF_VARS_4M.fd \
         /usr/share/edk2/x64/OVMF_VARS.4m.fd \
         /usr/share/qemu/edk2-x86_64-vars.fd \
+        /usr/share/qemu/edk2-i386-vars.fd \
         /usr/share/qemu/OVMF_VARS.fd) \
         || true
-      if [ -n "$OVMF_TEMPLATE" ]; then
+      if [ -n "${OVMF_TEMPLATE}" ]; then
         cp "$OVMF_TEMPLATE" "$OVMF_VARS"
       else
+        # Hosts that ship only OVMF_CODE still boot: firmware initialises a blank
+        # variable store on first use, it just has no preseeded boot entries.
+        echo "WARNING: no OVMF_VARS template found; using a blank variable store sized to $OVMF_CODE" >&2
         truncate -s "$(stat -c '%s' "$OVMF_CODE")" "$OVMF_VARS"
       fi
     fi

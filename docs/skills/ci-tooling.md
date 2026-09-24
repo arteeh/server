@@ -137,7 +137,7 @@ uploaded to a GitHub Release tagged `installer-v<FSDK-RELEASE>`.
    result as its own pull request against `main`.
 3. **Full Compilation:** Builds the standalone DDI OS image, live installer, and
    k0s systemd-sysext on every pull request and push to `main`.
-4. **Installer boot test:** Uploads the already-built installer and PXE artifacts and calls `projectbluefin/actions/.github/workflows/server-installer-test.yml`. The shared workflow prepares QEMU/KVM and runs this repository's `just test-installer-artifact`; Lima remains local-only.
+4. **Installer boot test:** Uploads the already-built installer and PXE artifacts and calls `projectbluefin/actions/.github/workflows/server-installer-test.yml`. The shared workflow prepares QEMU/KVM and runs this repository's `just test-installer-artifact`, which defaults to the USB/firmware boot path and consumes only the raw installer image; the uploaded PXE pair is exercised by `just test-installer-boot-pxe` (`INSTALLER_BOOT_MODE=pxe`). Lima remains local-only.
 5. **Version Derivation:** The release tag is derived with `just version`, which
    parses the pinned FSDK point release from `elements/freedesktop-sdk.bst`.
 6. **Automated Publishing:** For pushes to `main` (including Renovate PR merges),
