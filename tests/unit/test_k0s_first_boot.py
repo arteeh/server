@@ -20,7 +20,7 @@ PRESET = (
     / "os"
     / "systemd"
     / "system-preset"
-    / "zz-enable-k0s-first-boot.preset"
+    / "20-bluefin-k0s-first-boot.preset"
 )
 NETWORK = ROOT / "files" / "os" / "systemd" / "network" / "20-wired.network"
 NETWORK_PRESET = (
@@ -29,7 +29,7 @@ NETWORK_PRESET = (
     / "os"
     / "systemd"
     / "system-preset"
-    / "zz-enable-networkd.preset"
+    / "20-bluefin-networkd.preset"
 )
 ELEMENT = ROOT / "elements" / "bluefin-server" / "os-k0s-first-boot.bst"
 NETWORK_ELEMENT = ROOT / "elements" / "bluefin-server" / "os-networkd.bst"
@@ -145,4 +145,50 @@ def test_k0s_sysupdate_transfer_is_packaged_as_a_component() -> None:
     assert (
         "bluefin-server/os-k0s-sysupdate.bst"
         in STACK.read_text(encoding="utf-8")
+    )
+
+
+def test_presets_sort_before_flatcar_disable_all() -> None:
+    # Flatcar's /usr ships /usr/lib/systemd/system-preset/99-default.preset
+    # containing a catch-all "disable *". systemd applies preset files in
+    # lexicographic filename order and the first matching line wins, so any
+    # Bluefin preset named after 99-default.preset is silently ignored at
+    # first-boot preset-all.
+    preset_dir = PRESET.parent
+    presets = sorted(p.name for p in preset_dir.glob("*.preset"))
+    assert presets, f"no presets found in {preset_dir}"
+    for name in presets:
+        assert name < "99-default.preset", (
+            f"{name} sorts after Flatcar's 99-default.preset; its "
+            "'disable *' catch-all would win and the preset would be ignored"
+        )
+
+
+def test_etc_resolv_conf_symlink_is_seeded_for_kubelet() -> None:
+    # Flatcar ships /etc/resolv.conf inside the image /etc and strips
+    # /etc-populating lines from /usr/lib/tmpfiles.d at image build. This DDI
+    # imports only Flatcar's /usr and first-boots with an empty /etc, so
+    # without an explicit tmpfiles.d rule the symlink never exists and
+    # kubelet fails every pod sandbox with
+    # "open /etc/resolv.conf: no such file or directory".
+    conf = (
+        ROOT / "files" / "os" / "tmpfiles.d" / "20-bluefin-resolv.conf"
+    )
+    assert conf.is_file(), "resolv.conf tmpfiles rule is missing"
+    lines = [
+        line
+        for line in conf.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert lines == [
+        "L /etc/resolv.conf - - - - ../run/systemd/resolve/resolv.conf"
+    ]
+
+    element = (
+        ROOT / "elements" / "bluefin-server" / "os-resolv-conf.bst"
+    ).read_text(encoding="utf-8")
+    assert "path: files/os/tmpfiles.d" in element
+    assert "target: /usr/lib/tmpfiles.d" in element
+    assert (
+        "bluefin-server/os-resolv-conf.bst" in STACK.read_text(encoding="utf-8")
     )
