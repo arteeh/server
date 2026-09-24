@@ -162,3 +162,33 @@ def test_presets_sort_before_flatcar_disable_all() -> None:
             f"{name} sorts after Flatcar's 99-default.preset; its "
             "'disable *' catch-all would win and the preset would be ignored"
         )
+
+
+def test_etc_resolv_conf_symlink_is_seeded_for_kubelet() -> None:
+    # Flatcar ships /etc/resolv.conf inside the image /etc and strips
+    # /etc-populating lines from /usr/lib/tmpfiles.d at image build. This DDI
+    # imports only Flatcar's /usr and first-boots with an empty /etc, so
+    # without an explicit tmpfiles.d rule the symlink never exists and
+    # kubelet fails every pod sandbox with
+    # "open /etc/resolv.conf: no such file or directory".
+    conf = (
+        ROOT / "files" / "os" / "tmpfiles.d" / "20-bluefin-resolv.conf"
+    )
+    assert conf.is_file(), "resolv.conf tmpfiles rule is missing"
+    lines = [
+        line
+        for line in conf.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert lines == [
+        "L /etc/resolv.conf - - - - ../run/systemd/resolve/resolv.conf"
+    ]
+
+    element = (
+        ROOT / "elements" / "bluefin-server" / "os-resolv-conf.bst"
+    ).read_text(encoding="utf-8")
+    assert "path: files/os/tmpfiles.d" in element
+    assert "target: /usr/lib/tmpfiles.d" in element
+    assert (
+        "bluefin-server/os-resolv-conf.bst" in STACK.read_text(encoding="utf-8")
+    )
