@@ -188,6 +188,25 @@ config:
       #!/bin/bash
       set -euo pipefail
 
+      CMDLINE="$(< /proc/cmdline)"
+
+      # The service drop-in uses StandardOutput=journal+console so unattended runs
+      # land on the serial console that automated tests capture. /dev/console follows
+      # the last console= argument, which is ttyS0, so an interactive bare-metal
+      # install would otherwise print to serial rather than the attached display.
+      # Keep the interactive installer on the attached display by redirecting this
+      # script's own output to /dev/tty0 — but only when the kernel actually drives
+      # tty0 as a console. On serial-only machines the VT device still exists and is
+      # writable, so a -w test alone would send the whole install to a display nobody
+      # is watching; /sys/class/tty/console/active lists the consoles the kernel
+      # really registered, and omits tty0 when the boot was serial-only. If that file
+      # is unreadable the redirect is skipped and output stays on journal+console.
+      if [[ " ${CMDLINE} " != *" unattended "* ]] \
+         && [ -w /dev/tty0 ] \
+         && grep -qw tty0 /sys/class/tty/console/active 2>/dev/null; then
+        exec > /dev/tty0 2>&1
+      fi
+
       # Ensure storage controller modules and filesystems are loaded before probing devices
       modprobe -q nvme || true
       modprobe -q nvme_core || true
@@ -261,13 +280,27 @@ config:
           > /usr/lib/repart.sysinstall.d/20-root-a.conf
       fi
 
+      INSTALLER_PART=""
       # Hard preflight: the embedded installer-media path needs the
       # bluefin-installer-data partition. Under PXE (inst.ddi_url=) there is no
       # installer media, so the check is skipped when inst.ddi_url is set.
       if [ -z "${DDI_URL}" ]; then
+        # Hard preflight: wait up to 30s for storage settle and installer data partition to become available
         INSTALLER_PART_PATH="/dev/disk/by-partlabel/bluefin-installer-data"
+        DEADLINE=$((SECONDS + 30))
+        udevadm trigger --subsystem-match=block || true
+        udevadm settle --timeout=5 || true
+        while [ ! -b "${INSTALLER_PART_PATH}" ] && [ "${SECONDS}" -lt "${DEADLINE}" ]; do
+          sleep 1
+          udevadm trigger --subsystem-match=block || true
+          REMAINING=$((DEADLINE - SECONDS))
+          [ "${REMAINING}" -gt 0 ] || break
+          SETTLE_TIMEOUT=$(( REMAINING < 5 ? REMAINING : 5 ))
+          udevadm settle --timeout="${SETTLE_TIMEOUT}" || true
+        done
+
         if [ ! -b "${INSTALLER_PART_PATH}" ]; then
-          echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device!" >&2
+          echo "ERROR: Installer data partition '${INSTALLER_PART_PATH}' is missing or not a block device after 30s deadline!" >&2
           echo "==> Block devices visible at failure:" >&2
           lsblk -p -o NAME,TYPE,PARTLABEL,PKNAME,SIZE,FSTYPE >&2 || true
           echo "==> Partition label symlinks visible under /dev/disk/by-partlabel/:" >&2
@@ -275,10 +308,10 @@ config:
           exit 1
         fi
         INSTALLER_PART="$(readlink -f "${INSTALLER_PART_PATH}")"
+        echo "==> Found installer partition at ${INSTALLER_PART_PATH} -> ${INSTALLER_PART}"
       fi
-
       # Auto-detect target disk for unattended install (any raw disk of type "disk" that is not the installer, is not read-only, and has size > 0)
-      TARGET_DISK=""
+      TARGET_DISKS=()
       while read -r name type ro size; do
         [ "${type}" = "disk" ] || continue
         [ "${ro}" = "0" ] || continue
@@ -289,9 +322,9 @@ config:
           continue
         fi
 
-        TARGET_DISK="${name}"
-        break
+        TARGET_DISKS+=("${name}")
       done < <(lsblk -p -d -n -o NAME,TYPE,RO,SIZE -b)
+      TARGET_DISK="${TARGET_DISKS[0]:-}"
 
       # inst.target_disk= overrides auto-detection (explicit target under PXE).
       if [ -n "${TARGET_DISK_OVERRIDE}" ]; then
@@ -343,6 +376,7 @@ config:
         fi
       }
 
+      # Check for unattended in kernel command line
       if [[ " ${CMDLINE} " == *" unattended "* ]]; then
         echo "==> Running in UNATTENDED mode..."
         if [ -n "${TARGET_DISK}" ]; then
@@ -363,6 +397,17 @@ config:
         fi
       else
         echo "==> Running in INTERACTIVE mode..."
+        # If exactly one non-installer target disk exists, pass it directly to systemd-sysinstall
+        # so the user isn't prompted with device serial/path queries.
+        # If multiple disks exist, systemd-sysinstall prompts with its native numbered list;
+        # print a hint reminding users they can simply type the item number (1, 2, ...).
+        EXTRA_ARGS=()
+        if [ "${#TARGET_DISKS[@]}" -eq 1 ]; then
+          echo "==> Automatically selected only available installation disk: ${TARGET_DISKS[0]}"
+          EXTRA_ARGS+=("${TARGET_DISKS[0]}")
+        elif [ "${#TARGET_DISKS[@]}" -gt 1 ]; then
+          echo "==> Multiple disks detected. You can type the menu item number (1, 2, ...) to choose."
+        fi
         /usr/bin/systemd-sysinstall \
           --kernel=/usr/lib/bluefin-server/bluefin-server.efi \
           --variables=yes \
@@ -370,7 +415,8 @@ config:
           --mute-console=yes \
           --copy-locale=yes \
           --copy-keymap=yes \
-          --copy-timezone=yes
+          --copy-timezone=yes \
+          "${EXTRA_ARGS[@]}"
         stage_fallback_bootloader
         echo "==> Installation complete! Rebooting..."
         systemctl reboot
@@ -387,8 +433,13 @@ config:
       FailureAction=poweroff
 
       [Service]
-      # Keep the interactive installer on the attached display. The kernel
-      # still uses the final serial console for boot diagnostics.
+      # Mirror installer service output to journal+console so progress and diagnostics
+      # are captured on the serial console in headless/automated test runs. TTYPath is
+      # only honoured for Standard*=tty, so it does not steer this output; the wrapper
+      # keeps the interactive installer on the attached display by redirecting itself
+      # to /dev/tty0 when 'unattended' is absent from the kernel command line.
+      StandardOutput=journal+console
+      StandardError=journal+console
       TTYPath=/dev/tty0
       ExecStart=
       ExecStart=/usr/bin/bluefin-sysinstall

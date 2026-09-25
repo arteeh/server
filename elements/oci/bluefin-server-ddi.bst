@@ -41,6 +41,9 @@ config:
       depmod -b /layer/usr "${KVER}"
 
       # Stage extracted CA certificate bundle into target DDI rootfs
+      # Remote execution may hard-link the staged CA files to the build root;
+      # replace the target tree before copying rather than copying onto itself.
+      rm -rf /layer/etc/pki/ca-trust/extracted
       mkdir -p /layer/etc/pki/ca-trust/extracted /layer/etc/ssl/certs /layer/etc/pki/tls/certs
       cp -a /etc/pki/ca-trust/extracted/* /layer/etc/pki/ca-trust/extracted/
       ln -sf /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /layer/etc/ssl/certs/ca-certificates.crt
@@ -76,9 +79,14 @@ config:
       # Ensure all standard virtual, serial, and hypervisor consoles allow root login
       printf 'tty0\ntty1\ntty2\ntty3\ntty4\ntty5\ntty6\nttyS0\nttyS1\nconsole\nhvc0\n' > /layer/etc/securetty
 
-      # Seed default root password 'bluefin' into /etc/shadow for console and ssh login
+      # Seed default root password 'bluefin' for local console bring-up only.
+      # The last-change field is 0 (equivalent to `chage -d 0 root`), so the
+      # password is expired at first login and the console forces a per-install
+      # rotation before any shell is granted. The seeded credential must never
+      # be usable over the network: the sshd drop-in sets PermitRootLogin
+      # prohibit-password and PasswordAuthentication no.
       mkdir -p /layer/etc
-      printf 'root:$6$bluefin123$o2pQjPN1n3ZCnYUROlA01xAdnGO7mhVRAVw98x4xc8LAUIJv7b44bBNoER6fM4P.rrj4ePYFfkx9WvZICU8nt/:19700:0:99999:7:::\n' > /layer/etc/shadow
+      printf 'root:$6$bluefin123$o2pQjPN1n3ZCnYUROlA01xAdnGO7mhVRAVw98x4xc8LAUIJv7b44bBNoER6fM4P.rrj4ePYFfkx9WvZICU8nt/:0:0:99999:7:::\n' > /layer/etc/shadow
       chmod 0600 /layer/etc/shadow
       printf 'root:x:0:0:root:/root:/bin/bash\n' > /layer/etc/passwd
       chmod 0644 /layer/etc/passwd
@@ -95,9 +103,8 @@ config:
       ROOT_BYTES=$(du -sb /layer | cut -f1)
       echo "Computed root filesystem size: ${ROOT_BYTES} bytes"
 
-      # 25% overhead and 100MB margin for XFS metadata, journal, and structures.
-      # ponytail: 25% overhead + 100MB margin for XFS.
-      TARGET_BYTES=$(( ROOT_BYTES + ROOT_BYTES / 4 + 100 * 1024 * 1024 ))
+      # 30% overhead and 250MB margin for XFS metadata, journal, and structures.
+      TARGET_BYTES=$(( ROOT_BYTES + ROOT_BYTES * 3 / 10 + 250 * 1024 * 1024 ))
 
       # Align TARGET_BYTES to 4096-byte boundary (multiple of 512/4096) for sector compatibility
       # ponytail: sector alignment is required by systemd-repart CopyBlocks=.
@@ -108,7 +115,7 @@ config:
       truncate -s "${TARGET_BYTES}" "${OUT}/${FNAME}"
 
       echo "Allocating XFS image of ${TARGET_BYTES} bytes"
-      mkfs.xfs -f -L bluefin-root -p /layer "${OUT}/${FNAME}"
+      mkfs.xfs -f -L bluefin-root -m reflink=0,rmapbt=0 -n parent=0 -i exchange=0 -p /layer "${OUT}/${FNAME}"
 
       zstd --rm -T0 -19 -q "${OUT}/${FNAME}" -o "${OUT}/${FNAME}.zst"
       (

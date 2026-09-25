@@ -91,3 +91,9 @@ config:
       # ensure-sysext.service: replaced by Bluefin's systemd-sysext.service and sysupdate integration
       rm "%{install-root}/usr/lib/systemd/system/ensure-sysext.service"
       rm "%{install-root}/usr/lib/systemd/system/sysinit.target.wants/ensure-sysext.service"
+
+      # oem.mount: replaced by Bluefin's standard GPT partition layout (no OEM partition)
+      rm "%{install-root}/usr/lib/systemd/system/oem.mount"
+      rm "%{install-root}/usr/lib/systemd/system/local-fs.target.wants/oem.mount"
+      rm "%{install-root}/usr/lib/systemd/system/dev-disk-by\\x2dlabel-OEM.device"
+      rm -r "%{install-root}/usr/lib/systemd/system/systemd-fsck@dev-disk-by\\x2dlabel-OEM.service.d"

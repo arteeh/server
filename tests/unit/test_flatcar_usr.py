@@ -50,6 +50,10 @@ REMOVED_UNITS = [
     "usr/lib/systemd/system/oem-cloudinit.service",
     "usr/lib/systemd/system/ensure-sysext.service",
     "usr/lib/systemd/system/sysinit.target.wants/ensure-sysext.service",
+    "usr/lib/systemd/system/oem.mount",
+    "usr/lib/systemd/system/local-fs.target.wants/oem.mount",
+    "usr/lib/systemd/system/dev-disk-by\\x2dlabel-OEM.device",
+    "usr/lib/systemd/system/systemd-fsck@dev-disk-by\\x2dlabel-OEM.service.d",
 ]
 
 REMOVED_EXTRA_FILES = [
@@ -143,6 +147,7 @@ def test_flatcar_usr_explicit_removals_and_replacements() -> None:
         "flatcar-update",
         "download_sysext",
         "ensure-sysext",
+        "oem.mount",
     ]:
         pattern = rf"#\s*{component}.*?:.*?replaced by"
         assert re.search(pattern, content, re.IGNORECASE), (
@@ -224,6 +229,10 @@ def test_flatcar_usr_contract_execution(tmp_path: Path) -> None:
     (systemd_dir / "enable-oem-cloudinit.service").write_text("mock-unit", encoding="utf-8")
     (systemd_dir / "oem-cloudinit.service").write_text("mock-unit", encoding="utf-8")
     (systemd_dir / "ensure-sysext.service").write_text("mock-unit", encoding="utf-8")
+    (systemd_dir / "oem.mount").write_text("mock-unit", encoding="utf-8")
+    (systemd_dir / "dev-disk-by\\x2dlabel-OEM.device").write_text("mock-unit", encoding="utf-8")
+    (systemd_dir / "systemd-fsck@dev-disk-by\\x2dlabel-OEM.service.d").mkdir(parents=True)
+    (systemd_dir / "systemd-fsck@dev-disk-by\\x2dlabel-OEM.service.d" / "10-mock.conf").write_text("mock", encoding="utf-8")
 
     wants_dir1 = systemd_dir / "multi-user.target.wants"
     wants_dir1.mkdir(parents=True)
@@ -232,6 +241,9 @@ def test_flatcar_usr_contract_execution(tmp_path: Path) -> None:
     (wants_dir1 / "locksmithd.service").symlink_to("../locksmithd.service")
     (wants_dir1 / "enable-oem-cloudinit.service").symlink_to("../enable-oem-cloudinit.service")
 
+    local_fs_dir = systemd_dir / "local-fs.target.wants"
+    local_fs_dir.mkdir(parents=True)
+    (local_fs_dir / "oem.mount").symlink_to("../oem.mount")
     wants_dir2 = systemd_dir / "sysinit.target.wants"
     wants_dir2.mkdir(parents=True)
     (wants_dir2 / "ignition-delete-config.service").symlink_to("../ignition-delete-config.service")

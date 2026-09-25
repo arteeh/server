@@ -44,6 +44,9 @@ depends:
   # Wired DHCP configuration for the installed OS
   - bluefin-server/os-networkd.bst
 
+  # /etc/resolv.conf symlink to systemd-resolved (tmpfiles.d)
+  - bluefin-server/os-resolv-conf.bst
+
   # Activate the optional k0s sysext after installation
   - bluefin-server/os-k0s-first-boot.bst
 
