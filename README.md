@@ -4,7 +4,6 @@
   <img alt="Bluefin Server" src="https://raw.githubusercontent.com/projectbluefin/artwork/main/assets/vector/logos/bluefin-server/bluefin-server-logo-light.svg" width="400">
 </picture>
 
-# Bluefin Server
 > Amargasaurus cazaui
 
 **An image-based Linux server OS built on a Flatcar base.**
