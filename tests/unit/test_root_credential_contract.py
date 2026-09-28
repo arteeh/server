@@ -16,17 +16,18 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DDI_ELEMENT = REPO_ROOT / "elements" / "oci" / "bluefin-server-ddi.bst"
+DDI_ELEMENT = REPO_ROOT / "elements" / "oci" / "bluefin-server-usr.bst"
 SSHD_DROPIN = REPO_ROOT / "files" / "os" / "ssh" / "sshd_config.d" / "bluefin-server.conf"
-ISSUE_FILE = REPO_ROOT / "files" / "os" / "issue.d" / "40-kubestellar.issue"
+ISSUE_FILE = REPO_ROOT / "files" / "os" / "issue.d" / "30-bluefin.issue"
+KUBESTELLAR_ISSUE = REPO_ROOT / "files" / "kubestellar" / "sysext" / "40-kubestellar.issue"
 
 
 def _root_shadow_fields(ddi_element: str) -> list[str]:
     match = re.search(
-        r"printf '(root:[^']*)", ddi_element
+        r"printf '(root:%s:[^']*)' '([^']*)'", ddi_element
     )
-    assert match, "DDI element must seed a root account into /etc/shadow"
-    shadow_line = match.group(1).split("\\n")[0]
+    assert match, "/usr image element must seed a root account into /etc/shadow"
+    shadow_line = match.group(1).split("\\n")[0].replace("%s", match.group(2))
     fields = shadow_line.split(":")
     assert fields[0] == "root", "seeded shadow line must be the root account"
     assert len(fields) == 9, "seeded shadow line must have all 9 shadow fields"

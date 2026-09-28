@@ -1,0 +1,72 @@
+"""Contracts for signed downloads, version-locked sysexts and HTTP-boot Ignition."""
+
+from __future__ import annotations
+
+import configparser
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+SYSUPDATE = ROOT / "files" / "os" / "sysupdate.d"
+BOOT = ROOT / "elements" / "oci" / "bluefin-server-boot.bst"
+KEYS = ROOT / "elements" / "bluefin-server" / "os-sysupdate-keys.bst"
+INITRD = ROOT / "elements" / "bluefin-server" / "initrd" / "initrd-stack.bst"
+IGN = ROOT / "files" / "initrd-ignition" / "usr"
+
+
+def ini(path: Path) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str
+    parser.read_string(path.read_text(encoding="utf-8"))
+    return parser
+
+
+def test_diskless_pull_verifies_the_signature() -> None:
+    boot = BOOT.read_text(encoding="utf-8")
+    assert "rd.systemd.pull=raw,machine,verify=signature,blockdev,bootorigin:" in boot
+    assert "verify=no" not in boot
+
+
+def test_keyring_is_installed_where_systemd_reads_it_first() -> None:
+    keys = KEYS.read_text(encoding="utf-8")
+    assert "path: files/boot-keys/import-pubring.pgp" in keys
+    assert "target: /etc/systemd" in keys
+    initrd = INITRD.read_text(encoding="utf-8")
+    assert "bluefin-server/os-sysupdate-keys.bst" in initrd
+    assert "freedesktop-sdk.bst:components/gnupg.bst" in initrd
+
+
+@pytest.mark.parametrize("name,transfer", [("zfs", "30-zfs.transfer"), ("kubestellar", "31-kubestellar.transfer"), ("kubeadm", "32-kubeadm.transfer")])
+def test_version_locked_sysexts_are_optional_features(name: str, transfer: str) -> None:
+    feature = ini(SYSUPDATE / f"{name}.feature")["Feature"]
+    assert feature.get("Enabled", "false") == "false", "features are opt-in"
+    t = ini(SYSUPDATE / transfer)
+    assert t["Transfer"]["Features"] == name
+    assert t["Transfer"]["ProtectVersion"] == "%A"
+    assert t["Target"]["Path"] == "/var/lib/extensions"
+    assert t["Target"]["MatchPattern"] == f"{name}_@v.raw"
+
+
+@pytest.mark.parametrize("element,name", [("zfs-sysext.bst", "zfs"), ("kubestellar-sysext.bst", "kubestellar"), ("kubeadm-sysext.bst", "kubeadm")])
+def test_extension_release_name_carries_the_image_version(element: str, name: str) -> None:
+    text = (ROOT / "elements" / "oci" / element).read_text(encoding="utf-8")
+    assert f"extension-release.{name}_%{{image-version}}" in text
+    assert f'{name}_%{{image-version}}.raw' in text
+
+
+def test_sysext_units_are_started_after_a_boot_time_merge() -> None:
+    unit = ini(ROOT / "files" / "os" / "systemd" / "system" / "bluefin-sysext-activate.service")
+    assert unit["Unit"]["After"] == "systemd-sysext.service"
+    assert unit["Service"]["ExecStart"] == "/usr/bin/systemctl start --no-block multi-user.target"
+
+
+def test_http_booted_nodes_look_for_ignition_next_to_the_uki() -> None:
+    helper = (IGN / "libexec" / "bluefin-ignition-credentials").read_text(encoding="utf-8")
+    assert "StubDeviceURL-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" in helper
+    assert "rd.systemd.pull=*:http://*" in helper, "iPXE-chainloaded nodes use the explicit pull URL"
+    assert "NODE_CONFIG=bluefin-node.ign" in helper
+    assert "curl -sfI" in helper
+    for stage in ("disks", "fetch", "fetch-offline", "files", "mount"):
+        unit = (IGN / "lib" / "systemd" / "system" / f"ignition-{stage}.service").read_text(encoding="utf-8")
+        assert "ConditionPathExists=/run/ignition/user.ign" in unit

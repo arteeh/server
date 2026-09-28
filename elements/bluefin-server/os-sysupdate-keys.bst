@@ -1,14 +1,18 @@
 kind: import
 description: |
-  Install the public OpenPGP keyring used by systemd-sysupdate to verify
-  SHA256SUMS manifests downloaded from GitHub Releases.
+  OpenPGP keyring that systemd-importd (diskless rd.systemd.pull) and
+  systemd-sysupdate verify SHA256SUMS.gpg against, installed as
+  /etc/systemd/import-pubring.pgp: systemd reads that path before the
+  vendor keyring FSDK ships in /usr/lib/systemd.
 
-  The matching private key is stored as the GitHub Actions repository secret
-  SYSUPDATE_SIGNING_KEY. Release assets are signed in CI before upload.
+  It comes from files/boot-keys/import-pubring.pgp, the public half of the
+  key that signs this build's SHA256SUMS (bluefin-server-image.bst): a dev
+  key from `just gen-dev-keys`, or on release builds the key in
+  files/os/sysupdate-keys/import-pubring.gpg (CI copies it in).
 
 sources:
   - kind: local
-    path: files/os/sysupdate-keys
+    path: files/boot-keys/import-pubring.pgp
 
 config:
-  target: /usr/lib/systemd
+  target: /etc/systemd

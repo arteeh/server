@@ -4,7 +4,7 @@ description: Configure and operate GPG signature verification for Bluefin Server
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-07"
+  last_updated: "2026-09-27"
   context7-sources:
     - /systemd/systemd
 ---
@@ -16,10 +16,12 @@ the OS image.
 
 ## When to Use
 
-- Modifying `files/os/sysupdate.d/*.transfer` or
-  `files/os/sysupdate.k0s.d/*.transfer` update definitions.
-- Rotating or replacing the release signing key.
-- Debugging `systemd-sysupdate` failures related to `SHA256SUMS.gpg` verification.
+- Modifying `files/os/sysupdate.d/*.transfer` (including the `zfs` and
+  `kubestellar` feature transfers) or the k0s component directory
+  (`files/os/sysupdate.k0s.d/`).
+- Rotating or replacing the image signing key.
+- Debugging `systemd-sysupdate` or diskless `rd.systemd.pull` failures related
+  to `SHA256SUMS.gpg` verification.
 
 ## When NOT to Use
 
@@ -43,32 +45,67 @@ Key facts from `sysupdate.d(5)`:
 - `Verify=` in `[Transfer]` is a boolean and defaults to `yes`.
 - When enabled, `systemd-sysupdate` validates the GPG signature of the
   downloaded `SHA256SUMS` manifest.
-- The public keyring is read from `/usr/lib/systemd/import-pubring.gpg` or
-  `/etc/systemd/import-pubring.gpg`.
+- The public keyring is `/etc/systemd/import-pubring.pgp` when it exists, and
+  the vendor keyring `/usr/lib/systemd/import-pubring.pgp` otherwise. The old
+  `.gpg` paths were never read by systemd; nothing in the tree installs them.
 
 ## Current implementation status
 
-The current tree uses a single root/ESP slot and a single signed manifest flow
-for OTA delivery. Root and UKI transfers live in `sysupdate.d`; the optional
-k0s sysext lives in the `k0s` component directory and is selected with
-`systemd-sysupdate --component=k0s update`. Future work on dual-slot root
-partitions, dual UKIs, and broader rollback strategies is tracked in
-[architecture-roadmap.md](architecture-roadmap.md).
+Installed nodes carry A/B usr and usr-verity slots plus matching UKIs. The usr
+and usr-verity transfers live in `sysupdate.d` and fill the inactive slot; the
+UKI transfer installs the new disk UKI into `/EFI/Linux` with boot counting
+(`TriesLeft=3`), so a failed image rolls back to the previous slot on its own.
+The optional OpenZFS and KubeStellar sysexts are version-locked to the image
+and follow OS updates through the optional `zfs` and `kubestellar` sysupdate
+**features** (`files/os/sysupdate.d/zfs.feature`, `kubestellar.feature`,
+`30-zfs.transfer`, `31-kubestellar.transfer`), enabled per node with
+`updatectl enable zfs` or a drop-in such as
+`/etc/sysupdate.d/zfs.feature.d/enable.conf` containing `[Feature] Enabled=true`.
+Only the k0s sysext stays a separate component
+(`files/os/sysupdate.k0s.d/`, `systemd-sysupdate --component=k0s update`) with
+its own version axis. Diskless nodes update by rebooting into a newer
+image; `systemd-sysupdate.service` is disabled when booted diskless.
+
+## Signing happens inside the image build
+
+`oci/bluefin-server-image.bst` assembles the whole release set (OS images,
+UKIs, netboot ESP, and the k0s/KubeStellar/OpenZFS sysext assets), writes one
+combined `SHA256SUMS` over all of it, and signs it in-element with
+`files/boot-keys/sysupdate-signing.asc` (gpg `--detach-sign`). It then proves
+the shipped keyring accepts the signature with
+`gpgv --keyring /boot-keys/import-pubring.pgp SHA256SUMS.gpg SHA256SUMS`, so a
+key mismatch fails the build instead of breaking nodes in the field. There is
+no separate CI signing step: a release publishes `dist/diskless/` as-is.
+
+`elements/bluefin-server/os-sysupdate-keys.bst` installs the matching public
+keyring from `files/boot-keys/import-pubring.pgp` to
+`/etc/systemd/import-pubring.pgp`. systemd reads that path before the vendor
+`/usr/lib/systemd/import-pubring.pgp` that FSDK ships, so the image trusts
+exactly the key that signed the build.
+
+The diskless pull verifies the same signature: the initrd ships gnupg and the
+keyring (`bluefin-server/initrd/initrd-stack.bst` depends on
+`os-sysupdate-keys.bst`), and the netboot UKI pulls the OS DDI with
+`verify=signature`. `systemd-importd` fetches `SHA256SUMS` and
+`SHA256SUMS.gpg` from the same directory as the image and refuses a tampered
+DDI and a re-hashed, unsigned manifest alike (`DOGFOOD_TAMPER=raw|sums`
+proves both).
 
 ## Repository Layout
 
-- `files/os/sysupdate-keys/import-pubring.gpg` — public OpenPGP keyring (binary
-  format). Shipped to `/usr/lib/systemd/import-pubring.gpg` by
-  `elements/bluefin-server/os-sysupdate-keys.bst`.
-- `.github/workflows/build.yml` — assembles all release assets under
-  `dist/release/`, generates a single combined `dist/release/SHA256SUMS`,
-  signs it with the `SYSUPDATE_SIGNING_KEY` repository secret, producing
-  `dist/release/SHA256SUMS.gpg`, and uploads `dist/release/*` to the GitHub
-  Release.
-- `files/os/sysupdate.d/*.transfer` and
-  `files/os/sysupdate.k0s.d/*.transfer` — each transfer points its static
-  `Path=` at `https://github.com/projectbluefin/server/releases/latest/download/`
-  so all transfers share the same signed manifest.
+- `files/os/sysupdate-keys/import-pubring.gpg` — the release public keyring,
+  committed. On release builds CI copies it to
+  `files/boot-keys/import-pubring.pgp`.
+- `files/boot-keys/sysupdate-signing.asc` / `import-pubring.pgp` — the signing
+  key and public keyring for a build (gitignored). Locally `just gen-dev-keys`
+  generates a dev key; on main CI writes them from the `SYSUPDATE_SIGNING_KEY`
+  secret plus the committed release keyring.
+- `elements/bluefin-server/os-sysupdate-keys.bst` — installs
+  `files/boot-keys/import-pubring.pgp` as `/etc/systemd/import-pubring.pgp`.
+- `files/os/sysupdate.d/*.transfer` and the k0s component directory
+  (`files/os/sysupdate.k0s.d/`) — each transfer points its static `Path=` at
+  `https://github.com/projectbluefin/server/releases/latest/download/` so all
+  transfers share the same signed manifest.
 
 ## Rotating the Signing Key
 
@@ -98,6 +135,10 @@ partitions, dual UKIs, and broader rollback strategies is tracked in
 3. Rebuild and publish a release. Existing hosts will only trust updates signed
    by the new key, so plan the rotation around a release boundary.
 
+For a throwaway local signing key, `just gen-dev-keys` writes
+`files/boot-keys/sysupdate-signing.asc` and `files/boot-keys/import-pubring.pgp`
+on its own; no manual gpg step is needed.
+
 ## Common Gotchas
 
 - **Do not put `@v` in `[Source] Path=`.** `Path=` must be a static base URL.
@@ -105,40 +146,36 @@ partitions, dual UKIs, and broader rollback strategies is tracked in
   manifest, then matches filenames containing `@v` through `MatchPattern=`.
   A path like `.../releases/download/@v/` will produce a 404 and break version
   discovery for every transfer.
-- **One combined manifest per release.** All transfers share the same `Path=`
-  and therefore the same `SHA256SUMS` file. Signing separate manifests per
-  asset type and uploading them all as `SHA256SUMS` causes collisions on the
-  release page and breaks sysupdate.
-- **Local export manifests are not release manifests.** `just export-installer`,
-  `just export-ddi`, and `just export-sysext` each write a `SHA256SUMS` in
-  `dist/`, `dist/ddi/`, and `dist/sysext/` for local verification. Only the
-  combined `dist/release/SHA256SUMS` is uploaded and used by `systemd-sysupdate`.
-- **`Verify=` belongs to `[Transfer]`, not `[Source]`.** Use it only in local
-  scratch copies for structural testing.
-- **Testing the trust chain locally.** In a Fedora container
-  (`dnf install systemd-udev systemd-container` — the `systemd-pull` helper
-  lives in `systemd-container`), copy
-  `files/os/sysupdate-keys/import-pubring.gpg` to
-  `/usr/lib/systemd/import-pubring.gpg`, point `--definitions=` at a scratch
-  copy of a transfer with only `[Target] Path=` rewritten, and run `list` and
-  `update`. The live release must yield "Signature verification succeeded";
-  gpg's "WARNING: Using untrusted key!" is expected ownertrust noise.
+- **One combined manifest per release set.** All transfers share the same
+  `Path=` and therefore the same `SHA256SUMS` file. The manifest is written
+  and signed inside `oci/bluefin-server-image.bst`, covers every file in
+  `dist/diskless/` (OS images, UKIs, and the sysext `.raw.zst` assets), and
+  the release publishes that directory as-is. There is no second manifest.
+- **`Verify=` belongs to `[Transfer]`, not `[Source]`.** It defaults to `yes`;
+  no transfer in the tree overrides it.
+- **Testing the trust chain locally.** `scripts/dogfood-diskless.sh` already
+  exercises it: the netboot UKI pulls with `verify=signature`, and
+  `DOGFOOD_TAMPER=raw` / `DOGFOOD_TAMPER=sums` prove a tampered DDI and a
+  re-hashed, unsigned manifest are both refused. For an installed-node run,
+  `scripts/dogfood-install.sh` updates with the default `Verify=yes` against a
+  locally served image set signed by the dev key.
 
 ## Verification
 
-- [ ] `files/os/sysupdate.d/*.transfer` and
-      `files/os/sysupdate.k0s.d/*.transfer` do not contain `Verify=no`.
-- [ ] `elements/bluefin-server/os-stack.bst` includes
+- [ ] `files/os/sysupdate.d/*.transfer` and `files/os/sysupdate.k0s.d/` do not
+      contain `Verify=no`.
+- [ ] `elements/bluefin-server/os-stack.bst` and
+      `elements/bluefin-server/initrd/initrd-stack.bst` include
       `bluefin-server/os-sysupdate-keys.bst`.
-- [ ] `files/os/sysupdate-keys/import-pubring.gpg` exists and contains the
-      public half of the key used to sign releases.
-- [ ] CI assembles all release assets under `dist/release/`.
-- [ ] CI generates and signs exactly one combined `dist/release/SHA256SUMS`
-      manifest, producing `dist/release/SHA256SUMS.gpg`.
-- [ ] CI uploads `dist/release/*` to the GitHub Release.
-- [ ] Every transfer in `files/os/sysupdate.d/*.transfer` and
-      `files/os/sysupdate.k0s.d/*.transfer` uses a static `Path=` with no
-      `@v` placeholder.
+- [ ] `files/os/sysupdate-keys/import-pubring.gpg` (release) or
+      `files/boot-keys/import-pubring.pgp` (dev) contains the public half of
+      the key that signs the build.
+- [ ] `oci/bluefin-server-image.bst` signs the combined `SHA256SUMS` and
+      proves it with `gpgv` against the keyring the image ships.
+- [ ] CI publishes `dist/diskless/` as-is to the GitHub Release and to the
+      OCI artifact; there is no separate signing step.
+- [ ] Every transfer in `files/os/sysupdate.d/*.transfer` and the k0s
+      component directory uses a static `Path=` with no `@v` placeholder.
 - [ ] Every transfer uses `@v` only inside `MatchPattern=`.
 
 ## See also

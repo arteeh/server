@@ -24,7 +24,7 @@ FIRSTBOOT_PRESET = (
     / "os"
     / "systemd"
     / "system-preset"
-    / "20-bluefin-firstboot-credentials.preset"
+    / "80-bluefin-firstboot-credentials.preset"
 )
 NETWORK_GENERATOR_PRESET = (
     REPO_ROOT
@@ -32,7 +32,7 @@ NETWORK_GENERATOR_PRESET = (
     / "os"
     / "systemd"
     / "system-preset"
-    / "20-bluefin-systemd-network-generator.preset"
+    / "80-bluefin-systemd-network-generator.preset"
 )
 NETWORK_GENERATOR_DROPIN = (
     REPO_ROOT

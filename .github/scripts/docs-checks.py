@@ -115,7 +115,7 @@ def validate_skill(path):
 def check_stale_flags(path):
     text = path.read_text()
     # Allow "draft" in planning/reference files and in the meta-skill that defines the rule
-    if path.name in {"DOCUMENTATION_OVERHAUL_PLAN.md", "MVP_1_0_READINESS.md", "skill-improvement.md"}:
+    if path.name in {"MVP_1_0_READINESS.md", "skill-improvement.md"}:
         if STALERE.search(text):
             err(path, "contains TODO/FIXME/XXX/HACK")
         return
@@ -164,7 +164,6 @@ def main():
     check_budget(ROOT / "README.md", 200, 150)
     check_budget(ROOT / "CONTRIBUTING.md", 100, 80)
     check_budget(DOCS_DIR / "MVP_1_0_READINESS.md", 250, 200)
-    check_budget(DOCS_DIR / "DOCUMENTATION_OVERHAUL_PLAN.md", 3000, 2500)
 
     for doc in [ROOT / "AGENTS.md", ROOT / "README.md", ROOT / "CONTRIBUTING.md", DOCS_DIR / "MVP_1_0_READINESS.md"]:
         check_stale_flags(doc)

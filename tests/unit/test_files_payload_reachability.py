@@ -49,7 +49,17 @@ HOST_TOOLING = {
     "files/bin/bluefin-kubestellar",
     # limactl VM template consumed by Justfile `test-e2e-lima`.
     "files/lima",
+    # Release public key; CI copies it to files/boot-keys/import-pubring.pgp,
+    # from where bluefin-server/os-sysupdate-keys.bst installs it.
+    "files/os/sysupdate-keys/import-pubring.gpg",
 }
+
+# Gitignored signing material, absent from every fresh checkout:
+# scripts/gen-dev-keys.sh writes it for local and pull-request builds and CI
+# installs the project keys there on main. Elements staging paths under it are
+# checked against the generator instead of the working tree.
+GENERATED_KEY_DIR = "files/boot-keys"
+KEY_GENERATOR = ROOT / "scripts" / "gen-dev-keys.sh"
 
 # Payload that claims to ship but is staged by no element. Each entry must name
 # the issue tracking its resolution. Shrink this set; never grow it.
@@ -123,7 +133,13 @@ def test_at_least_one_element_stages_payload():
     )
 
 
-@pytest.mark.parametrize("declared", sorted(_declared_paths()))
+def _is_generated_key_path(path):
+    return path == GENERATED_KEY_DIR or path.startswith(GENERATED_KEY_DIR + "/")
+
+
+@pytest.mark.parametrize(
+    "declared", sorted(p for p in _declared_paths() if not _is_generated_key_path(p))
+)
 def test_declared_source_paths_exist(declared):
     """A stale ``path:`` silently drops payload out of the image."""
     owners = ", ".join(_declared_paths()[declared])
@@ -131,6 +147,26 @@ def test_declared_source_paths_exist(declared):
         f"{owners} declares a kind: local source path that does not exist: "
         f"{declared}. Renaming payload requires updating the element that "
         f"stages it."
+    )
+
+
+@pytest.mark.parametrize(
+    "declared", sorted(p for p in _declared_paths() if _is_generated_key_path(p))
+)
+def test_declared_key_paths_are_generated(declared):
+    """Key paths are never committed; the dev-key generator must produce them."""
+    owners = ", ".join(_declared_paths()[declared])
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert GENERATED_KEY_DIR + "/" in ignored, f"{GENERATED_KEY_DIR}/ must stay gitignored"
+    generator = KEY_GENERATOR.read_text(encoding="utf-8")
+    assert f'/{GENERATED_KEY_DIR}"' in generator, (
+        f"{KEY_GENERATOR.name} no longer writes {GENERATED_KEY_DIR}"
+    )
+    entry = declared[len(GENERATED_KEY_DIR):].lstrip("/")
+    assert not entry or f'"${{dir}}/{entry}"' in generator, (
+        f"{owners} stages {declared}, which {KEY_GENERATOR.name} does not "
+        f"produce. Renaming key material requires updating the generator and "
+        f"the element that stages it."
     )
 
 
@@ -148,7 +184,7 @@ def test_every_payload_file_is_staged_or_declared():
         "files/ paths reach no image and are not declared host tooling:\n  "
         + "\n  ".join(orphans)
         + "\n\nStage them with a kind: local source on an element that "
-        "os-stack.bst, installer-stack.bst, or an oci/ target depends on; or "
+        "os-stack.bst, an initrd stack, or an oci/ target depends on; or "
         "add them to HOST_TOOLING if they are host-side only."
     )
 

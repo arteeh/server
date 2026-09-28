@@ -4,7 +4,7 @@ description: Use when reviewing for bloat, auditing for cuts, or before adding a
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-07"
+  last_updated: "2026-09-27"
 ---
 # Avoid Over-Engineering
 
@@ -36,8 +36,8 @@ existing repo convention already does the job.
    - Duplicate validation targets.
 3. **Apply the smallest change.** Remove the dependency, collapse the target, or
    replace the loop with the standard tool.
-4. **Re-validate.** Run `just validate`. For installer or DDI pipeline cuts,
-   prefer a full `just build-installer` or cluster build before claiming safety.
+4. **Re-validate.** Run `just validate`. For image pipeline cuts, prefer a full
+   `just build-image` or cluster build before claiming safety.
 5. **Update docs.** Remove or rewrite any skill file, AGENTS.md, or README line
    that references the deleted target, dependency, or command.
 6. **Write the learning.** If the cut reveals a reusable pattern, update this
@@ -67,9 +67,9 @@ existing repo convention already does the job.
 ## Verification
 
 - [ ] `just validate` passes before and after the change.
-- [ ] No hardcoded version duplicates remain; `installer-version` in `project.conf`
-      and `flatcar-version` in `include/flatcar.yml` define the installer and OS
-      payload axes.
+- [ ] No hardcoded version duplicates remain; `image-version` in
+      `include/image.yml` and `installer-version` in `project.conf` define the
+      per-build image and FSDK axes.
 - [ ] Removed build dependencies are not used by any command in the element.
 - [ ] For `manual`/`script` elements, the sandbox still has `/bin/sh` and any coreutils the commands need after a dep cut.
 - [ ] For `script` elements, build the element with `just bst build <element>`; transitive tools (`dracut`, `ukify`, etc.) may fail silently if their own runtime deps are missing from the sandbox.

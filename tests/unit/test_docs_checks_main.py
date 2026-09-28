@@ -27,7 +27,6 @@ BUDGET_TARGETS = [
     ("README.md", 200, 150),
     ("CONTRIBUTING.md", 100, 80),
     ("docs/MVP_1_0_READINESS.md", 250, 200),
-    ("docs/DOCUMENTATION_OVERHAUL_PLAN.md", 3000, 2500),
 ]
 
 

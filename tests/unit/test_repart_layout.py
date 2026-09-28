@@ -1,255 +1,113 @@
-"""Invariant coverage for the target-disk partition layout.
+"""Invariants of the installed-disk partition layout (files/os/repart.d).
 
-``files/installer/repart.d/*.conf`` is the recipe ``systemd-repart`` follows when
-the live installer partitions the *target* disk. Nothing in CI parses these
-files today, so a typo in a ``Type=``, a ``CopyBlocks=`` source that no longer
-matches the label the installer media stamps on its data partition, or an
-``esp``/``root``/``var`` slot going missing would only surface as a failed or
-silently mis-partitioned install.
+The same definitions serve three consumers:
 
-These tests are pure static checks: they read the shipped configs (plus the
-installer element and the sysupdate transfer for cross-file consistency) and
-assert the invariants the installer depends on. No BuildStream, no root, no
-block devices.
+* ``systemd-sysinstall`` (via the UUID-pinned copy bluefin-server-boot.bst
+  exports) writes the ESP and usr slot A from the running image,
+* the installed system's initrd ``systemd-repart`` (reading
+  /sysusr/usr/lib/repart.d) creates slot B and root on first boot,
+* ``systemd-sysupdate`` later fills slot B, matching the labels below.
+
+Pure static checks: no BuildStream, no block devices.
 """
 
 from __future__ import annotations
 
 import configparser
-import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REPART_DIR = REPO_ROOT / "files" / "installer" / "repart.d"
-ELEMENTS_DIR = REPO_ROOT / "elements"
-ROOT_TRANSFER = REPO_ROOT / "files" / "os" / "sysupdate.d" / "50-root.transfer"
+REPART_DIR = REPO_ROOT / "files" / "os" / "repart.d"
+SYSUPDATE_DIR = REPO_ROOT / "files" / "os" / "sysupdate.d"
+BOOT_ELEMENT = REPO_ROOT / "elements" / "oci" / "bluefin-server-boot.bst"
 
-SIZE_SUFFIXES = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+EXPECTED = {
+    "10-esp.conf": "esp",
+    "20-usr-a.conf": "usr",
+    "21-usr-verity-a.conf": "usr-verity",
+    "30-usr-b.conf": "usr",
+    "31-usr-verity-b.conf": "usr-verity",
+    "50-root.conf": "root",
+}
 
 
-def parse_size(value: str) -> int:
-    """Parse a systemd size string (``500M``, ``1G``, ``4096``) into bytes."""
-    match = re.fullmatch(r"(\d+)([KMGT]?)", value.strip())
-    assert match, f"unparseable systemd size: {value!r}"
-    number, suffix = match.groups()
-    return int(number) * SIZE_SUFFIXES.get(suffix, 1)
-
-
-def load_config(path: Path) -> configparser.ConfigParser:
-    parser = configparser.ConfigParser(strict=True)
-    # systemd drop-ins are case-sensitive; configparser lowercases keys by default.
+def load(path: Path) -> dict[str, str]:
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
     parser.optionxform = str
     parser.read_string(path.read_text(encoding="utf-8"))
-    return parser
+    return dict(parser["Partition"])
 
 
-def sysupdate_root_targets() -> list[str]:
-    """Target-slot GPT labels from the ``[Target]`` section of 50-root.transfer.
-
-    The transfer file carries a ``MatchPattern=`` in both ``[Source]`` (the
-    release asset name) and ``[Target]`` (the partition labels); only the latter
-    names partitions.
-    """
-    parser = configparser.ConfigParser(strict=True)
+def transfer_target(name: str) -> dict[str, str]:
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
     parser.optionxform = str
-    parser.read_string(ROOT_TRANSFER.read_text(encoding="utf-8"))
-    assert parser.has_option("Target", "MatchPattern"), (
-        f"{ROOT_TRANSFER.name} declares no [Target] MatchPattern"
-    )
-    return parser["Target"]["MatchPattern"].split()
+    parser.read_string((SYSUPDATE_DIR / name).read_text(encoding="utf-8"))
+    return dict(parser["Target"])
 
 
-def repart_files() -> list[Path]:
-    return sorted(REPART_DIR.glob("*.conf"))
+def test_layout_files_and_types():
+    found = {p.name: load(p)["Type"] for p in sorted(REPART_DIR.glob("*.conf"))}
+    assert found == EXPECTED
 
 
-CONFIG_PATHS = repart_files()
-
-
-def partitions() -> dict[str, dict[str, str]]:
-    """Map ``10-esp.conf`` → its ``[Partition]`` section, for every config."""
-    result: dict[str, dict[str, str]] = {}
-    for path in CONFIG_PATHS:
-        parser = load_config(path)
-        result[path.name] = dict(parser["Partition"])
-    return result
-
-
-def test_repart_directory_is_populated():
-    assert CONFIG_PATHS, f"no repart.d configs found under {REPART_DIR}"
-
-
-@pytest.mark.parametrize("path", CONFIG_PATHS, ids=lambda p: p.name)
-def test_config_parses_with_a_partition_section(path: Path):
-    parser = load_config(path)
-    assert parser.sections() == ["Partition"], (
-        f"{path.name} must define exactly one [Partition] section, "
-        f"got {parser.sections()}"
-    )
-
-
-@pytest.mark.parametrize("path", CONFIG_PATHS, ids=lambda p: p.name)
-def test_config_filename_is_ordered_and_lowercase(path: Path):
-    assert re.fullmatch(
-        r"\d{2}-[a-z0-9-]+\.conf", path.name
-    ), f"{path.name} must be NN-name.conf so systemd-repart orders it predictably"
-
-
-def test_config_ordering_prefixes_are_unique():
-    prefixes = [p.name[:2] for p in CONFIG_PATHS]
-    assert len(prefixes) == len(set(prefixes)), (
-        "two repart.d configs share an ordering prefix, so partition order "
-        f"depends on the filename tiebreak: {prefixes}"
-    )
-
-
-def test_expected_partition_types_are_present_exactly_once():
-    types = [section["Type"] for section in partitions().values()]
-    assert sorted(types) == ["esp", "root", "var"], (
-        "the target layout must be exactly one esp, one root and one var "
-        f"partition, got {sorted(types)}"
-    )
-
-
-@pytest.mark.parametrize("name,section", sorted(partitions().items()))
-def test_size_bounds_are_consistent(name: str, section: dict[str, str]):
-    minimum = section.get("SizeMinBytes")
-    maximum = section.get("SizeMaxBytes")
-    assert minimum, f"{name} must set SizeMinBytes so a too-small disk fails loudly"
-    if maximum is not None:
-        assert parse_size(minimum) <= parse_size(maximum), (
-            f"{name}: SizeMinBytes={minimum} exceeds SizeMaxBytes={maximum}, "
-            "systemd-repart would refuse the layout"
-        )
-
-
-def test_partition_labels_are_unique():
-    labels = [
-        section["Label"]
-        for section in partitions().values()
-        if "Label" in section
-    ]
-    assert len(labels) == len(set(labels)), (
-        f"duplicate GPT partition labels would make Path=auto ambiguous: {labels}"
-    )
-
-
-def test_esp_is_vfat_and_bounded():
-    esp = next(s for s in partitions().values() if s["Type"] == "esp")
-    assert esp["Format"] == "vfat", "an ESP that is not vfat is unbootable by UEFI"
-    assert parse_size(esp["SizeMinBytes"]) >= 100 * 1024**2, (
-        "the ESP must be large enough for systemd-boot plus at least one UKI"
-    )
-    assert "SizeMaxBytes" in esp, "the ESP must be capped so it cannot eat the disk"
-
-
-def test_root_slot_copies_blocks_from_a_label_the_installer_media_stamps():
-    root = next(s for s in partitions().values() if s["Type"] == "root")
-    copy_blocks = root.get("CopyBlocks")
-    assert copy_blocks, (
-        "the root partition must CopyBlocks= the DDI payload; without it the "
-        "installed system has an empty root filesystem"
-    )
-    prefix = "/dev/disk/by-partlabel/"
-    assert copy_blocks.startswith(prefix), (
-        f"CopyBlocks={copy_blocks} should address the installer media by "
-        "partition label, not by an unstable device node"
-    )
-    partlabel = copy_blocks[len(prefix):]
-    stamped = any(
-        re.search(rf"^\s*Label={re.escape(partlabel)}\s*$", text, re.MULTILINE)
-        for text in (
-            path.read_text(encoding="utf-8")
-            for path in ELEMENTS_DIR.rglob("*.bst")
-        )
-    )
-    assert stamped, (
-        f"no element stamps Label={partlabel} on the installer media data "
-        "partition, so CopyBlocks= would resolve to nothing at install time"
-    )
-
-
-def test_root_slot_is_bounded_below_the_var_partition():
-    root = next(s for s in partitions().values() if s["Type"] == "root")
-    assert root.get("GrowFileSystem") == "no", (
-        "the immutable DDI payload must not auto-grow at boot, which risks "
-        "interrupted first-boot metadata corruption"
-    )
-    assert "SizeMaxBytes" in root, (
-        "the root slot must be capped, otherwise /var gets no space on small disks"
-    )
-    assert parse_size(root["SizeMaxBytes"]) <= 8 * 1024**3, (
-        "the root slot must be capped at 8 GiB or less so /var fits on a 16 GiB disk"
-    )
-
-
-def test_bounded_partitions_leave_room_for_var_on_minimum_target_disk():
-    # Smoke-test and minimal installer target disks are 16 GiB (SHOW_ME_THE_FUTURE_DISK_SIZE).
-    target_disk = 16 * 1024**3
-    esp = next(s for s in partitions().values() if s["Type"] == "esp")
-    root = next(s for s in partitions().values() if s["Type"] == "root")
-    var = next(s for s in partitions().values() if s["Type"] == "var")
-
-    esp_max = parse_size(esp["SizeMaxBytes"])
-    root_max = parse_size(root["SizeMaxBytes"])
-    var_min = parse_size(var["SizeMinBytes"])
-
-    assert esp_max + root_max + var_min <= target_disk, (
-        f"ESP max ({esp_max}) + root max ({root_max}) + var min ({var_min}) "
-        f"exceeds 16 GiB target disk ({target_disk}), which starves /var"
-    )
-
-
-def test_var_is_a_growing_xfs_tail():
-    var = next(s for s in partitions().values() if s["Type"] == "var")
-    assert var["Format"] == "xfs"
-    # FactoryReset=yes must NOT be set on the installer var partition:
-    # systemd-sysinstall hardcodes deferPartitionsFactoryReset=true via
-    # Varlink io.systemd.Repart.Run, causing it to defer creating /var.
-    assert "FactoryReset" not in var, (
-        "FactoryReset must not be set on installer var partition or "
-        "systemd-sysinstall will defer creating it"
-    )
-    assert var["GrowFileSystem"] == "yes"
-    assert "SizeMaxBytes" not in var, (
-        "/var is the tail partition and must grow into all remaining space"
-    )
-
-
-def test_var_seeds_the_offline_k0s_sysext():
-    var = next(s for s in partitions().values() if s["Type"] == "var")
-    assert var["CopyFiles"] == "/k0s.raw:/lib/k0s/k0s.raw"
-
-
-def test_root_partition_label_is_matched_by_the_sysupdate_root_transfer():
-    root = next(s for s in partitions().values() if s["Type"] == "root")
-    targets = sysupdate_root_targets()
-    prefix, _, suffix = targets[0].partition("@v")
-    assert root["Label"].startswith(prefix) and root["Label"].endswith(suffix.lstrip("_")), (
-        f"the installed root label {root['Label']!r} is not matched by "
-        f"sysupdate target pattern {targets[0]}; OTA updates would find no slot"
-    )
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known gap, tracked in docs/MVP_1_0_READINESS.md: 50-root.transfer names "
-        "root-a and root-b, but the installer provisions only root-a, so "
-        "systemd-sysupdate has no inactive slot to stage into and no atomic "
-        "rollback path. When root-b is added this test XPASSes and must be "
-        "un-xfailed."
-    ),
+@pytest.mark.parametrize(
+    "a,b",
+    [("20-usr-a.conf", "30-usr-b.conf"), ("21-usr-verity-a.conf", "31-usr-verity-b.conf")],
 )
-def test_every_sysupdate_root_target_is_provisioned_by_the_installer():
-    targets = set(sysupdate_root_targets())
-    provisioned = {
-        section["Label"]
-        for section in partitions().values()
-        if section["Type"] == "root"
-    }
-    assert len(targets) <= len(provisioned), (
-        f"sysupdate targets {sorted(targets)} require dual slots, only {provisioned} provisioned"
-    )
+def test_ab_slots_have_identical_fixed_sizes(a: str, b: str):
+    slot_a, slot_b = load(REPART_DIR / a), load(REPART_DIR / b)
+    for slot in (slot_a, slot_b):
+        assert slot["SizeMinBytes"] == slot["SizeMaxBytes"], "slots must not grow"
+    assert slot_a["SizeMinBytes"] == slot_b["SizeMinBytes"]
+
+
+def test_slot_a_is_copied_from_the_running_image():
+    for name in ("20-usr-a.conf", "21-usr-verity-a.conf"):
+        assert load(REPART_DIR / name)["CopyBlocks"] == "auto"
+
+
+def test_slot_b_starts_empty_for_sysupdate():
+    for name in ("30-usr-b.conf", "31-usr-verity-b.conf"):
+        part = load(REPART_DIR / name)
+        assert part["Label"] == "_empty"
+        assert "CopyBlocks" not in part
+
+
+@pytest.mark.parametrize(
+    "repart,transfer",
+    [("20-usr-a.conf", "10-usr.transfer"), ("21-usr-verity-a.conf", "11-usr-verity.transfer")],
+)
+def test_slot_labels_match_the_sysupdate_target_pattern(repart: str, transfer: str):
+    part = load(REPART_DIR / repart)
+    target = transfer_target(transfer)
+    assert part["Label"].replace("%A", "@v") == target["MatchPattern"]
+    assert part["Type"] == target["MatchPartitionType"]
+
+
+def test_root_is_persistent_xfs_with_mount_points():
+    root = load(REPART_DIR / "50-root.conf")
+    assert root["Format"] == "xfs"
+    assert root["FactoryReset"] == "yes"
+    for directory in ("/usr", "/etc", "/efi", "/var"):
+        assert directory in root["MakeDirectories"].split()
+
+
+def test_boot_element_pins_slot_a_uuids_for_sysinstall():
+    text = BOOT_ELEMENT.read_text(encoding="utf-8")
+    assert "cp /repart/usr/lib/repart.d/*.conf" in text
+    assert '>> "${d}/20-usr-a.conf"' in text
+    assert '>> "${d}/21-usr-verity-a.conf"' in text
+
+
+def test_netboot_does_not_automount_the_in_ram_esp():
+    # On a diskless boot the gpt-auto generator finds the ESP through the
+    # block device backing /usr. After systemd-sysext merges an extension
+    # /usr is an overlay, the regenerated boot.mount disappears, and the
+    # orphaned boot.automount hangs systemd-boot-update.service (seen on
+    # legacy BIOS netboot, where no EFI loader variable names the ESP).
+    netboot = BOOT_ELEMENT.read_text(encoding="utf-8").split("netboot-cmdline:")[1]
+    netboot = netboot.split("disk-cmdline:")[0]
+    assert "systemd.mask=boot.automount" in netboot
+    assert "systemd.mask=boot.mount" in netboot

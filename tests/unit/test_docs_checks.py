@@ -219,7 +219,7 @@ def test_draft_marker_is_reported_in_normal_docs(docs_checks, tmp_path):
 
 @pytest.mark.parametrize(
     "name",
-    ["DOCUMENTATION_OVERHAUL_PLAN.md", "MVP_1_0_READINESS.md", "skill-improvement.md"],
+    ["MVP_1_0_READINESS.md", "skill-improvement.md"],
 )
 def test_draft_marker_allowed_in_exempt_files(docs_checks, tmp_path, name):
     path = write(tmp_path / name, "This plan is still a draft.\n")

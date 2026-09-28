@@ -9,8 +9,10 @@ KIOSK = ROOT / "files" / "k0s" / "kiosk"
 KIOSK_CONF = KIOSK / "nginx.conf"
 KIOSK_JS = KIOSK / "kiosk-gate.js"
 KIOSK_CSS = KIOSK / "kiosk-gate.css"
-TMPFILES = ROOT / "files" / "k0s" / "sysext" / "k0s-manifests.conf"
-SYSEXT = ROOT / "elements" / "oci" / "k0s-sysext.bst"
+TMPFILES = ROOT / "files" / "kubestellar" / "sysext" / "k0s-manifests.conf"
+SYSEXT = ROOT / "elements" / "oci" / "kubestellar-sysext.bst"
+K0S_SYSEXT = ROOT / "elements" / "oci" / "k0s-sysext.bst"
+SEED = ROOT / "files" / "kubestellar" / "sysext" / "kubestellar-seed.service"
 CONSOLE_MANIFEST = (
     ROOT
     / "files"
@@ -36,12 +38,22 @@ def test_kiosk_assets_are_packaged_and_seeded() -> None:
     assert KIOSK_CONF.is_file()
     assert KIOSK_JS.is_file()
     assert KIOSK_CSS.is_file()
-    assert "freedesktop-sdk.bst:components/openssl.bst" in sysext
-    assert "keyout sysext/usr/share/k0s/kiosk/key.pem" in sysext
     assert "path: files/k0s/kiosk" in sysext
     assert "directory: kiosk-src" in sysext
-    assert "cp -a kiosk-src/. sysext/usr/share/k0s/kiosk/" in sysext
+    assert 'cp -a kiosk-src/. "${root}/share/k0s/kiosk/"' in sysext
     assert "C+ /var/lib/k0s/kiosk - - - - /usr/share/k0s/kiosk" in tmpfiles
+    assert "kiosk-src" not in K0S_SYSEXT.read_text(encoding="utf-8"), (
+        "the kiosk ships in the opt-in KubeStellar sysext, not with k0s"
+    )
+
+
+def test_kiosk_tls_key_is_generated_per_node_not_shipped() -> None:
+    sysext = SYSEXT.read_text(encoding="utf-8")
+    seed = SEED.read_text(encoding="utf-8")
+    assert "openssl req" not in sysext, "a public sysext must not carry a private key"
+    assert "key material in a public sysext" in sysext
+    assert "test -s /var/lib/k0s/kiosk/key.pem ||" in seed
+    assert "-keyout /var/lib/k0s/kiosk/key.pem" in seed
 
 
 def test_proxy_injects_only_csp_safe_same_origin_assets() -> None:

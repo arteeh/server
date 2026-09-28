@@ -2,8 +2,8 @@
 #
 # k0s is an independently-pinned third-party payload, not an OS asset. Its
 # version therefore does NOT live on the installer or OS payload axes declared in
-# project.conf (`installer-version` or `flatcar-version`) — those axes name the
-# FSDK point release and Flatcar payload and are bumped by unrelated OS work.
+# project.conf (`installer-version`) or include/image.yml (`image-version`) — those
+# axes name the FSDK point release and the OS build and change for unrelated reasons.
 #
 # Only the two atoms below are edited when k0s is bumped. Every other spelling
 # of the k0s version in this repository is derived from them:

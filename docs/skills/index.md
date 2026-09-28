@@ -4,7 +4,7 @@ description: Lazy-load manifest for Bluefin Server skills. Load this file after 
 metadata:
   type: index
   status: stable
-  last_updated: "2026-09-25"
+  last_updated: "2026-09-27"
 ---
 # docs/skills — Index
 
@@ -13,7 +13,7 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 ## Loading contract
 
 1. Read `AGENTS.md` first.
-2. Consult [`CONTEXT.md`](../../CONTEXT.md) for canonical project domain terminology (OS DDI, Installer, Sysext, Transfer).
+2. Consult [`CONTEXT.md`](../../CONTEXT.md) for canonical project domain terminology (OS DDI, Installer, Netboot UKI, Disk UKI, Slot, Sysext, Transfer).
 3. Read this file.
 4. Read **one** skill file from the table below that matches the current task.
 5. Do not load unrelated skills. If a skill references another file, follow the link only when the referenced topic is part of the current task.
@@ -26,16 +26,16 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 | [`architecture-roadmap.md`](architecture-roadmap.md) | Future architecture direction, long-lead design | Roadmap for systemd-native architecture work. |
 | [`bump-fsdk-version.md`](bump-fsdk-version.md) | Pinning or retagging the FSDK junction | Update the pinned FSDK release and derived tags. |
 | [`ci-tooling.md`](ci-tooling.md) | GitHub Actions, workflow SHA pinning, CI conventions | CI conventions and release pipeline rules. |
-| [`ddi-installer-build.md`](ddi-installer-build.md) | Building the installer or DDI on the cluster | Cluster build pipeline and local installer/DDI build. |
-| [`ddi-installer.md`](ddi-installer.md) | Installer boot flow, `systemd-sysinstall`, `systemd-repart`, PXE network DDI / credentials pull | High-level DDI install architecture and local smoke test. |
+| [`ddi-installer-build.md`](ddi-installer-build.md) | Building and dogfooding the image set | Local build, export, and QEMU dogfood workflow. |
+| [`ddi-installer.md`](ddi-installer.md) | Boot flow, diskless pull, `systemd-sysinstall`, A/B sysupdate | Boot, install, and update architecture. |
 | [`factory-integration.md`](factory-integration.md) | Lab integration, boot-test workflow, factory role | How Bluefin Server is consumed by the CI lab. |
-| [`flatcar-parity-matrix.md`](flatcar-parity-matrix.md) | Flatcar version audit, component parity, substitution order | Version parity matrix and gap audit against Flatcar 4593.2.5. |
 | [`gap-analysis-distros.md`](gap-analysis-distros.md) | Comparing Bluefin Server to other server OSes | Source-verified comparison to Ubuntu, Talos, Flatcar, FCOS. |
-| [`k0s-sysext-ops.md`](k0s-sysext-ops.md) | Operating k0s on Bluefin Server | Runtime operation and reboot coordination for k0s. |
+| [`kubeadm-sysext.md`](kubeadm-sysext.md) | Joining a kubeadm cluster, kubelet/containerd sysext, Kubernetes kernel options | Build and runtime contract for the kubeadm worker sysext. |
+| [`k0s-sysext-ops.md`](k0s-sysext-ops.md) | Operating k0s or the KubeStellar appliance on Bluefin Server | Runtime operation and troubleshooting for the k0s and KubeStellar sysexts. |
 | [`k0s-sysext.md`](k0s-sysext.md) | Building the k0s sysext | BuildStream element and publish steps for the k0s sysext. |
 | [`skill-improvement.md`](skill-improvement.md) | Adding, splitting, or refactoring skills | Meta-skill that owns the documentation loop. |
 | [`system-containers.md`](system-containers.md) | Running `systemd-nspawn` toolboxes | System container operation with `machinectl`. |
-| [`systemd-sysext-extensions.md`](systemd-sysext-extensions.md) | Optional layers via `systemd-sysext` / `systemd-confext` | Extension identity, loading, and Flatcar compatibility. |
+| [`systemd-sysext-extensions.md`](systemd-sysext-extensions.md) | Optional layers via `systemd-sysext` / `systemd-confext` | Extension identity, loading, and version matching. |
 | [`systemd-sysupdate-verification.md`](systemd-sysupdate-verification.md) | Image-based A/B updates and signed manifests | Release signing, `systemd-sysupdate`, and trust model. |
 | [`tpm2-credential-sealing.md`](tpm2-credential-sealing.md) | TPM2-bound first-boot credentials | Credential sealing with `systemd-creds` and TPM2. |
 
@@ -44,4 +44,4 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 - **Publish registry:** factory OCI registry at `<registry-host>:30500` (or configured by operator).
 - **Cluster build workflow:** `bluefin-server-build-pipeline` in the downstream factory CI repository.
 - **Cluster boot-test workflow:** `bluefin-server-boot-test` in the downstream factory CI repository.
-- **Version scheme:** two axes — `installer-version` (FSDK-derived, `project.conf`) and `flatcar-version` (OS payload, `include/flatcar.yml`); no application version axis.
+- **Version scheme:** two axes — `image-version` (per build, `include/image.yml`, set by `just set-version`; CI uses `YY.MM.<run>` on main and `0.<run>` on PRs) and `installer-version` (`project.conf`, tracking only the pinned FSDK point release).

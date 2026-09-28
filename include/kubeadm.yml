@@ -1,0 +1,21 @@
+# Single source of truth for the kubeadm sysext payload versions.
+#
+# Pinned to what the target kubeadm cluster's existing nodes run, so a
+# Bluefin Server worker is indistinguishable from them at the CRI/kubelet
+# level. The sha256 of every download sits next to its source in
+# elements/kubeadm/kubeadm-bin.bst; the sysext itself is locked to the image
+# version (kubeadm_<image-version>.raw.zst).
+#
+#   %{kubernetes-version}   kubelet, kubeadm, kubectl (dl.k8s.io)
+#   %{crictl-version}       cri-tools
+#   %{containerd-version}   containerd static build
+#   %{runc-version}         runc static build
+#   %{cni-plugins-version}  containernetworking/plugins
+#   %{pause-image}          CRI sandbox image (matches kubeadm-flags.env)
+variables:
+  kubernetes-version: "1.34.3"
+  crictl-version: "1.34.0"
+  containerd-version: "2.1.5"
+  runc-version: "1.3.3"
+  cni-plugins-version: "1.1.1"
+  pause-image: "registry.k8s.io/pause:3.10.1"

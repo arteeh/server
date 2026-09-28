@@ -4,7 +4,7 @@ description: Move Bluefin Server to a new freedesktop-sdk release and refresh th
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-07"
+  last_updated: "2026-09-27"
   context7-sources:
     - /apache/buildstream
 ---
@@ -14,18 +14,20 @@ Use when moving to a new FSDK release, or refreshing the pinned ref.
 
 ## The version model
 
-There is no application version for these images — the version axis IS the FSDK
-release. Tags are derived from the pinned junction ref in
-`elements/freedesktop-sdk.bst` (the `ref:` line, e.g.
-`freedesktop-sdk-26.08.0-...`):
+There is no application version for these images. Two version axes exist:
 
-- `:latest` — rolling, every publish
-- `:26.08` — FSDK minor line (moves within the line)
-- `:26.08.0` — FSDK point release, treated **immutable**
+- `installer-version` in `project.conf` tracks the pinned FSDK point release
+  (the `ref:` line in `elements/freedesktop-sdk.bst`, e.g.
+  `freedesktop-sdk-26.08.0-...`). `.github/scripts/check-release-version.py`
+  fails closed on drift between the two.
+- `image-version` in `include/image.yml` is the per-build OS version shared by
+  the usr DDI, the UKIs, and sysupdate transfers. CI sets it with
+  `just set-version` (`YY.MM.<run>` on main, `0.<run>` on PRs);
+  `systemd-sysupdate` orders it with `strverscmp()`, so keep it monotonic and
+  at most 17 characters.
 
-`just tags` parses these from the ref. Provenance labels
-`io.projectbluefin.fsdk.version` / `io.projectbluefin.fsdk.ref` are applied at
-export so every image self-declares its base.
+`just version` / `just tags` parse the FSDK-derived point release and tag set
+(`latest`, minor line, point release) from the junction ref.
 
 ## Procedure
 
@@ -44,13 +46,12 @@ export so every image self-declares its base.
    ```
    just validate
    just tags        # confirm derived tags look right
-   just build-installer
-   just build-ddi
+   just build-image
    ```
 
-   `elements/bluefin-server/os-release-flatcar.bst` reads the FSDK point release
-directly from `elements/freedesktop-sdk.bst`, so `NAME`, `PRETTY_NAME`, and
-   `IMAGE_VERSION` update automatically.
+   `elements/bluefin-server/os-release.bst` reads `image-version` from
+   `include/image.yml`, so `NAME`, `PRETTY_NAME`, and `IMAGE_VERSION` update
+   automatically on the next build.
 
 5. Follow the FSDK lifecycle: track the active minor line; when FSDK EOLs a
    line, move `:latest` to the next supported minor. Don't pin to an EOL line.
@@ -62,14 +63,14 @@ Before merging a bump:
 - [ ] `just validate` passes (element graph resolves with new ref)
 - [ ] `just tags` output matches the expected `latest / YY.MM / YY.MM.PP` triple
 - [ ] The `patches/freedesktop-sdk/0001-project.conf-Add-GNOME-CAS-servers.patch` applied cleanly (no patch failure in `just validate`)
-- [ ] `just build-installer` and `just build-ddi` complete without error
-- [ ] `io.projectbluefin.fsdk.version` label on the built image matches the new FSDK version
+- [ ] `just build-image` completes without error
+- [ ] The built image's `/usr/lib/os-release` carries the new `image-version`
 
 - Bumping across a minor line (for example, 25.08 → 26.08) may rename/relocate components or restructure runtime stacks:
   - In FSDK 26.08, `public-stacks/runtime-minimal.bst` drops bash and coreutils, which moved to `public-stacks/runtime-gnu.bst`. Stacks whose components carry shell integration commands (like `elements/base/base-stack.bst` for `ldconfig` and `ca-certificates`) need `public-stacks/runtime-gnu.bst` in `depends:`.
   - `components/systemd-base.bst` was dropped in FSDK 26.08, and FSDK now ships its own systemd directly, so the previous `gnome-build-meta` systemd overrides were removed from `elements/freedesktop-sdk.bst`.
-- A point-release tag is immutable: once `:26.08.0` is published, never republish
-  different bits under it.
+- A point-release tag is immutable: once a GitHub Release for a given
+  `image-version` is published, never republish different bits under it.
 - **Only one CAS-config patch remains.** FSDK 26.08 absorbed the old `0001` CAS-limits patch (upstream `project.conf` sets `retry-limit`/`retry-delay`/`request-timeout` itself), so `patches/freedesktop-sdk/` carries only `0001-project.conf-Add-GNOME-CAS-servers.patch`.
 - Junction overrides are only meaningful for components your local elements
   reference directly. The 25 GNOME sdk/* overrides (cairo, gtk3, pango, glib,
@@ -81,8 +82,8 @@ Before merging a bump:
 
 Point releases are delivered by the scheduled `track-junctions.yml` workflow.
 - **Trigger:** `track-junctions.yml` runs daily and resolves the junction's own `track: freedesktop-sdk-26.08*` glob; it does not wait on a Renovate PR.
-- **Mechanism:** `track-junctions.yml` runs `just bst source track freedesktop-sdk.bst` (alongside `gnome-build-meta.bst`, which overrides it), syncs `project.conf`'s `release-version` to the tracked point release, and opens its own PR on `auto/track-junctions`. It never runs on `pull_request`, so a junction bump can never be injected into an unrelated dependency PR.
-- **Build Loop:** When the PR is merged to `main`, GitHub Actions automatically compiles the standalone DDI OS and installer images, and publishes them directly to GitHub Releases under the new FSDK point-release version.
+- **Mechanism:** `track-junctions.yml` runs `just bst source track freedesktop-sdk.bst` (alongside `gnome-build-meta.bst`, which overrides it), syncs `project.conf`'s `installer-version` to the tracked point release, and opens its own PR on `auto/track-junctions`. It never runs on `pull_request`, so a junction bump can never be injected into an unrelated dependency PR.
+- **Build Loop:** When the PR is merged to `main`, GitHub Actions compiles the image set (OS DDI, UKIs, netboot ESP) and sysexts, and publishes them to a new GitHub Release tagged `v<image-version>`.
 
 ## See also
 

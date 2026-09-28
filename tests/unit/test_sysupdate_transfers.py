@@ -40,7 +40,7 @@ def transfer_paths() -> list[Path]:
 
 
 def load_transfer(path: Path) -> configparser.ConfigParser:
-    parser = configparser.ConfigParser(strict=False)
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
     # systemd keys are case sensitive; configparser lowercases them by default.
     parser.optionxform = str
     parser.read_string(path.read_text())
@@ -64,7 +64,14 @@ def split_match_pattern(pattern: str) -> tuple[str, str]:
 def test_sysupdate_directories_are_populated():
     generic = sorted(p.name for p in SYSUPDATE_DIR.glob("*.transfer"))
     k0s = sorted(p.name for p in K0S_SYSUPDATE_DIR.glob("*.transfer"))
-    assert generic == ["50-root.transfer", "60-uki.transfer"]
+    assert generic == [
+        "10-usr.transfer",
+        "11-usr-verity.transfer",
+        "20-uki.transfer",
+        "30-zfs.transfer",
+        "31-kubestellar.transfer",
+        "32-kubeadm.transfer",
+    ]
     assert k0s == ["70-k0s.transfer"]
 
 
@@ -120,15 +127,15 @@ def test_every_source_artifact_is_produced_by_an_element(path: Path):
 
     Renaming an artifact in ``elements/oci/*.bst`` without updating the matching
     transfer silently breaks OTA: sysupdate finds no candidate and reports the
-    system as up to date forever.
+    system as up to date forever. ``@u`` (partition UUID) is filled in by the
+    element at build time, so only the literal text around it is checked.
     """
     prefix, suffix = split_match_pattern(
         load_transfer(path)["Source"]["MatchPattern"]
     )
-    # Elements name artifacts with a BuildStream variable in the version slot,
-    # e.g. FNAME="k0s-%{k0s-version}.raw" plus a .zst compression step.
+    tail = suffix.split("@u", 1)[-1].removesuffix(".zst")
     produced = re.compile(
-        re.escape(prefix) + r"%\{[a-z0-9-]+\}" + re.escape(suffix.removesuffix(".zst"))
+        re.escape(prefix) + r"%\{[a-z0-9-]+\}" + r"[^\n]*?" + re.escape(tail)
     )
     assert produced.search(element_texts()), (
         f"{path.name} expects release asset {prefix}<version>{suffix}, but no "
@@ -136,25 +143,39 @@ def test_every_source_artifact_is_produced_by_an_element(path: Path):
     )
 
 
-def test_uki_transfer_installs_into_the_esp_boot_directory():
-    target = load_transfer(SYSUPDATE_DIR / "60-uki.transfer")["Target"]
-    assert target.get("Type") == "regular-file", (
-        "the UKI is a regular-file drop-in, not a partition or directory"
+def test_uki_transfer_installs_into_boot_efi_linux_with_boot_counting():
+    target = load_transfer(SYSUPDATE_DIR / "20-uki.transfer")["Target"]
+    assert target.get("Type") == "regular-file"
+    assert target.get("Path") == "/EFI/Linux"
+    assert target.get("PathRelativeTo") == "boot", (
+        "systemd-boot discovers Type #2 UKIs under $BOOT/EFI/Linux"
     )
-    assert target.get("Path") == "/efi/EFI/Linux", (
-        f"UKI target path is {target.get('Path')!r}; systemd-boot only discovers "
-        "unified kernels under the ESP's EFI/Linux directory"
-    )
-    assert target.get("MatchPattern", "").endswith(".efi"), (
-        "the installed UKI must keep its .efi extension to be bootable"
+    assert "+@l-@d" in target.get("MatchPattern", ""), "boot counting needs @l/@d"
+    assert target.get("TriesLeft") == "3"
+    assert "Mode" not in target, (
+        "a read-only mode sets the FAT read-only attribute and systemd-boot can "
+        "no longer rename the file to count boots"
     )
 
 
-def test_uki_source_and_target_names_agree():
-    parser = load_transfer(SYSUPDATE_DIR / "60-uki.transfer")
-    assert parser["Source"]["MatchPattern"] == parser["Target"]["MatchPattern"], (
-        "the UKI is copied verbatim; a source/target name mismatch would leave "
-        "sysupdate unable to correlate installed and available versions"
+def test_uki_source_name_is_one_of_the_target_names():
+    parser = load_transfer(SYSUPDATE_DIR / "20-uki.transfer")
+    source = parser["Source"]["MatchPattern"]
+    assert source in parser["Target"]["MatchPattern"].split(), (
+        "sysupdate correlates installed and available UKIs by name"
+    )
+    assert source.startswith("bluefin-server-"), (
+        "bootctl writes 'default bluefin-server-*' to loader.conf; an updated UKI "
+        "outside that glob would never become the default entry"
+    )
+
+
+@pytest.mark.parametrize("name", ["10-usr.transfer", "11-usr-verity.transfer"])
+def test_usr_transfers_carry_the_verity_partition_uuid(name: str):
+    source = load_transfer(SYSUPDATE_DIR / name)["Source"]["MatchPattern"]
+    assert "@u" in source, (
+        "the partition UUID must come from the asset name: dm-verity finds usr "
+        "partitions by UUIDs derived from usrhash"
     )
 
 
@@ -229,21 +250,23 @@ def test_k0s_sysext_image_name_matches_its_extension_release_name():
     )
 
 
+IMAGE_ELEMENT = ELEMENTS_DIR / "oci" / "bluefin-server-image.bst"
+
+
 @pytest.mark.parametrize("path", transfer_paths(), ids=lambda p: p.name)
-def test_every_source_artifact_is_staged_in_release_workflow(path: Path):
-    """The release asset a transfer downloads must be staged into dist/release/ by build.yml."""
-    prefix, _ = split_match_pattern(
-        load_transfer(path)["Source"]["MatchPattern"]
-    )
+def test_every_source_artifact_is_in_the_signed_image_set(path: Path):
+    """The asset a transfer downloads must be in the image set, whose signed
+    SHA256SUMS the release publishes as-is (dist/diskless/)."""
+    prefix, _ = split_match_pattern(load_transfer(path)["Source"]["MatchPattern"])
+    image = IMAGE_ELEMENT.read_text()
+    assert prefix in image, f"{path.name}: {prefix!r} assets are not in {IMAGE_ELEMENT.name}"
     build_yml = (REPO_ROOT / ".github" / "workflows" / "build.yml").read_text()
-    assert re.search(rf"cp\s+.*{re.escape(prefix)}\*.*dist/release/", build_yml), (
-        f"{path.name} source asset prefix {prefix!r} is not staged to dist/release/ in .github/workflows/build.yml"
-    )
+    assert "find dist/diskless -maxdepth 1 -type f" in build_yml
+    assert "gpg --batch --yes --pinentry-mode loopback" in image
+    assert "gpgv --keyring /boot-keys/import-pubring.pgp SHA256SUMS.gpg SHA256SUMS" in image
 
 
 def test_k0s_release_staging_does_not_use_legacy_k3s_name() -> None:
-    build_yml = (REPO_ROOT / ".github" / "workflows" / "build.yml").read_text()
-    assert re.search(r"cp\s+.*k0s-\*\.raw\.zst.*dist/release/", build_yml)
-    assert not re.search(
-        r"cp\s+.*k3s-\*\.raw\.zst.*dist/release/", build_yml
-    )
+    image = IMAGE_ELEMENT.read_text()
+    assert "/sysext/k0s/k0s-*.raw.zst" in image
+    assert "k3s-" not in image

@@ -11,3 +11,5 @@ dist/
 .build-out
 .worktrees/
 .pytest_cache/
+# Local Secure Boot / module signing keys (just gen-dev-keys)
+files/boot-keys/

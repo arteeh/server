@@ -4,31 +4,32 @@ This audit tracks the gap between the current tree and a first public/usable MVP
 
 ## MVP 1.0 bar
 
-1. **Reproducible build path** — documented command or CI job that produces the DDI, live installer, and k0s sysext.
-2. **Signed release artifacts** — combined `SHA256SUMS` + detached GPG signature published to GitHub Releases.
-3. **Automated boot verification** — at least one non-human test that proves the installer writes a bootable disk and the installed OS reaches a target.
+1. **Reproducible build path** — documented command or CI job that produces the OS DDI, signed UKIs, netboot ESP, and sysexts.
+2. **Signed release artifacts** — combined `SHA256SUMS` + detached GPG signature covering the whole image set, published to GitHub Releases and as an OCI artifact.
+3. **Automated boot verification** — at least one non-human test that proves the image boots and installs.
 4. **Functional update path** — host can pull the signed manifest and apply an OS update without manual intervention.
 5. **Basic first-boot provisioning** — unattended way to set root credential and drop an SSH authorized key.
-6. **Documented recovery** — A/B rollback or reinstall-from-media path for a failed update.
+6. **Documented recovery** — A/B rollback or reinstall path for a failed update.
 
 ## Current state
 
 | Check | Status | Evidence |
 |---|---|---|
-| Element graph resolves | ✅ | `just validate` succeeds for DDI, installer, and k0s sysext |
+| Element graph resolves | ✅ | `just validate` succeeds for the image set and all three sysexts |
 | Release workflow lint | ✅ | `actionlint .github/workflows/build.yml` clean |
-| Release path exists | ✅ | `.github/workflows/build.yml` builds, signs, uploads to GitHub Release |
-| Cluster build pipeline | ✅ | Phase A complete; pipeline builds DDI, installer, and k0s sysext with uutils |
-| Automated boot test | 🔄 | Phase B in progress for Alpha; `bluefin-server-boot-test` workflow running on lab cluster |
-| A/B root rollback | ❌ | `50-root.transfer` names `root-a`/`root-b`, installer only creates `root-a` |
-| Root immutability | ❌ | DDI boots read/write (`rw` on cmdline) |
-| First-boot SSH keys | ❌ | Only root password credential path exists |
+| Release path exists | ✅ | `.github/workflows/build.yml` signs `SHA256SUMS` in-element (`oci/bluefin-server-image.bst`, with a `gpgv` proof against the shipped keyring) and publishes immutable `v<image-version>` GitHub Releases plus the OCI artifact `ghcr.io/<owner>/bluefin-server:<ver>,latest` |
+| Automated boot test | ✅ | `boot-test` job in `build.yml` runs `scripts/dogfood-diskless.sh --check` and `scripts/dogfood-install.sh` on every PR and push to main; locally `just dogfood-check` / `just dogfood-install`. UEFI HTTP boot verified with Secure Boot (`DOGFOOD_BOOT=http`), and tampered DDI / unsigned manifest both refused (`DOGFOOD_TAMPER=raw\|sums`) |
+| A/B rollback | ✅ | `files/os/repart.d/` provisions usr slots A+B; `systemd-sysupdate` fills the inactive slot and UKI boot counting (`TriesLeft=3` in `files/os/sysupdate.d/20-uki.transfer`) rolls back failed boots; proven by `scripts/dogfood-install.sh <dir> <next> <broken>` |
+| Read-only /usr | ✅ | erofs + dm-verity pinned by `usrhash=` in the signed UKIs (`elements/oci/bluefin-server-usr.bst`, `elements/oci/bluefin-server-boot.bst`) |
+| Signed diskless pull | ✅ | Netboot UKI pulls with `verify=signature`; the initrd ships gnupg and the keyring (`/etc/systemd/import-pubring.pgp` from `os-sysupdate-keys.bst`) |
+| Sysext lock-step updates | ✅ | `zfs` / `kubestellar` sysupdate features download the version-locked sysext with each OS update; rollback keeps the matching sysext (verified in the 6-phase `dogfood-install` run) |
+| First-boot SSH keys | ✅ | Ignition (`ignition.config` / `ignition.config.url` credentials, or `bluefin-node.ign` next to the UKI on UEFI HTTP boot; `tests/fixtures/ignition/var-on-disk.ign`) and `tmpfiles.extra` / sysusers credentials (`elements/bluefin-server/os-creds-prov.bst`) |
 
 Competitor context: [gap-analysis-distros.md](skills/gap-analysis-distros.md)
 
 ## Verdict
 
-**Alpha state — in progress for MVP 1.0.** Phase A (build path, uutils, k0s sysext, validate) is complete. Phase B (automated boot test on lab cluster) is actively in progress for the Alpha milestone. Full MVP 1.0 release requires concluding Phase B boot verification and Phase C runtime hardening (automated rollback, read-only `/usr`, credential delivery).
+**Alpha state — on track for MVP 1.0.** The build path, signed releases (GitHub + OCI), automated boot verification (including UEFI HTTP boot and Booty-provisioned install), A/B rollback, read-only /usr, lock-step sysext updates, and unattended provisioning are all implemented and exercised in CI. Remaining work is hardening: TPM2-sealed state, reboot coordination outside Kubernetes, merging the Booty branch, and real-hardware boot proofs.
 
 ## Roadmap
 
@@ -36,34 +37,33 @@ Priority order. Each item depends on the ones above it.
 
 ### Phase A: build path and core artifacts (Complete)
 
-- [x] Extend cluster build deadlines so the pipeline can finish.
-- [x] Fix `build.yml` actionlint warnings.
-- [x] Confirm build path succeeds and publishes `bluefin-server-installer:latest` to `<registry-host>:30500`.
-- [x] Add `oci/k0s-sysext.bst` to the build and validation pipeline.
-- [x] Integrate uutils coreutils across OS elements.
 - [x] Merge-contract graph validation (`just validate`) passes clean.
+- [x] Add the k0s and OpenZFS sysexts to the build and validation pipeline.
+- [x] Release workflow builds, signs, and publishes immutable GitHub Releases.
 
-### Phase B: automated boot verification (In progress for Alpha)
+### Phase B: automated boot verification (Complete)
 
-- [x] Create `bluefin-server-boot-test` Argo workflow in the downstream factory CI repository.
-- [ ] Run the workflow against a successful installer build on the lab cluster and iterate to green.
-- [ ] Wire the boot test into a post-merge CI gate or CronWorkflow.
+- [x] Secure Boot QEMU diskless boot check (`scripts/dogfood-diskless.sh --check`).
+- [x] Diskless -> install -> disk boot check (`scripts/dogfood-install.sh`).
+- [x] Boot test wired into `build.yml` as the `boot-test` job gating releases.
+- [x] UEFI HTTP boot with Secure Boot and per-node `bluefin-node.ign` (`DOGFOOD_BOOT=http`), plus negative signature checks (`DOGFOOD_TAMPER`).
+- [x] Booty end-to-end run: synced from a local OCI registry with the keyring, HTTP-booted a node with Secure Boot, applied hostname/SSH key, merged ZFS, installed to disk via doInstall.
 
-### Phase C: update/rollback and provisioning
+### Phase C: update/rollback and provisioning (Complete)
 
-- [ ] Add `root-b` to installer repart recipes and verify `systemd-sysupdate` stages into the inactive slot.
-- [ ] Switch UKI cmdline from `rw` to `ro` and rely on `/var` for mutable state.
-- [ ] Consume `systemd-creds` for SSH authorized keys and static network config.
-- [ ] Add boot menu entry to select the previous slot after a failed update.
+- [x] usr slot B created on first disk boot; `systemd-sysupdate` stages into the inactive slot.
+- [x] /usr is read-only erofs under dm-verity; the persistent root is xfs.
+- [x] Boot-counted UKIs roll back a failed update automatically.
+- [x] ZFS/KubeStellar sysexts follow OS updates in lock-step via sysupdate features and survive rollback.
+- [x] SSH authorized keys via Ignition and `systemd-creds` (`tmpfiles.extra`).
 
 ### Phase D: release discipline
 
-- [ ] Tag `v1.0.0-MVP` once Phase B passes.
+- [ ] TPM2-sealed /var and credential decryption proof on real hardware.
+- [ ] Reboot coordination for non-Kubernetes hosts.
+- [ ] Merge the Booty `feat/bluefin-http-boot` branch; shim-signed Secure Boot path for enrollment-free first boots.
+- [ ] Tag `v1.0.0-MVP` once Phase D items land.
 - [ ] Publish release notes: verified boot path, trust model, known gaps.
-
-## Open decisions
-
-- Does MVP 1.0 require A/B dual-slot rollback, or is a single-slot signed update with documented reinstall recovery acceptable for the first release?
 
 ## Related files
 

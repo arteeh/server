@@ -4,7 +4,7 @@ description: Extensibility via systemd-sysext and systemd-confext for Bluefin Se
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-07"
+  last_updated: "2026-09-27"
   context7-sources:
     - /systemd/systemd
 ---
@@ -40,25 +40,44 @@ Placing an empty directory named like the extension (without `.raw`) under
 `/etc/extensions/` masks an extension of the same name in a lower-precedence
 directory.
 
-## Flatcar Bakery Compatibility
+## Extension identity and version matching
 
-The base OS `/usr/lib/os-release` mimics Flatcar (`ID=flatcar` and a matching
-`VERSION_ID`), which lets the host load pre-compiled extensions from the Flatcar
-System Extension Bakery as long as the extension's `extension-release` metadata
-matches the host `ID=` (or uses `ID=_any`).
+The base OS `/usr/lib/os-release` identifies as `ID=bluefin-server` with
+`VERSION_ID=<image-version>` (`elements/bluefin-server/os-release.bst`). A
+sysext merges when its `extension-release` metadata matches the host `ID=` (or
+uses `ID=_any`) and, when it pins `VERSION_ID=`, the host version.
 
-If the extension enforces `VERSION_ID=` matching, the Flatcar major-version line
-must match the value baked into `elements/bluefin-server/os-release-flatcar.bst`.
+The first-party extensions make opposite choices:
 
-## Adding an extension from the Flatcar Bakery
+- **k0s** (`files/k0s/sysext/extension-release.k0s`) uses `ID=_any` and does
+  not pin the image version, so it merges on any host image.
+- **OpenZFS and KubeStellar** are version-locked to the image: their
+  extension-release file is named after the versioned image file
+  (`extension-release.zfs_<image-version>`,
+  `extension-release.kubestellar_<image-version>`) with `ID=bluefin-server`
+  and `VERSION_ID=<image-version>`, because the ZFS kernel modules only load
+  on the exact kernel they were built against (and the KubeStellar stack is
+  validated against one image). Several versions sit side by side in
+  `/var/lib/extensions` as `zfs_<ver>.raw` / `kubestellar_<ver>.raw`;
+  systemd-sysext merges only the one matching the booted image, so an A/B
+  rollback keeps its ZFS. Installed nodes receive them in lock-step with OS
+  updates through the optional `zfs` / `kubestellar` sysupdate features
+  (see `systemd-sysupdate-verification.md`); diskless nodes get them from
+  Ignition, which writes `/etc/extensions/<name>_<ver>.raw` with a sha256
+  verification hash.
 
-The k0s sysext is the built-in example, but any Flatcar-compatible extension can
-be layered the same way.
+Third-party extensions built for another distribution (for example the Flatcar
+System Extension Bakery) only merge with `systemd-sysext merge --force`, and
+only if they are pure userspace.
+
+## Adding an extension
+
+The k0s sysext is the built-in example; a compatible extension layers the same
+way.
 
 ```bash
 # Download an extension image to the persistence directory
-wget https://bakery.flatcar-linux.org/extensions/htop/htop-latest.raw \
-  -O /var/lib/extensions/htop.raw
+wget <extension-url> -O /var/lib/extensions/myext.raw
 
 # Merge it into the running system
 systemd-sysext merge
@@ -75,12 +94,18 @@ systemd-sysext refresh
 ```
 
 The `systemd-sysext.service` unit performs a refresh at boot, so extensions in
-`/var/lib/extensions/` become available without manual intervention.
+`/var/lib/extensions/` become available without manual intervention. One
+caveat: the refresh happens after PID 1 has built the boot transaction, so
+`[Install]` symlinks shipped inside a sysext (for example `zfs.target` in
+`multi-user.target.wants`) are not part of it. The enabled oneshot
+`bluefin-sysext-activate.service` runs after `systemd-sysext.service` and
+re-requests `multi-user.target`, which adds jobs for the now-visible wants;
+that is how `zfs.target` comes up at boot when the ZFS sysext is merged.
 
 ## Removing an extension
 
 ```bash
-rm /var/lib/extensions/htop.raw
+rm /var/lib/extensions/myext.raw
 systemd-sysext refresh
 ```
 

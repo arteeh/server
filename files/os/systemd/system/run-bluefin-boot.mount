@@ -1,0 +1,10 @@
+[Unit]
+Description=ESP of the running Bluefin Server image (installer source)
+Documentation=man:systemd-sysinstall(8)
+ConditionPathExists=/dev/disk/by-loop-ref/rootdisk.raw-part3
+
+[Mount]
+What=/dev/disk/by-loop-ref/rootdisk.raw-part3
+Where=/run/bluefin/boot
+Type=vfat
+Options=ro,nosuid,nodev,noexec

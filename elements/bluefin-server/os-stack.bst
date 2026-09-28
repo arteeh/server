@@ -1,24 +1,12 @@
 kind: stack
-description: Stack containing all elements required to build a pure DDI Bluefin Server rootfs.
+description: Everything that goes into the Bluefin Server /usr image.
 
 depends:
-  # Flatcar LTS userspace base.
-  #
-  # The OS payload now lands on a single-ABI Flatcar `/usr` (flatcar-usr.bst)
-  # that shares the vermagic, glibc, and systemd of the Flatcar LTS kernel
-  # below. This is the cutover from FSDK 26.08 base userspace (projectbluefin/
-  # server#131, design phase 5). Every FSDK base-runtime component that used to
-  # live here (systemd, dbus, bash, coreutils, shadow, kmod, openssh-systemd,
-  # podman, xfsprogs, gnupg, ca-certificates, tzdata, runtime-minimal, and the
-  # uutils-coreutils overlay) is gone — Flatcar's `/usr` provides them. The
-  # installer keeps its own FSDK userspace; see installer/installer-stack.bst.
-  - flatcar/flatcar-usr.bst
-
-  # FSDK junction is still pulled in for OS-level integration helpers only
-  # (fstab entries, ldconfig cache); the base runtime it used to provide is
-  # now Flatcar's.
-  - freedesktop-sdk.bst:integration/extra-fs.bst
-  - freedesktop-sdk.bst:integration/ldconfig.bst
+  # freedesktop-sdk userspace + signed FSDK kernel
+  - bluefin-server/os-base.bst
+  - bluefin-server/os-sd-boot-signed.bst
+  - bluefin-server/os-repart.bst
+  - bluefin-server/os-release.bst
 
   # SSH enablement drop-ins (OS policy, shipped by the installed OS)
   - bluefin-server/os-sshd-preset.bst
@@ -28,18 +16,13 @@ depends:
   - bluefin-server/os-image-info.bst
   - bluefin-server/os-countme.bst
 
-  # Flatcar LTS Kernel & Matching ZFS
-  - flatcar/flatcar-kernel.bst
-  - flatcar/flatcar-zfs.bst
-
-  # Sysext Compatibility Identity
-  - bluefin-server/os-release-flatcar.bst
-
   # A/B System Update Configurations
   - bluefin-server/os-sysupdate.bst
 
   # k0s component system update configuration
   - bluefin-server/os-k0s-sysupdate.bst
+
+
 
   # Wired DHCP configuration for the installed OS
   - bluefin-server/os-networkd.bst
@@ -47,7 +30,7 @@ depends:
   # /etc/resolv.conf symlink to systemd-resolved (tmpfiles.d)
   - bluefin-server/os-resolv-conf.bst
 
-  # Activate the optional k0s sysext after installation
+  # k0s sysext activation units (opt-in) and SSH host key generation
   - bluefin-server/os-k0s-first-boot.bst
 
   # Public keyring for verifying SHA256SUMS manifests from GitHub Releases

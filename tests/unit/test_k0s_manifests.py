@@ -15,10 +15,17 @@ def test_k0s_service_unit():
     assert "--disable-components=helm,autopilot" in text
     assert "--enable-worker" in text
     assert "--single" in text
+    assert "ConditionPathExists=!/etc/k0s/token" in text
+
+
+def test_k0s_worker_unit_joins_with_the_token_file():
+    text = (ROOT / "files" / "k0s" / "sysext" / "k0sworker.service").read_text()
+    assert "ConditionPathExists=/etc/k0s/token" in text
+    assert "k0s worker --token-file /etc/k0s/token" in text
 
 
 def test_k0s_manifests_conf():
-    conf = ROOT / "files" / "k0s" / "sysext" / "k0s-manifests.conf"
+    conf = ROOT / "files" / "kubestellar" / "sysext" / "k0s-manifests.conf"
     assert conf.is_file(), "k0s-manifests.conf missing"
     text = conf.read_text()
     assert "d /var/lib/k0s/manifests 0755 root root - -" in text
@@ -65,14 +72,12 @@ def test_postgres_password_from_secret():
 def test_k0s_first_boot_generates_postgres_secret_before_k0s():
     # The Secret must be staged before k0s applies the manifests, and the
     # generated 15- file must sort before 20-postgres.yaml.
-    unit = ROOT / "files" / "os" / "systemd" / "system" / "k0s-first-boot.service"
+    unit = ROOT / "files" / "kubestellar" / "sysext" / "kubestellar-seed.service"
     text = unit.read_text()
     lines = [l for l in text.splitlines() if l.startswith("ExecStart")]
     gen = next((i for i, l in enumerate(lines) if "generate-postgres-secret.sh" in l), None)
-    k0s = next((i for i, l in enumerate(lines) if "k0scontroller.service" in l), None)
-    assert gen is not None, "first-boot service never runs the postgres secret generator"
-    assert k0s is not None, "first-boot service never starts k0scontroller"
-    assert gen < k0s, "postgres secret generator must run before k0s applies manifests"
+    assert gen is not None, "kubestellar-seed never runs the postgres secret generator"
+    assert "Before=k0scontroller.service" in text, "secrets must exist before k0s applies manifests"
 
 
 def test_generate_postgres_secret_is_idempotent(tmp_path):
@@ -111,13 +116,12 @@ def yaml_values(text):
 
 
 def test_k0s_first_boot_generates_console_secret_before_k0s():
-    unit = ROOT / "files" / "os" / "systemd" / "system" / "k0s-first-boot.service"
-    lines = [l for l in unit.read_text().splitlines() if l.startswith("ExecStart")]
+    unit = ROOT / "files" / "kubestellar" / "sysext" / "kubestellar-seed.service"
+    text = unit.read_text()
+    lines = [l for l in text.splitlines() if l.startswith("ExecStart")]
     gen = next((i for i, l in enumerate(lines) if "generate-console-secret.sh" in l), None)
-    k0s = next((i for i, l in enumerate(lines) if "k0scontroller.service" in l), None)
-    assert gen is not None, "first-boot service never runs the console secret generator"
-    assert k0s is not None
-    assert gen < k0s, "console secret generator must run before k0s applies manifests"
+    assert gen is not None, "kubestellar-seed never runs the console secret generator"
+    assert "Before=k0scontroller.service" in text
 
 
 def test_generate_console_secret_is_idempotent(tmp_path):

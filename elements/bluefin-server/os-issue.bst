@@ -1,6 +1,6 @@
 kind: import
 description: |
-  Install console issue banner displaying KubeStellar dashboard URL and IP.
+  Install the console issue banner (the KubeStellar sysext adds its own lines).
 
 sources:
   - kind: local

@@ -128,7 +128,7 @@ def main():
             "restore the sysext asset filename assignment.",
         )
     fname_expr = fname_match.group(1)
-    if any(axis in fname_expr for axis in ("%{release-version}", "%{installer-version}", "%{flatcar-version}")):
+    if any(axis in fname_expr for axis in ("%{release-version}", "%{installer-version}", "%{image-version}")):
         fail(
             "elements/oci/k0s-sysext.bst names the k0s sysext on an OS release\n"
             f"  axis: FNAME=\"{fname_expr}\"\n"

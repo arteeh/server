@@ -1,0 +1,16 @@
+[Unit]
+Description=Load the ZFS kernel modules
+Documentation=man:zfs(8)
+DefaultDependencies=no
+After=systemd-sysext.service systemd-udev-trigger.service
+Before=zfs-import.target zfs-import-cache.service zfs-import-scan.service
+Before=zfs-mount.service zfs-volume-wait.service zfs-zed.service
+ConditionPathIsDirectory=!/sys/module/zfs
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/modprobe zfs
+
+[Install]
+WantedBy=zfs.target

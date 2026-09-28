@@ -1,335 +1,235 @@
 ---
 name: ddi-installer
-description: Use when building or debugging the Bluefin Server DDI live installer, or managing the systemd-sysinstall recipes or target boot configurations.
+description: Use when building or debugging the Bluefin Server boot chain, the diskless network pull, the systemd-sysinstall disk install, or the A/B systemd-sysupdate flow.
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-26"
+  last_updated: "2026-09-27"
   context7-sources:
     - /systemd/systemd
     - /apache/buildstream
 ---
-# DDI Installer
+# Boot, Install, and Update Architecture
 
 ## When to Use
 
-- Building or debugging the Bluefin Server live installer media.
-- Writing or refining `systemd-repart`, `bootctl`, or `ukify` configurations.
-- Packaging or publishing DDI assets to GitHub Releases.
-- Managing partition recipes for the target disk layout (`10-esp.conf`,
-  `20-root-a.conf`, `30-var.conf`).
+- Building or debugging the signed boot chain (UKIs, systemd-boot, Secure Boot key enrollment).
+- Changing the diskless boot flow (`rd.systemd.pull`, dm-verity, initrd contents).
+- Writing or refining `systemd-repart` recipes (`files/os/repart.d/`) or `systemd-sysupdate` transfers (`files/os/sysupdate.d/`).
+- Working on the Ignition opt-in path (`elements/ignition/`, `files/initrd-ignition/`).
 
 ## When NOT to Use
 
-- OCI-only image work (no installer involvement).
-- Bootc-specific changes.
-- Desktop or nspawn machine image work.
+- k0s or OpenZFS sysext work (see `k0s-sysext.md`, `systemd-sysext-extensions.md`).
+- Release signing and sysupdate verification keys (see `systemd-sysupdate-verification.md`).
 
-## Architecture
+## One build, one version, one release set
 
-The installer is systemd-native and offline by default. The OS DDI payload
-(`bluefin-server-ddi.bst`) is embedded as a data partition on installer media
-at build time; no network access is required for the default install. PXE/
-netboot clients may opt into downloading the DDI over the LAN instead (see
-"PXE network installs" below), but the embedded path stays the default.
+`oci/bluefin-server-image.bst` produces every release artifact for one
+`image-version` (`include/image.yml`, set per build by `just set-version`,
+`YY.MM.<run>` on main, `0.<run>` on PRs, at most 17 characters so it fits a
+GPT partition label with room to spare):
 
-The installer UI is systemd's built-in `systemd-sysinstall` which provides a
-terminal-based interactive installation that:
+| Artifact | Role |
+|---|---|
+| `bluefin-server_<ver>.raw` | OS DDI: `/usr` erofs partition, its dm-verity hash partition, and an ESP carrying the disk UKI plus the install-time `repart.d`. Diskless nodes pull it into RAM; booted diskless it is also the installer payload. |
+| `bluefin-server_<ver>_<uuid>.usr.raw` / `...usr-verity.raw` | `systemd-sysupdate` sources for the usr and verity slots; the `<uuid>` in the name is the partition UUID derived from the usrhash. |
+| `bluefin-server-<ver>.efi` | Disk UKI (installed nodes); also the sysupdate source for `$BOOT`. |
+| `bluefin-server-netboot_<ver>.efi` | Netboot UKI (diskless nodes); the UEFI HTTP boot / PXE target. |
+| `bluefin-server-netboot_<ver>.esp.raw` | Netboot ESP image: signed systemd-boot, the netboot UKI, and Secure Boot key enrollment payloads. Write it to a USB stick to boot diskless without HTTP boot. |
+| `zfs_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the `zfs` / `kubestellar` / `kubeadm` sysupdate features. |
+| `k0s-<k0s-ver>.raw.zst` | Opt-in k0s sysext asset, on its own version axis. |
+| `efi-keys/` | PK/KEK/db enrollment payloads. |
+| `SHA256SUMS` / `SHA256SUMS.gpg` | One manifest over every file above, signed in-element with `files/boot-keys/sysupdate-signing.asc`; the image trusts the matching `import-pubring.pgp` (see `systemd-sysupdate-verification.md`). |
 
-- Prompts for the target disk (selected interactively or on the command line).
-- Validates target disk size and suitability.
-- Offers to erase the target disk or install alongside existing partitions.
-- Copies the OS filesystem DDI block-for-block using `systemd-repart` and
-  partition recipes (`CopyBlocks=`).
-- Registers the bootloader (`systemd-boot`) and the Unified Kernel Image (UKI)
-  using `bootctl`.
-- Propagates installer environment settings (locale, keymap, timezone) to the
-  target OS via encrypted credentials.
-- Reboots into the installed system.
+A release is this directory published as-is: a GitHub Release `v<ver>` plus an
+ORAS OCI artifact `ghcr.io/<owner>/bluefin-server:<ver>,latest` (one layer per
+file, artifact type `application/vnd.projectbluefin.server.release.v1`).
+`just publish-oci REF [DIR] [PLAIN_HTTP]` pushes the same artifact locally.
 
-User provisioning is handled on the target system's first boot via systemd
-system credentials so the base image remains stateless. `systemd-sysusers`
-consumes root account records, `systemd-tmpfiles` consumes `tmpfiles.extra`
-for arbitrary first-boot files, and `systemd-network-generator` consumes
-`network.conf.*` / `network.link.*` / `network.netdev.*` /
-`network.network.*` credentials before networkd starts. Flatcar's `/usr` is
-built without `systemd-firstboot`, so `bluefin-firstboot-credentials.service`
-runs `/usr/libexec/bluefin-firstboot-credentials` (bash + coreutils) when
-`firstboot.locale`, `firstboot.locale-messages`, `firstboot.keymap`,
-`firstboot.timezone` or `firstboot.hostname` are present; it validates every
-value (ASCII-only, at least as strict as systemd's own validators) and writes
-the same files `systemd-firstboot` would (`/etc/locale.conf`,
-`/etc/vconsole.conf`, `/etc/localtime`) and additionally `/etc/hostname` plus
-the live kernel hostname — systemd ≤ v259 (Flatcar's) has no
-`firstboot.hostname`; v260 added it as a static hostname applied only when
-none is set, whereas Bluefin applies it unconditionally — before
-`systemd-networkd` starts so first-boot DHCP uses it. With no
-credentials, the target keeps the default DHCP network and does not prompt. The
-target DDI
-also pre-stages the extracted CA certificate bundle
-(`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` and
-`/etc/ssl/certs/ca-certificates.crt`) and a standard `/etc/hosts` file for
-container runtime pod sandboxes.
+The /usr image itself is built by `oci/bluefin-server-usr.bst` with an offline
+`systemd-repart`: an erofs partition (`bluefin_usr_<ver>`) plus its dm-verity
+hash partition (`bluefin_usr_verity_<ver>`), and the root hash is recorded in
+`bluefin-server_<ver>.usrhash`. `/etc` is empty on every boot; its defaults
+live in `/usr/share/factory/etc` and are copied in by `systemd-tmpfiles`.
 
-## Core Process
+## The boot chain
 
-1. Keep the live media thin; orchestrate install-time flow with native systemd
-   utilities.
-2. The live environment boots with `systemd.unit=system-install.target` as a
-   kernel command-line option.
-3. systemd isolates `system-install.target` and starts
-   `systemd-sysinstall.service` on `/dev/tty0`. Pinning `TTYPath` keeps the
-   interactive TUI on the attached display while boot diagnostics remain
-   available on the serial console.
-4. The live image overrides that service to run `/usr/bin/bluefin-sysinstall`,
-   which calls `systemd-sysinstall` with the target OS UKI at
-   `/usr/lib/bluefin-server/bluefin-server.efi` so `bootctl link` installs the
-   target UKI instead of the installer UKI.
-5. `systemd-sysinstall` reads partition recipes from
-   `/usr/lib/repart.sysinstall.d/` if it is populated; otherwise it falls back
-   to `/usr/lib/repart.d/`. The target recipes are staged at
-   `/usr/lib/repart.d/` (`10-esp.conf`, `20-root-a.conf`, `30-var.conf`).
-6. `20-root-a.conf` copies the DDI block-for-block from
-   `/dev/disk/by-partlabel/bluefin-installer-data` (the embedded DDI data
-   partition on the installer media).
-7. The immutable root DDI is copied without filesystem growth; `/var` uses
-   `GrowFileSystem=yes` to fill the remaining target disk.
+Both UKIs are built by `oci/bluefin-server-boot.bst` from the FSDK kernel
+(`bluefin-server/kernel-modules.bst`, modules signed with our module key) and a
+systemd-native initrd (no dracut; `bluefin-server/initrd/initrd-stack.bst`).
+Both pin `usrhash=` of the same /usr image on their command lines and are
+signed with DB, so Secure Boot locks those command lines. `lockdown=integrity`
+is always on. `os-sd-boot-signed.bst` signs systemd-boot with the same DB key
+so installed disks and the netboot ESP get a loader firmware accepts.
 
-## Partition Layout
+Dev keys come from `just gen-dev-keys` (throwaway keys in the gitignored
+`files/boot-keys/`, including the `sysupdate-signing.asc` /
+`import-pubring.pgp` pair that signs and verifies `SHA256SUMS`); CI builds on
+main use the `BOOT_KEYS_TARBALL` and `SYSUPDATE_SIGNING_KEY` secrets.
 
-### Installer media (the USB/raw disk image)
-
-| Partition | Type | Size | Contents |
-|---|---|---|---|
-| ESP | vfat | 1 GiB fixed | `EFI/BOOT/BOOTX64.EFI` + `EFI/Linux/installer.efi` (UKI) |
-| `bluefin-installer-data` | XFS | auto | OS filesystem DDI image, copied block-for-block |
-
-### Target disk (after install)
-
-| Partition | Type | Size | Contents |
-|---|---|---|---|
-| ESP | vfat | 500 MiB – 1 GiB | `systemd-boot` + target OS UKI (`bluefin-server.efi`) |
-| `bluefin-server-root-a` | XFS | 4 GiB – 8 GiB | OS root filesystem (copied from installer data partition) |
-| `var` | XFS | ≥ 4 GiB | Writable persistent `/var`; grows to fill remaining disk |
-
-## Installer Boot Flow
+### Diskless (netboot UKI)
 
 ```text
-UEFI reads ESP → BOOTX64.EFI → installer.efi (UKI)
-     │
-     ▼
-systemd PID 1 starts, reaches system-install.target
-     │
-     ▼
-systemd-sysinstall.service
-     │
-     ▼
-bluefin-sysinstall wrapper
-     ├─ Read /proc/cmdline for "unattended"
-     ├─► [INTERACTIVE Mode]
-     └─► [UNATTENDED Mode]
+firmware -> signed systemd-boot -> bluefin-server-netboot_<ver>.efi
+  -> initrd: network up (DHCP), systemd-importd pulls
+     bluefin-server_<ver>.raw into RAM (rd.systemd.pull ... blockdev:rootdisk)
+  -> systemd-veritysetup opens /usr from the loop partitions, checked against usrhash=
+  -> switch root: tmpfs /, read-only erofs /usr
 ```
 
-The published installer starts the interactive TUI on `/dev/tty0`. Headless
-tests add `unattended` to the kernel command line and do not require console
-input.
+The pull source is the UEFI HTTP boot origin (`bootorigin:`) or the
+`import.pull` system credential (SMBIOS type 11, QEMU fw_cfg, or ESP
+`/loader/credentials`). The pull runs with `verify=signature`: the initrd
+ships gnupg and the image keyring, and importd fetches `SHA256SUMS` and
+`SHA256SUMS.gpg` from the image's directory and checks the signature before
+using the manifest. The manifest hash check pins the DDI, the signed UKI pins
+`usrhash=`, and dm-verity checks every `/usr` block against it; a tampered DDI
+or a re-hashed unsigned manifest is refused. A failed boot never drops to an
+emergency shell: the initrd prints the errors and reboots
+(`files/initrd/usr/lib/systemd/system/emergency.service.d/10-reboot.conf`),
+which is what lets boot counting work unattended.
 
-## Initrd Assembly (cpio-native)
+### UEFI HTTP boot
 
-`bluefin-server-installer.bst` assembles the live installer media inline. The
-critical constraint is that the DDI is decompressed into `/layer` after the cpio
-step; otherwise it would make the initrd several gigabytes or larger and
-unbootable.
+With UEFI HTTP boot the firmware fetches `bluefin-server-netboot_<ver>.efi`
+directly from the boot server; no systemd-boot runs. systemd-stub records the
+boot URL in the `StubDeviceURL` EFI variable, and the initrd derives the URL
+of `bluefin-server_<ver>.raw` (and of `SHA256SUMS` / `SHA256SUMS.gpg`) from
+the same directory. `bluefin-ignition-credentials` also uses it: with no
+`ignition.config` / `ignition.config.url` credential it HEADs
+`bluefin-node.ign` next to the UKI and applies it through `config.replace`
+when present. Because HTTP boot skips systemd-boot's key enrollment, the
+firmware must already trust the image DB key; `scripts/dogfood-diskless.sh`
+with `DOGFOOD_BOOT=http` enrolls once from the netboot ESP first.
 
-This is the gist of the process:
-
-1. Create `/init` and set `default.target` to `system-install.target`.
-2. Pack the early rootfs as newc cpio + gzip.
-3. Decompress the DDI into `/layer` after cpio creation.
-4. Build the installer UKI from the staged rootfs.
-5. Assemble the GPT disk image with an ESP partition and the embedded DDI data
-   partition using `systemd-repart`.
-
-## Build and release details
-
-For the detailed build/export/flash/release workflow, see
-[ddi-installer-build.md](ddi-installer-build.md).
-
-## PXE boot artifacts
-
-The installer build also publishes standalone PXE inputs:
-
-- `bluefin-server-pxe-vmlinuz-<ver>` — installer kernel.
-- `bluefin-server-pxe-initrd-<ver>.cpio.gz` — installer initrd.
-
-Both files are included in the installer artifact `SHA256SUMS`. Unattended PXE
-clients can add `unattended` to the installer command line, for example:
+### Installed disk (disk UKI)
 
 ```text
-systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended
+firmware -> systemd-boot -> bluefin-server-<ver>.efi
+  -> /usr slot found by partition label (bluefin_usr_<ver>) and the
+     verity-derived UUIDs baked into the install-time repart.d
+  -> persistent xfs root found by systemd gpt-auto discovery
 ```
 
-The DDI remains on `bluefin-installer-data` for the default embedded install.
+Boot entries are counted (`bluefin-server-<ver>+3-0.efi`): after three failed
+boots of a new image systemd-boot falls back to the previous UKI. That is the
+automatic rollback path.
 
-## PXE network installs
+## Installing to disk
 
-PXE clients boot the standalone kernel and initrd (published as
-`bluefin-server-pxe-vmlinuz-<ver>` and
-`bluefin-server-pxe-initrd-<ver>.cpio.gz`) and opt into downloading the DDI
-over the LAN with `inst.*` kernel parameters:
-
-- `inst.ddi_url=<https-url>` — download the zstd-compressed DDI instead of the
-  embedded installer partition.
-- `inst.ddi_sha256=<hex>` — **mandatory** when `inst.ddi_url` is set; verify the
-  downloaded DDI before touching the target disk (fail closed if absent).
-- `inst.creds_url=<url>` — download a tar archive of first-boot systemd
-  credentials (any `curl` scheme; the iPXE example uses plain `http://`) and
-  place them in the installed system's ESP at
-  `/loader/credentials/`, where `systemd-stub` hands them to the target OS on
-  first boot (consumers: [tpm2-credential-sealing.md](tpm2-credential-sealing.md)).
-- `inst.creds_sha256=<hex>` — **mandatory** when `inst.creds_url` is set;
-  verify the downloaded archive before touching the target disk (fail closed
-  if absent).
-- `inst.target_disk=/dev/...` — explicit target disk, overriding
-  first-writable-disk auto-detection.
-
-Without `inst.ddi_url`, behavior is unchanged and uses the embedded DDI. The
-wrapper (`bluefin-sysinstall`) brings up DHCP via `systemd-networkd-wait-online`,
-downloads the DDI with `curl` into `/dev/shm/installer/`, verifies it, checks
-that the staging tmpfs and `MemAvailable` can hold the decompressed image,
-decompresses it with `zstd`, and feeds it into the **native**
-`systemd-sysinstall` flow by staging a temporary
-`/usr/lib/repart.sysinstall.d/` override whose `20-root-a.conf` `CopyBlocks=`
-points at the downloaded image — no custom installer logic. The override is
-written with plain Bash line handling: the live initrd contains only what
-`installer-stack.bst` and its transitive runtime deps install (Bash, uutils
-coreutils, util-linux, kmod, systemd, `grep`, `curl`, `zstd`, `tar` (declared
-for the credentials archive), cryptsetup, xfsprogs, dosfstools). `sed` and
-`awk` are **not** present. Every external command the wrapper calls is pinned
-by the Step 1a tool check in `bluefin-server-installer.bst`, which fails the
-build when one is missing.
-
-The credentials archive is an **uncompressed** ustar/pax/gnu tar (the wrapper
-checks the `ustar` magic and feeds tar on stdin, so a `.tar.zst`/`.tar.xz` is
-rejected rather than transparently decompressed) and flat: at most 64
-top-level regular files named `<name>.cred`, where `<name>` matches
-`[A-Za-z0-9][A-Za-z0-9._@~-]*` (`~` is systemd's own drop-in namespace,
-`systemd.unit-dropin.<unit>~<name>`), each filename at most 250 bytes, each
-file at most 1 MiB, the whole archive at most 16 MiB. Names must be unique
-even ignoring case — the ESP is vfat, where `a.cred` and `A.cred` are the same
-file. The wrapper validates the `tar -tv` listing column by column before
-extracting anything (no directories, symlinks, hardlinks, devices or FIFOs; no
-path separators, spaces, control characters or leading dashes/dots in names),
-cross-checks it against `tar -t`, extracts only the validated names with
-`--no-same-owner --no-same-permissions`, pins its copies to `0644` and
-re-checks each is a regular file; any violation rejects the whole archive with
-the target disk untouched. Trust model: `inst.creds_sha256` arrives on the same
-unauthenticated PXE command line as the URL, so the checksum protects against a
-compromised or misconfigured file server, not against whoever controls
-DHCP/TFTP — they control both. The archive hardening is defence against
-operator error and a bad mirror, not a boundary against a hostile netboot
-server; secrets belong in TPM2/host-key-sealed credentials.
-Each file must be `systemd-creds encrypt`ed with `--name=<name>` matching the
-filename — `systemd-stub` stages ESP credentials under
-`/run/credentials/@encrypted`, so plaintext files fail with
-`status=243/CREDENTIALS`. The null key suffices for non-secret data
-(`firstboot.hostname`, `tmpfiles.extra`); use host/TPM2 keys for secrets:
+A running diskless node is the installer. The OS DDI's ESP partition is
+mounted at `/run/bluefin/boot` (`run-bluefin-boot.mount`), which carries
+`bluefin/repart.d`: the disk layout from `files/os/repart.d/` (ESP, usr slot A
++ verity copied from the running image, empty slot B, persistent xfs root)
+with slot A's UUIDs pinned to the usrhash derivation by
+`bluefin-server-boot.bst`.
 
 ```bash
-systemd-creds --with-key=null encrypt --name=firstboot.hostname hostname.txt firstboot.hostname.cred
-systemd-creds --with-key=null encrypt --name=tmpfiles.extra tmpfiles.conf tmpfiles.extra.cred
-tar -cf <mac>.tar firstboot.hostname.cred tmpfiles.extra.cred
-sha256sum <mac>.tar
+systemctl start run-bluefin-boot.mount
+kernel="$(ls /run/bluefin/boot/EFI/Linux/bluefin-server-[0-9]*.efi)"
+systemd-sysinstall --kernel="${kernel}" \
+    --definitions=/run/bluefin/boot/bluefin/repart.d /dev/sdX
 ```
 
-Ordering and guarantees: both downloads are fetched and verified together,
-before any disk change, so a bad DDI or credentials download aborts the install
-with the target untouched. The credentials are unpacked into
-`/dev/shm/installer/credentials/` at that point and copied onto the ESP only
-after `systemd-sysinstall` has created it; the wrapper locates the ESP by GPT
-partition type (`c12a7328-f81f-11d2-ba4b-00a0c93ec93b`) on the target disk,
-mounts it once, writes `/loader/credentials/*.cred` first, syncs, then stages
-the best-effort UEFI fallback loader on the same mount and unmounts. If the ESP
-cannot be found or mounted while `inst.creds_url` is set, the install fails
-rather than leaving the host to boot unconfigured. Without `inst.creds_url`, no
-credentials are written.
+`systemd-sysinstall` writes the ESP and slot A and links the disk UKI; the
+first boot of the installed disk runs the initrd's `systemd-repart` (reading
+`/sysusr/usr/lib/repart.d`) to create slot B and the persistent root. There is
+no separate installer image, no shell installer, no offline media.
 
-Example iPXE stanza (the PXE server mirrors the three release assets, verified
-against the signed `SHA256SUMS`, plus one per-host credentials archive):
+## Updates
 
-```ipxe
-#!ipxe
-set base http://pxe-server:8080/data
-kernel ${base}/bluefin-server-pxe-vmlinuz-<ver> systemd.unit=system-install.target console=tty0 console=ttyS0,115200 rw unattended inst.ddi_url=${base}/bluefin-server-ddi-<ver>.raw.zst inst.ddi_sha256=<sha256> inst.creds_url=${base}/creds/${mac}.tar inst.creds_sha256=<sha256>
-initrd ${base}/bluefin-server-pxe-initrd-<ver>.cpio.gz
-boot
-```
+Installed nodes update with `systemd-sysupdate` against the transfers in
+`files/os/sysupdate.d/`:
 
-### Memory requirements
+- `10-usr.transfer` and `11-usr-verity.transfer` fill the inactive usr /
+  usr-verity slot (matched by `bluefin_usr_@v` partition labels).
+- `20-uki.transfer` installs the new disk UKI into `/EFI/Linux` with boot
+  counting (`TriesLeft=3`, at most 2 UKIs kept).
+- `30-zfs.transfer` and `31-kubestellar.transfer` are optional **features**
+  (enabled with `updatectl enable zfs` or a drop-in
+  `/etc/sysupdate.d/zfs.feature.d/enable.conf` with `[Feature] Enabled=true`).
+  When enabled, the matching sysext is downloaded with every OS update into
+  `/var/lib/extensions` (two versions kept, `ProtectVersion=%A`); systemd-sysext
+  merges only the one matching the booted image, so a boot-counted rollback
+  keeps ZFS.
 
-Everything on a PXE client lives in RAM: the live env is a RAM-resident cpio
-rootfs, and the DDI is staged in tmpfs under `/dev/shm/installer/`. systemd
-PID 1 mounts `/run` as tmpfs with `size=20%` (≈1.6 GiB on an 8 GiB machine),
-which is why `/run` cannot hold the DDI; `/dev/shm` is mounted without a size
-option and so uses the kernel tmpfs default of 50% of RAM. `zstd --rm` deletes
-the compressed download only after a successful decompress, so the staging
-tmpfs must hold the compressed **and** the decompressed DDI at once. Before
-decompressing, the wrapper compares the raw size recorded in the zstd frame
-header (or 5× the compressed size if the header does not carry it, with a
-`WARN`) against both the free space `df` reports for `/dev/shm/installer` and
-`MemAvailable` from `/proc/meminfo` minus 256 MiB of headroom, and aborts with
-`ERROR: not enough RAM-backed temporary space ... (need ~N MiB; tmpfs has M MiB
-free, MemAvailable is K MiB ...)` instead of failing mid-write with `ENOSPC` or
-being OOM-killed. The `MemAvailable` bound matters because the tmpfs cap alone
-is not proof of memory: the rootfs is its own tmpfs, so `df` on `/dev/shm` can
-report space the kernel cannot back.
+Sources are the release assets on GitHub Releases, verified against the
+GPG-signed `SHA256SUMS` with `Verify=yes` (see
+`systemd-sysupdate-verification.md`). After an update the node reboots into
+slot B; if the new image fails its three tries, systemd-boot rolls back to
+slot A on its own. A Kured hook
+(`files/os/systemd/system/systemd-sysupdate.service.d/kured-hook.conf`)
+touches `/run/reboot-required` for cluster-aware reboot coordination.
 
-Plan for the check to pass: `MemAvailable` after the download must exceed the
-raw DDI size plus 256 MiB, and the 50% `/dev/shm` cap must hold both copies.
-For the 26.08.0 Flatcar-based DDI (365 MiB compressed, ≈1.6 GiB raw) 8 GiB is
-the tested and recommended size; smaller machines have not been boot-tested.
-The embedded (USB) install path does not stage the DDI in RAM and is
-unaffected.
+Diskless nodes have no slots, so `systemd-sysupdate.service` is disabled when
+booted diskless
+(`files/os/systemd/system/systemd-sysupdate.service.d/10-diskless.conf`).
+A diskless node updates by rebooting into a newer image; that is the whole
+mechanism.
+
+## Ignition (opt-in)
+
+Ignition (v2.27.0, built from source in `elements/ignition/`) runs in the
+initrd, adapted from the upstream dracut units into
+`files/initrd-ignition/`. Because the kernel command line is locked inside the
+signed UKI, the `ignition.config.url=` karg cannot be used; configs arrive as
+**system credentials**:
+
+- `ignition.config` — an inline Ignition JSON (or Butane YAML) config.
+- `ignition.config.url` — a URL; wrapped into a `config.replace` stub and
+  fetched once the network is online.
+
+`bluefin-ignition-credentials` stages whichever is set into
+`/run/ignition/user.ign`; the downstream Ignition units are conditioned on
+that file, so a node with no config runs none of it. A UEFI HTTP-booted node
+needs no credential: the script reads the boot URL from the `StubDeviceURL`
+EFI variable and, when the server offers `bluefin-node.ign` next to the UKI,
+applies it. Ignition runs on **every** boot (there is no first-boot marker on
+a tmpfs root), so configs must be idempotent. See
+`tests/fixtures/ignition/var-on-disk.ign` for a dogfood-tested example
+(persistent /var on a second disk plus an SSH key).
+
+## PXE / HTTP boot service
+
+The intended network boot server is [Booty](https://github.com/jeefy/booty).
+Its `feat/bluefin-http-boot` work (not yet merged) syncs `v<ver>` releases
+from GitHub Releases or from the OCI artifact (`--bluefinOCI`, `--plain-http`
+for plain-HTTP registries), checks the signature with `--bluefinKeyring`,
+answers ProxyDHCP with an `HTTPClient` offer pointing at
+`http://<booty>/bluefin/<mac>/bluefin-server-netboot.efi`, and serves the UKI,
+the OS DDI, `SHA256SUMS(.gpg)`, and a per-host `bluefin-node.ign` (hostname,
+SSH keys, state disk, extensions, k0s token). Its `doInstall` flag boots the
+node into `booty-install.service`, which runs `systemd-sysinstall` against the
+local disk. Without Booty, writing `bluefin-server-netboot_<ver>.esp.raw` to a
+USB stick boots a node diskless the same way, provided an `import.pull.cred`
+credential is placed in `/loader/credentials/import.pull.cred` on the stick
+specifying the URL to pull `bluefin-server_<ver>.raw` and its signed SHA256SUMS.
 
 ## Common Rationalizations
 
 | Rationalization | Reality |
 |---|---|
-| "A bash script is simpler." | A bash script cannot run the systemd-native interactive installer TUI. Use `systemd-sysinstall`. |
-| "Kernel image is at `/boot/vmlinuz`." | FSDK installs kernels into `/usr/lib/modules/<kver>/vmlinuz`. Toolchains (dracut, ukify, PXE export) must point to `/usr/lib/modules/<kver>/vmlinuz`. |
-| "dracut finds glibc libraries automatically." | In FSDK 26.08, glibc libraries live under `/usr/lib/x86_64-linux-gnu`. `dracut-install` requires `/etc/ld.so.conf` to include `/usr/lib/x86_64-linux-gnu` and `ldconfig` to generate `/etc/ld.so.cache` before dracut runs. |
-| "Initrd archive tools (gzip, cpio) are in base-stack." | In FSDK 26.08, gzip and cpio are standalone components; elements packing or unpacking initrds must explicitly declare `components/gzip.bst` and `components/cpio.bst` in `build-depends`. |
-| "Use knuckle instead." | knuckle is deprecated in favor of native `systemd-sysinstall` (systemd 261+). |
-| "Hardcode `root=/dev/vda2` for QEMU." | Bare metal has different device names. Always use PARTUUID. |
-| "Pull the DDI from the network at install time." | Network pull is opt-in via `inst.ddi_url`; verification is mandatory and failures abort before any disk change, while the embedded installer media stays the default. |
-| "The live initrd has sed/awk like any Linux box." | It does not. The initrd holds only `installer-stack.bst` plus transitive runtime deps (Bash, uutils coreutils, util-linux, kmod, systemd, `grep`, `curl`, `zstd`, `tar`); `sed` and `awk` are absent and fail with `command not found` (exit 127) after the download. Use Bash builtins, or declare the tool in `installer-stack.bst` and add it to the Step 1a build-time tool check. |
-| "`/run` can hold the downloaded DDI." | No. systemd mounts `/run` with `size=20%`; the network DDI stages in `/dev/shm/installer/` (kernel tmpfs default, 50% of RAM) and the wrapper checks tmpfs free space and `MemAvailable` before decompressing. See "Memory requirements". |
-| "Per-host configuration needs a custom installer step." | `inst.creds_url` is opt-in and only delivers verified `*.cred` files to the ESP `/loader/credentials/`; the installed OS consumes them through stock systemd credential consumers, so no installer logic is added. |
-| "Put the DDI in the initrd cpio." | The DDI is ≈1.6 GiB raw (2 GiB+ once sparse space is written out). The initrd cpio step must run before the DDI is placed in `/layer`. |
-| "Store the DDI in the ESP (FAT32)." | FAT32 has a 4 GiB per-file limit. Use a separate XFS partition. |
-| "Add an 8 GiB minimum size floor to the DDI." | The rootfs is immutable. It never grows in-place. Content + overhead is enough. |
+| "A bash script installer is simpler." | Installation stays `systemd-sysinstall`-native; the diskless boot already carries everything it needs. No shell installers. |
+| "Hardcode `root=/dev/vda2` for QEMU." | Bare metal has different device names. Boot and root selection uses discoverable partition labels and verity-derived UUIDs. |
+| "Kernel image is at `/boot/vmlinuz`." | FSDK installs kernels into `/usr/lib/modules/<kver>/vmlinuz`; `bluefin-server-boot.bst` picks it up from there for ukify. |
+| "The initrd needs dracut." | The initrd is a hand-assembled systemd userspace (`initrd-stack.bst`) packed as newc cpio + zstd. No dracut anywhere in the tree. |
+| "The diskless pull is unverified." | The initrd pulls with `verify=signature` against the keyring it ships; the signed UKI also pins `usrhash=`, and dm-verity checks every `/usr` block read. |
+| "Ignition needs a karg." | The cmdline is sealed in the signed UKI. Ignition configs arrive as `ignition.config` / `ignition.config.url` system credentials, or as `bluefin-node.ign` next to the UKI on a UEFI HTTP boot. |
+| "Diskless nodes need sysupdate." | Diskless nodes update by rebooting into a newer image; sysupdate is disabled when booted diskless. |
 
 ## Verification
 
 - [ ] `just validate` resolves the BuildStream graph without errors.
-- [ ] No `installer-knuckle.bst` or custom installer service units exist in the
-      codebase.
-- [ ] UKI boot cmdline points to `systemd.unit=system-install.target`.
-- [ ] Serial console `console=ttyS0,115200` is the final console argument in the
-      installer UKI cmdline.
-- [ ] `installer-stack.bst` explicitly includes XFS and vfat support.
-- [ ] `bluefin-server-installer.bst` overrides `systemd-sysinstall.service`
-      with `SuccessAction=poweroff`/`FailureAction=poweroff` for clean shutdown.
-- [ ] The interactive installer service sets `TTYPath=/dev/tty0` so the TUI
-      appears on the attached display even when serial is the primary console.
-- [ ] `bluefin-server-installer.bst` decompresses the DDI after the cpio step.
-- [ ] `files/installer/repart.d/20-root-a.conf` has `GrowFileSystem=no`.
+- [ ] `just dogfood-check` passes (diskless boot, Secure Boot, no failed units).
+- [ ] `just dogfood-install NEXT=<dir>` passes (install, disk boot, A/B update).
+- [ ] UKIs pin `usrhash=` and are signed with DB; `sbverify` passes in `bluefin-server-boot.bst`.
+- [ ] No hardcoded device paths in any boot configuration.
+- [ ] No element named `bluefin-server-ddi` or `bluefin-server-installer` exists; the OS DDI comes from `oci/bluefin-server-image.bst`.
 
 ## See also
 
-- [ddi-installer-build.md](ddi-installer-build.md)
-- [CONTEXT.md](../../CONTEXT.md) — canonical project domain glossary (OS DDI and Installer terminology).
-- `systemd-sysinstall(8)`, `systemd-sysinstall.service(8)`
-- `systemd-repart(8)`, `repart.d(5)`
-- `bootctl(1)`, `ukify(1)`
-- `systemd-growfs(8)`
+- [ddi-installer-build.md](ddi-installer-build.md) — local build, export, and dogfood workflow.
+- [systemd-sysupdate-verification.md](systemd-sysupdate-verification.md) — release signing and transfer verification.
+- [CONTEXT.md](../../CONTEXT.md) — canonical project domain glossary (OS DDI, Netboot UKI, Disk UKI, Slot).
+- `systemd-sysinstall(8)`, `systemd-repart(8)`, `systemd-sysupdate(8)`, `bootctl(1)`, `ukify(1)`

@@ -4,7 +4,7 @@ description: Roadmap for future Bluefin Server architecture work. Use when plann
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-07"
+  last_updated: "2026-09-27"
   context7-sources:
     - /systemd/systemd
 ---
@@ -16,22 +16,36 @@ Status: current roadmap.
 This file captures planned architecture work and the rationale behind it. Verified implementation rules now live in [systemd-sysupdate-verification.md](systemd-sysupdate-verification.md), [tpm2-credential-sealing.md](tpm2-credential-sealing.md), and [systemd-sysext-extensions.md](systemd-sysext-extensions.md).
 The source-verified gap analysis lives in [gap-analysis-distros.md](gap-analysis-distros.md).
 
+## Done
+
+For reference, so future planning does not redo them:
+
+- A/B usr slots with `systemd-sysupdate` and boot-counted automatic rollback (`files/os/repart.d/`, `files/os/sysupdate.d/`).
+- Read-only erofs `/usr` verified by dm-verity, pinned by `usrhash=` in the signed UKIs.
+- Diskless network boot (`rd.systemd.pull` of the OS DDI into RAM, `verify=signature` against the initrd keyring) and diskless-native install via `systemd-sysinstall`.
+- Secure Boot end to end (signed systemd-boot, signed UKIs, signed modules, `lockdown=integrity`).
+- Opt-in Ignition provisioning via system credentials, plus `bluefin-node.ign` next to the UKI on UEFI HTTP boot.
+- k0s role units (controller vs worker) and the KubeStellar/Argo CD/kiosk stack split into its own sysext.
+- Combined `SHA256SUMS` over the whole image set, signed inside `oci/bluefin-server-image.bst` and verified by both sysupdate and the diskless pull.
+- OCI artifact output (`ghcr.io/<owner>/bluefin-server:<ver>,latest`) alongside the raw release files, via ORAS in CI and `just publish-oci` locally.
+- Booty HTTP boot: per-MAC serving of the UKI, DDI, `SHA256SUMS(.gpg)`, and per-host `bluefin-node.ign`, verified end to end in QEMU with Secure Boot; the Booty branch is not yet merged upstream.
+- ZFS and KubeStellar sysexts version-locked to the image, delivered in lock-step with OS updates through sysupdate features; rollback keeps the matching sysext.
+
 ## Planned work
 
 Priorities are derived from [gap-analysis-distros.md](gap-analysis-distros.md).
 
 | # | Item | Rationale / source gap |
 |---|------|------------------------|
-| 1 | A/B dual-slot root partitions with matching ESP/UKI slots | Root fs only has slot A today; sysupdate already names slots A+B. |
-| 2 | Mount `/usr` read-only and enforce the state model | DDI is currently booted `rw`; sysext-first design assumes immutable `/usr`. |
-| 3 | Boot-time selection / automatic rollback of a failed update | No previous OS version is kept once a root update overwrites the slot. |
+| 1 | TPM2-sealed /var on installed nodes | Credential sealing exists (`tpm2-credential-sealing.md`); persistent state is not yet bound to the TPM. |
+| 2 | aarch64 build axis | `project.conf` and `include/arch.yml` already model it; no CI coverage yet. |
+| 3 | Booty merge and its Secure Boot shim story | The Bluefin HTTP-boot support works from [Booty](https://github.com/jeefy/booty) `feat/bluefin-http-boot`; it still needs to merge, and enrollment-free first boots need a shim-signed path. |
 | 4 | Credential provisioning smoke tests on real hardware | SSH keys, static network, and firstboot settings are wired through systemd credentials; TPM2-sealed credential decryption still needs hardware proof. |
 | 5 | Native reboot coordination for non-Kubernetes and single-node hosts | Kured only covers Kubernetes nodes; no FleetLock/locksmith equivalent. |
-| 6 | Staged rollout behavior for larger fleets | Future after items 1-3 are implemented. |
 
 ## Status notes
 
-- The current tree intentionally favors a single-slot update path and a single signed manifest flow.
+- The current tree intentionally favors a small, verifiable core: verity-sealed `/usr`, A/B slots, signed boot chain, opt-in sysexts.
 - Any implementation work should preserve the current systemd-native model and avoid custom daemons.
 - See [gap-analysis-distros.md](gap-analysis-distros.md) for the source-verified comparison that produced this list.
 

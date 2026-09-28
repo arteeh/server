@@ -13,11 +13,8 @@ Restart=on-failure
 RestartSec=30s
 ExecStartPre=/usr/bin/test -e /var/lib/k0s/k0s.raw
 ExecStart=/usr/bin/install -D -m 0644 /var/lib/k0s/k0s.raw /run/extensions/k0s.raw
-ExecStart=/usr/bin/systemd-sysext merge
-ExecStart=/usr/bin/systemd-tmpfiles --create /usr/lib/tmpfiles.d/k0s-manifests.conf
-ExecStart=/usr/share/k0s/kubeflex/generate-postgres-secret.sh
-ExecStart=/usr/share/k0s/kubeflex/generate-console-secret.sh
+ExecStart=/usr/bin/systemd-sysext refresh
 ExecStart=/usr/bin/systemctl daemon-reload
-ExecStart=/usr/bin/systemctl enable --now k0scontroller.service
+ExecStart=/usr/bin/sh -c 'if [ -s /etc/k0s/token ]; then exec systemctl enable --now k0sworker.service; else exec systemctl enable --now k0scontroller.service; fi'
 [Install]
 WantedBy=multi-user.target

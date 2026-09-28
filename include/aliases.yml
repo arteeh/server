@@ -3,7 +3,8 @@ aliases:
   pypi: https://files.pythonhosted.org/packages/
 
   github: https://github.com/
+  k8s_dl: https://dl.k8s.io/
   gitlab: https://gitlab.com/
   gnome: https://gitlab.gnome.org/GNOME/
   crates: https://static.crates.io/
-  flatcar: https://flatcar.cdn.cncf.io/
+  sourceforge_download: https://downloads.sourceforge.net/
