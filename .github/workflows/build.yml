@@ -179,10 +179,13 @@ jobs:
             --title "Bluefin Server ${V}" \
             --notes "Image ${V} built from ${GITHUB_SHA}."
 
+      # setup-oras v2.0.1's built-in release table stops at ORAS 1.3.3, so pin
+      # 1.3.4 (matching the Justfile's oras_image) by URL and checksum.
       - name: Set up oras
         uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
         with:
-          version: 1.3.4
+          url: https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_amd64.tar.gz
+          checksum: f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454
 
       - name: Push OCI artifact
         env:
