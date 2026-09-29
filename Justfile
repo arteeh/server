@@ -140,6 +140,11 @@ set-version VERSION:
 dogfood-install NEXT="":
     bash scripts/dogfood-install.sh dist/diskless {{NEXT}}
 
+# Boot the offline USB installer, install unattended to a blank disk, boot it (QEMU).
+[group('diskless')]
+dogfood-installer:
+    bash scripts/dogfood-installer.sh dist/diskless
+
 # REF=ghcr.io/<owner>/bluefin-server or <registry-host>:30500/bluefin-server
 # (PLAIN_HTTP=1); log in with podman login first. One layer per file.
 # Publish an image set as an ORAS OCI artifact tagged <version> and latest.

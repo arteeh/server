@@ -152,7 +152,7 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     shipped keyring).
  4. **Boot test:** Downloads the exported image sets and runs, in QEMU with
     Secure Boot OVMF, each as one `scripts/dogfood-diskless.sh --check` or
-    `scripts/dogfood-install.sh` call. The firmware is Fedora's
+    `scripts/dogfood-install.sh` or `scripts/dogfood-installer.sh` call. The firmware is Fedora's
     `edk2-ovmf` (Koji URL + SHA-256 in `build.yml`), not Ubuntu's `ovmf`:
     Ubuntu 26.04's OVMF 2025.11 rejects systemd-boot's PK enrollment
     (`Failed to write PK secure boot variable: Security violation`), and
@@ -178,6 +178,9 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
       `0.<run>.N`). Main skips this
       because its extra sets would be release-signed versions nobody
       publishes; every change reaches main through a pull request that ran it.
+    - `scripts/dogfood-installer.sh`: the offline USB installer installs
+      unattended onto a blank disk, which then boots with and without the
+      installer attached.
  5. **Version Derivation:** The release version is set per build with
     `just set-version`: `YY.MM.<run>` on main, `0.<run>` on pull requests so
     a PR build can never sort above a release.

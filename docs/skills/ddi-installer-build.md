@@ -113,6 +113,7 @@ just dogfood-check               # headless: pass when the in-guest probe
 just dogfood-install             # diskless boot, systemd-sysinstall to a blank
                                  # disk, then boot the installed disk
 just dogfood-install NEXT=<dir>  # ...then sysupdate A->B to NEXT and boot it
+just dogfood-installer           # offline USB installer: unattended install to a blank disk, boot it with and without the stick
 ```
 
 `scripts/dogfood-diskless.sh <dir> [--check]` boots the way a PXE/HTTP-booted
