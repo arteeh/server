@@ -85,13 +85,16 @@ variables:
   # The installer medium opens its own usr/verity by partition label, not by
   # the usrhash-derived UUIDs: those belong to installed usr slots, so an
   # existing install (or the disk being installed) is never picked up as the
-  # installer's /usr. tty0 comes last so /dev/console, where
-  # systemd-sysinstall.service draws its interface, is the monitor.
+  # installer's /usr. The installer is offline: the initrd must not wait for
+  # network-online (no limit; netboot needs it, the installer never does).
+  # tty0 comes last so /dev/console, where systemd-sysinstall.service draws
+  # its interface, is the monitor.
   installer-cmdline: >-
     root=tmpfs
     systemd.verity_usr_data=/dev/disk/by-partlabel/bluefin-installer-usr
     systemd.verity_usr_hash=/dev/disk/by-partlabel/bluefin-installer-usr-verity
     rd.systemd.mask=systemd-repart.service systemd.mask=systemd-repart.service
+    rd.systemd.mask=systemd-networkd-wait-online.service
     systemd.mask=boot.automount systemd.mask=boot.mount
     systemd.unit=system-install.target
     systemd.setenv=BLUEFIN_INSTALL_KERNEL=/run/bluefin/installer/bluefin/bluefin-server-%{image-version}.efi
