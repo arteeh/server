@@ -261,7 +261,9 @@ def test_every_source_artifact_is_in_the_signed_image_set(path: Path):
     image = IMAGE_ELEMENT.read_text()
     assert prefix in image, f"{path.name}: {prefix!r} assets are not in {IMAGE_ELEMENT.name}"
     build_yml = (REPO_ROOT / ".github" / "workflows" / "build.yml").read_text()
-    assert "find dist/diskless -maxdepth 1 -type f" in build_yml
+    assert "scripts/publish-release.sh release dist/diskless" in build_yml
+    publish = (REPO_ROOT / "scripts" / "publish-release.sh").read_text()
+    assert "-maxdepth 1 -type f" in publish
     assert "gpg --batch --yes --pinentry-mode loopback" in image
     assert "gpgv --keyring /boot-keys/import-pubring.pgp SHA256SUMS.gpg SHA256SUMS" in image
 

@@ -87,7 +87,7 @@ def test_sysext_is_version_locked_and_in_the_signed_release_set() -> None:
     image = IMAGE.read_text(encoding="utf-8")
     assert "filename: oci/kubeadm-sysext.bst" in image
     assert "/sysext/kubeadm/kubeadm_%{image-version}.raw.zst" in image
-    assert "sha256sum --binary *.raw *.efi *.raw.zst > SHA256SUMS" in image
+    assert "sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json > SHA256SUMS" in image
     assert "oci/kubeadm-sysext.bst" in (ROOT / "Justfile").read_text(encoding="utf-8")
 
 

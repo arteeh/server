@@ -113,3 +113,22 @@ def test_os_countme_depends_on_curl_and_jq():
         "(projectbluefin/server#96)"
     )
 
+
+def _build_depends(element):
+    data = yaml.safe_load((ELEMENTS_DIR / element).read_text(encoding="utf-8"))
+    return {d if isinstance(d, str) else d["filename"] for d in data.get("build-depends", [])}
+
+
+def test_sbom_lists_every_published_sysext_and_its_payload():
+    """collect_manifest follows only runtime dependencies of what it lists.
+
+    A sysext only build-depends on the upstream payload it stages, so the
+    SBOM must list the sysext (its own local sources) and the payload.
+    """
+    sysexts = {d for d in _build_depends("oci/bluefin-server-image.bst") if d.endswith("-sysext.bst")}
+    sbom = _build_depends("oci/bluefin-server-sbom.bst")
+
+    assert sysexts
+    assert sysexts <= sbom, f"SBOM misses {sorted(sysexts - sbom)}"
+    assert {"k0s/k0s-bin.bst", "kubeadm/kubeadm-bin.bst", "zfs/openzfs.bst"} <= sbom
+

@@ -26,9 +26,14 @@ description: |
     zfs_<ver>.raw.zst, kubestellar_<ver>.raw.zst, kubeadm_<ver>.raw.zst
                                            opt-in sysexts locked to this image version
     k0s-<k0s-ver>.raw.zst                  opt-in k0s sysext (own version axis)
+    bluefin-server_<ver>.spdx.json         SPDX 2.3 SBOM (oci/bluefin-server-sbom.bst)
     SHA256SUMS, SHA256SUMS.gpg             manifest of all of the above, signed with
                                            files/boot-keys/sysupdate-signing.asc; the
                                            image trusts the matching import-pubring.pgp
+    sysupdate-keys/import-pubring.pgp      that keyring, for the release dry-run to
+                                           check SHA256SUMS.gpg against a pull request's
+                                           throwaway key; like efi-keys/ it is not
+                                           published (releases carry top-level files only)
 
 (@):
 - include/image.yml
@@ -49,6 +54,7 @@ build-depends:
   config:
     location: /sd-boot
 - freedesktop-sdk.bst:components/gnupg.bst
+- freedesktop-sdk.bst:components/jq.bst
 - bluefin-server/keys/boot-keys.bst
 - filename: oci/k0s-sysext.bst
   config:
@@ -62,6 +68,9 @@ build-depends:
 - filename: oci/kubeadm-sysext.bst
   config:
     location: /sysext/kubeadm
+- filename: oci/bluefin-server-sbom.bst
+  config:
+    location: /sbom
 
 variables:
   image-name: bluefin-server_%{image-version}
@@ -152,8 +161,19 @@ config:
 
   - |
     set -eu
+    # SPDX requires a creation time, which the plugin leaves to the build,
+    # and unique SPDXIDs: FSDK bootstrap elements reached through two
+    # junction paths are collected twice, as identical packages.
+    jq --arg created "$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)" \
+      '.creationInfo.created = $created
+       | .packages |= unique_by(.SPDXID)
+       | .relationships |= unique_by(.relatedSpdxElement)' \
+      /sbom/bluefin-server.spdx.json > "%{install-root}/%{image-name}.spdx.json"
+
+  - |
+    set -eu
     cd "%{install-root}"
-    sha256sum --binary *.raw *.efi *.raw.zst > SHA256SUMS
+    sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json > SHA256SUMS
     cat SHA256SUMS
     export GNUPGHOME=/tmp/gnupg
     mkdir -m 0700 -p "${GNUPGHOME}"
@@ -162,3 +182,4 @@ config:
       --detach-sign --output SHA256SUMS.gpg SHA256SUMS
     # The keyring the image ships must accept this signature.
     gpgv --keyring /boot-keys/import-pubring.pgp SHA256SUMS.gpg SHA256SUMS
+    install -Dm644 /boot-keys/import-pubring.pgp sysupdate-keys/import-pubring.pgp
