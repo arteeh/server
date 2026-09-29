@@ -43,10 +43,43 @@ not warn about executable definition files). The
 `systemd-sysinstall.service.d/10-bluefin-installer.conf` drop-in passes
 `--definitions=/run/bluefin/installer/bluefin/repart.d` and
 `--kernel=${BLUEFIN_INSTALL_KERNEL}` (the disk UKI, named by the installer
-UKI's `systemd.setenv=`). The disk UKI sits outside `EFI/Linux` on the stick
-so systemd-boot never offers it there. sysinstall prompts for the target
-disk, erasing it, and confirmation, then reboots; remove the stick when it
-does.
+UKI's `systemd.setenv=`), `--erase=yes`, and `--reboot=no` with
+`SuccessAction=reboot`. The disk UKI sits outside `EFI/Linux` on the stick
+so systemd-boot never offers it there.
+
+## Using the installer
+
+This is stock `systemd-sysinstall` (systemd-sysinstall(8)); Bluefin adds no
+installer UI of its own.
+
+1. Boot the stick. The installer UKI sets the `firstboot.keymap` credential
+   (`us`), so `systemd-firstboot` asks nothing, and the screen goes straight to
+   **Operating System Installer**.
+2. **Target disk.** sysinstall lists every disk it can install to as a
+   numbered menu, labelled with its `/dev/disk/by-id/` name (model and serial,
+   which is how you tell disks apart). The USB stick itself is never listed.
+   The input line comes pre-filled (upstream v261 `prompt_loop` preselect):
+   - **One disk:** its name is already filled in. Press **Enter**.
+   - **Several disks:** the line holds the names' common prefix (for example
+     `/dev/disk/by-id/nvme-`). Press **Ctrl-U** to clear it, type the
+     **number** in front of the disk, and press Enter. Typing the number
+     without clearing appends it to the prefix and is rejected as
+     `Invalid input …`.
+   Upstream v261 has no arrow-key menu; the number is the selector.
+3. **Summary.** The chosen disk is always erased (`--erase=yes`), and the
+   install is registered in the firmware boot menu (`--variables=yes`). Type
+   `yes` to begin. This is the only confirmation.
+4. sysinstall installs, and the machine **reboots by itself** when it
+   succeeds. Remove the stick when the screen goes blank.
+
+Only two answers cancel: an empty answer at either prompt, and `no` at the
+confirmation (`Installation not confirmed, cancelling.`). Anything else
+upstream does not accept — a typo, an out-of-range number — is rejected with
+`Invalid input …` and the same prompt is asked again, so a mistyped answer
+never halts the machine. After a cancel or a real install failure, upstream's
+`FailureAction=halt` halts the machine — it stops at `System halted` with the
+message still on screen, but does not power off. Power-cycle and boot the stick
+again to retry.
 
 The installed disk is identical to one a diskless node installs: stock
 `systemd-sysinstall` with the layout from `files/os/repart.d/` (see
@@ -56,13 +89,14 @@ The installed disk is identical to one a diskless node installs: stock
 
 `systemd-sysinstall` is interactive on `/dev/console`. To make an install
 unattended, pass a `systemd.unit-dropin.systemd-sysinstall.service` system
-credential (SMBIOS type 11, QEMU fw_cfg, or a `.cred` file in
-`/loader/credentials/` on the stick's ESP). It lands as `50-credential.conf`,
+credential (SMBIOS type 11 or QEMU fw_cfg). Plaintext `.cred` files in the
+stick's `/loader/credentials/` are not applied: a KubeVirt run with one there
+still stopped at the disk prompt. It lands as `50-credential.conf`,
 after the image's `10-bluefin-installer.conf`, and re-runs that drop-in's
-`ExecStart=` with the target disk and `--erase=yes --confirm=no
---variables=yes` appended, plus `StandardInput=null` so any leftover prompt
-fails instead of hanging. `scripts/dogfood-installer.sh` drives exactly this
-path in QEMU and is the reference for the drop-in contents.
+`ExecStart=` with the target disk and `--confirm=no` appended (the drop-in
+already passes `--erase=yes --variables=yes`), plus `StandardInput=null` so any
+leftover prompt fails instead of hanging. `scripts/dogfood-installer.sh` drives
+exactly this path in QEMU and is the reference for the drop-in contents.
 
 ## First-boot prompt
 
