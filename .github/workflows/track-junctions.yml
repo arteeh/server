@@ -6,8 +6,8 @@ name: Track junction refs
 # This deliberately has NO `pull_request` trigger. The job this replaces
 # (`track-refs` in build.yml) ran on every `renovate/*` pull request and pushed
 # re-resolved junction refs onto that PR's branch, so unrelated dependency PRs
-# silently acquired freedesktop-sdk and gnome-build-meta bumps that appeared in
-# no title, body or Renovate table. Moving the work onto a schedule with its own
+# silently acquired freedesktop-sdk bumps that appeared in no title, body or
+# Renovate table. Moving the work onto a schedule with its own
 # branch also removes the need for the old `startsWith(github.head_ref,
 # 'renovate/')` gate: a branch name is not an identity, and on a scheduled
 # trigger there is no PR-controlled head to gate in the first place.
@@ -57,24 +57,19 @@ jobs:
         with:
           tool: just@1.58.0
 
-      - name: Track and resolve BuildStream junction refs
+      - name: Track and resolve the BuildStream junction ref
         run: |
           set -euo pipefail
-          # No `|| true` here. The job this replaces swallowed both exit codes,
+          # No `|| true` here. The job this replaces swallowed the exit code,
           # which made an upstream outage indistinguishable from "nothing to
           # track" and let the run report success having resolved nothing.
-          #
-          # gnome-build-meta.bst carries `overrides: freedesktop-sdk.bst`, so
-          # the pair is only valid together and is tracked and committed as one
-          # atomic change — same rationale as dakota's track-core-junctions.
           just bst source track freedesktop-sdk.bst
-          just bst source track gnome-build-meta.bst
 
-      - name: Sync release-version to the tracked FSDK point release
+      - name: Sync installer-version to the tracked FSDK point release
         run: |
           set -euo pipefail
-          # project.conf's release-version names every published OS asset and
-          # must equal the FSDK point release; check-release-version.py fails
+          # project.conf's installer-version must equal the FSDK point
+          # release; check-release-version.py fails
           # closed on drift and is the first thing `just validate` runs. Without
           # this step an FSDK bump would open a PR that dies in seconds at
           # "Validate Element Graph" — exactly the failure the old job produced.
@@ -83,7 +78,7 @@ jobs:
             echo "ERROR: tracked freedesktop-sdk.bst ref carries no X.Y.Z point release" >&2
             exit 1
           fi
-          sed -i -E "s|^([[:space:]]*release-version:[[:space:]]*).*|\1\"${pinned}\"|" project.conf
+          sed -i -E "s|^([[:space:]]*installer-version:[[:space:]]*).*|\1\"${pinned}\"|" project.conf
           # Assert before opening the PR; a failure here means the sync broke.
           python3 .github/scripts/check-release-version.py
 
@@ -98,12 +93,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           old_fsdk=$(git show "HEAD:elements/freedesktop-sdk.bst" | awk '/^[[:space:]]*ref:/ { print $2; exit }')
-          old_gbm=$(git show "HEAD:elements/gnome-build-meta.bst" | awk '/^[[:space:]]*ref:/ { print $2; exit }')
           new_fsdk=$(awk '/^[[:space:]]*ref:/ { print $2; exit }' elements/freedesktop-sdk.bst)
-          new_gbm=$(awk '/^[[:space:]]*ref:/ { print $2; exit }' elements/gnome-build-meta.bst)
 
           git checkout -B "$BRANCH"
-          git add elements/freedesktop-sdk.bst elements/gnome-build-meta.bst project.conf
+          git add elements/freedesktop-sdk.bst project.conf
           if git diff --cached --quiet; then
             echo "Junction refs already current — nothing to propose."
             exit 0
@@ -112,26 +105,20 @@ jobs:
           title="chore(deps): update BuildStream junctions"
           if [ "$old_fsdk" != "$new_fsdk" ]; then
             title="${title} (freedesktop-sdk $(echo "$old_fsdk" | sed 's/^freedesktop-sdk-//;s/-[0-9]*-g[0-9a-f]*$//') -> $(echo "$new_fsdk" | sed 's/^freedesktop-sdk-//;s/-[0-9]*-g[0-9a-f]*$//'))"
-          elif [ "$old_gbm" != "$new_gbm" ]; then
-            title="${title} (gnome-build-meta)"
           fi
 
           {
-            echo "Scheduled resolution of the BuildStream junction refs to their"
+            echo "Scheduled resolution of the BuildStream junction ref to its"
             echo "\`git-describe\` form. Opened by the tracker so the bump arrives as its own"
             echo "reviewable change instead of being pushed into an unrelated pull request."
             echo ""
             echo "| Junction | From | To |"
             echo "| --- | --- | --- |"
             echo "| \`elements/freedesktop-sdk.bst\` | \`${old_fsdk}\` | \`${new_fsdk}\` |"
-            echo "| \`elements/gnome-build-meta.bst\` | \`${old_gbm}\` | \`${new_gbm}\` |"
             echo ""
-            echo "\`project.conf\`'s \`release-version\` is synced to the pinned FSDK point"
+            echo "\`project.conf\`'s \`installer-version\` is synced to the pinned FSDK point"
             echo "release in the same commit, because \`check-release-version.py\` fails closed"
             echo "on drift between the two."
-            echo ""
-            echo "The two junctions move together: \`gnome-build-meta.bst\` overrides"
-            echo "\`freedesktop-sdk.bst\`, so a half-applied pair is not a valid graph."
             echo ""
             echo "---"
             echo "*Generated by [Track junction refs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*"

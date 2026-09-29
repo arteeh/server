@@ -19,7 +19,7 @@ def test_manual_and_script_elements_depend_on_base_stack():
     """Ensure all manual/script elements have base/base-stack.bst in build-depends."""
     for bst_path in ELEMENTS_DIR.rglob("*.bst"):
         # Skip external junction declarations
-        if bst_path.name in ("freedesktop-sdk.bst", "gnome-build-meta.bst"):
+        if bst_path.name == "freedesktop-sdk.bst":
             continue
 
         content = bst_path.read_text(encoding="utf-8")
@@ -55,7 +55,7 @@ def test_compose_elements_declare_integration_explicitly():
     integration (the ld.so cache, hwdb) opt in with integrate: True.
     """
     for bst_path in ELEMENTS_DIR.rglob("*.bst"):
-        if bst_path.name in ("freedesktop-sdk.bst", "gnome-build-meta.bst"):
+        if bst_path.name == "freedesktop-sdk.bst":
             continue
 
         content = bst_path.read_text(encoding="utf-8")
