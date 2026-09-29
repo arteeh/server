@@ -198,8 +198,11 @@ Use `--type spdxjson` to get the SBOM attestation instead.
    ```
 2. Update the GitHub Actions repository secret `SYSUPDATE_SIGNING_KEY` with the
    new ASCII-armored private key.
-3. Rebuild and publish a release. Existing hosts will only trust updates signed
-   by the new key, so plan the rotation around a release boundary.
+3. Rebuild and publish a release under a new `image-version` (a key rotation
+   is never a rebuild of an existing version; see
+   "Keys" in [ddi-installer-build.md](ddi-installer-build.md)). Existing hosts only
+   trust updates signed by the key in their keyring, so plan the rotation
+   around a release boundary.
 
 For a throwaway local signing key, `just gen-dev-keys` writes
 `files/boot-keys/sysupdate-signing.asc` and `files/boot-keys/import-pubring.pgp`

@@ -37,9 +37,11 @@ There is no application version for these images. Two version axes exist:
 
 2. Update the `ref:` in `elements/freedesktop-sdk.bst` to the new tag/commit.
 
-3. Re-check patches still apply — FSDK ships local patches under
-   `patches/freedesktop-sdk/`. If a release changed the patched files, refresh or
-   drop them. `just validate` surfaces patch failures.
+3. Re-check the local patches in `patches/freedesktop-sdk/`
+   ([`patches/README.md`](../../patches/README.md) says why each exists and
+   when to drop it). `just validate` surfaces a patch that no longer applies;
+   it does not catch 0003-0005 pointing at a library version the new ref no
+   longer builds, so compare those by hand (see the README).
 
 4. Rebuild and verify:
 
@@ -79,7 +81,8 @@ Before merging a bump:
   carries the Cilium/Kubernetes kernel options** (VXLAN, GENEVE, tc BPF,
   conntrack/ss diagnostics). A bumper must not drop `0006` or the kubeadm and
   k0s sysexts lose their datapath. If a release changed a patched file,
-  refresh the patch in place; never delete `0006` because "it looks small".
+  refresh the patch in place; never delete `0006` because "it looks small". Why each patch exists and when it can be dropped is in
+  [`patches/README.md`](../../patches/README.md).
 - Junction overrides are only meaningful for components your local elements
   reference directly. The 25 GNOME sdk/* overrides (cairo, gtk3, pango, glib,
   gdk-pixbuf…) were dead weight — none of our `base-stack`, `brew-deps` etc. ever

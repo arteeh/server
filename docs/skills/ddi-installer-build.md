@@ -57,12 +57,44 @@ with the module signing certificate, and the release `SHA256SUMS` with the
 image signing key. `build-image` (and `validate`) depends on `gen-dev-keys`,
 which generates throwaway keys in `files/boot-keys/` (gitignored) on first
 run: PK/KEK/DB, the module certificate, and the `sysupdate-signing.asc` /
-`import-pubring.pgp` pair. Keys are kept unless `--force` is given. CI builds
+`import-pubring.pgp` pair. Keys are kept unless `--force` is given, and a
+partial set (a file of a pair or of the boot set missing or empty) is an error
+rather than something to fill in. CI builds
 on `main` unpack the `BOOT_KEYS_TARBALL` secret, write `SYSUPDATE_SIGNING_KEY`
 to `files/boot-keys/sysupdate-signing.asc`, and copy the committed release
 keyring `files/os/sysupdate-keys/import-pubring.gpg` to
 `files/boot-keys/import-pubring.pgp`; pull requests get throwaway keys and
 their images are never published.
+
+**Rotating any key needs a new `image-version`.** Every key ends up in the
+image bits: DB signs the UKIs and systemd-boot, the module certificate is
+built into the kernel, and `import-pubring.pgp` ships in `/usr`. An image
+version names one immutable set of bits, and `systemd-sysupdate` only
+installs a version newer than the one it runs, so rebuilding the same version
+with new keys publishes different bits under a released name and never
+reaches nodes already on it. Rotate keys (`just gen-dev-keys --force`, or new
+CI secrets), then `just set-version` to a version that sorts higher before
+building. Nodes also need the new Secure Boot keys enrolled and, for the
+image signing key, the new keyring; see
+"Rotating the Signing Key" in
+[systemd-sysupdate-verification.md](systemd-sysupdate-verification.md).
+
+## Reproducible builds
+
+With the same checkout, keys and `image-version`, rebuilding the final
+assembly gives the same bytes. BuildStream exports `SOURCE_DATE_EPOCH` into
+every sandbox and the assembly steps honor it: `mkfs.erofs` and
+`systemd-repart` clamp file times to it, the initrd and ESP trees are clamped
+before `cpio` and `mcopy` copy them, and `systemd-sbsign` (not `sbsign`)
+uses it as the signing time of systemd-boot and the UKIs. `systemd-repart
+--seed` fixes partition UUIDs.
+
+Two outputs carry a signing time of their own: `SHA256SUMS.gpg` and the
+`efi-keys/*.auth` updates, which `sbvarsign` stamps with the current time
+(they stay fixed as long as `bluefin-server/keys/efi-keys.bst` stays
+cached). `.github/workflows/reproducibility.yml` checks the rest weekly:
+it builds, deletes the final-assembly artifacts, rebuilds them without remote
+caches, and compares every file except `*.gpg`.
 
 ## Dogfood: boot it in QEMU
 

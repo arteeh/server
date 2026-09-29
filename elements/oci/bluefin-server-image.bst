@@ -42,6 +42,7 @@ build-depends:
 - base/base-stack.bst
 - freedesktop-sdk.bst:public-stacks/runtime-gnu.bst
 - freedesktop-sdk.bst:components/dosfstools.bst
+- freedesktop-sdk.bst:components/findutils.bst
 - freedesktop-sdk.bst:components/mtools.bst
 - freedesktop-sdk.bst:components/systemd.bst
 - filename: oci/bluefin-server-usr.bst
@@ -82,6 +83,12 @@ variables:
   - arch == "aarch64":
       efi-arch: aa64
 
+environment:
+  # dosfstools 4.2 ignores SOURCE_DATE_EPOCH and stamps each ESP's volume
+  # label with the current time; --invariant fixes the label time and the
+  # volume ID.
+  SYSTEMD_REPART_MKFS_OPTIONS_VFAT: --invariant
+
 config:
   commands:
   - mkdir -p /tmp /var/tmp
@@ -108,6 +115,8 @@ config:
     printf '[Partition]\nType=usr\nLabel=bluefin_usr_%{image-version}\nUUID=%s\nCopyBlocks=/usr-image/%{image-name}.usr.raw\n' "$(cat /tmp/usr.uuid)" > "${d}/10-usr.conf"
     printf '[Partition]\nType=usr-verity\nLabel=bluefin_usr_verity_%{image-version}\nUUID=%s\nCopyBlocks=/usr-image/%{image-name}.usr-verity.raw\n' "$(cat /tmp/usr-verity.uuid)" > "${d}/20-usr-verity.conf"
     printf '[Partition]\nType=esp\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=128M\nSizeMaxBytes=128M\n' "${esp}" > "${d}/30-esp.conf"
+    # mcopy keeps mtimes; the staged ESP tree carries the build time.
+    find "${esp}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
     systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
       --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e003 \
       --definitions="${d}" "%{install-root}/%{image-name}.raw"
@@ -126,6 +135,7 @@ config:
     d=/tmp/netboot.repart.d
     mkdir -p "${d}"
     printf '[Partition]\nType=esp\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=160M\n' "${esp}" > "${d}/10-esp.conf"
+    find "${esp}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
     systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
       --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e002 \
       --definitions="${d}" "%{install-root}/%{netboot-name}.esp.raw"
@@ -149,6 +159,7 @@ config:
     printf '[Partition]\nType=usr\nLabel=bluefin-installer-usr\nCopyBlocks=/usr-image/%{image-name}.usr.raw\n' > "${d}/10-usr.conf"
     printf '[Partition]\nType=usr-verity\nLabel=bluefin-installer-usr-verity\nCopyBlocks=/usr-image/%{image-name}.usr-verity.raw\n' > "${d}/20-usr-verity.conf"
     printf '[Partition]\nType=esp\nLabel=bluefin-installer\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=256M\n' "${esp}" > "${d}/30-esp.conf"
+    find "${esp}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
     systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
       --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e004 \
       --definitions="${d}" "%{install-root}/bluefin-server-installer_%{image-version}.raw"
