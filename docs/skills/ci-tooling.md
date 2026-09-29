@@ -4,7 +4,7 @@ description: CI workflow conventions for Bluefin Server. Use when writing or edi
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
   context7-sources:
     - /websites/github_en_actions
     - /websites/cli_github_manual
@@ -121,6 +121,7 @@ sudo_cmd := if `podman info >/dev/null 2>&1 && echo 1 || echo 0` == "1" { "" } e
 | `release` | `build.yml` | `push/main`, `workflow_dispatch` | Publishes `dist/diskless/` as-is: an immutable GitHub Release tagged `v<image-version>` plus an ORAS OCI artifact at `ghcr.io/<owner>/bluefin-server:<ver>,latest` (one layer per file, artifact type `application/vnd.projectbluefin.server.release.v1`) (`if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/main' }}`). `contents: write` + `packages: write`. |
 | `docs` | `docs-checks.yml` | `pull_request`, `push/main` | Runs markdown and skill metadata checks via `docs-checks.py`. Read-only token. |
 | `unit` | `unit-tests.yml` | `pull_request`, `push/main` | Runs pytest and BATS unit test suites. Read-only token. |
+| `check`, `propose` | `track-binaries.yml` | `schedule` (08:30 UTC), `workflow_dispatch` | `check` finds the newest patch release in each pinned series of the upstream binaries pinned by version + sha256 (Kubernetes, cri-tools, containerd, runc, CNI plugins, k0s, ORAS) with `.github/scripts/track-binaries.py`; `propose` moves each version together with its sha256 pins, verified against upstream's checksum files and the downloaded assets, and opens or updates one PR per component on `auto/track-binaries/<component>`. Minor bumps stay manual (`kubeadm-sysext.md`, `k0s-sysext.md`). Read-only `GITHUB_TOKEN`; writes use the mergeraptor app token narrowed to `contents` + `pull-requests` (+ `workflows` for ORAS, pinned in `build.yml`). Never on `pull_request`. |
 
 GitHub Actions runs the **complete BuildStream compilation pipeline** using `/mnt`
 SSD storage on the runner for podman and BuildStream caches. Release assets are

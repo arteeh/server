@@ -30,15 +30,23 @@ def versions() -> dict[str, str]:
     return yaml.safe_load(VERSIONS.read_text(encoding="utf-8"))["variables"]
 
 
-def test_versions_match_the_existing_cluster_nodes() -> None:
-    assert versions() == {
-        "kubernetes-version": "1.34.3",
-        "crictl-version": "1.34.0",
-        "containerd-version": "2.1.5",
-        "runc-version": "1.3.3",
-        "cni-plugins-version": "1.1.1",
-        "pause-image": "registry.k8s.io/pause:3.10.1",
+def test_versions_stay_on_the_cluster_nodes_series() -> None:
+    # Patch releases arrive through .github/workflows/track-binaries.yml; a
+    # series change is a deliberate edit here (docs/skills/kubeadm-sysext.md).
+    pinned = versions()
+    series = {}
+    for name, version in pinned.items():
+        if name != "pause-image":
+            assert re.fullmatch(r"\d+\.\d+\.\d+", version), name
+            series[name] = version.rsplit(".", 1)[0]
+    assert series == {
+        "kubernetes-version": "1.34",
+        "crictl-version": "1.34",
+        "containerd-version": "2.1",
+        "runc-version": "1.3",
+        "cni-plugins-version": "1.1",
     }
+    assert pinned["pause-image"] == "registry.k8s.io/pause:3.10.1"
 
 
 def test_every_download_is_pinned_by_sha256() -> None:

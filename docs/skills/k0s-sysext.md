@@ -4,7 +4,7 @@ description: Build and ship the k0s systemd-sysext for Bluefin Server. KubeStell
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
   context7-sources:
     - /systemd/systemd
 ---
@@ -85,6 +85,7 @@ Design choices:
 | `Justfile` | `build-sysext` / `export-sysext` targets. |
 | `.github/workflows/build.yml` | Builds, signs, and publishes sysext assets. |
 | `.github/scripts/check-k0s-version.py` | Fails closed if any consumer restates the k0s version instead of deriving it. |
+| `.github/scripts/track-binaries.py` | Moves both atoms and the SHA256 together: `track-binaries.yml` proposes patch releases of the pinned minor, `apply k0s --version X.Y.Z+k0s.N` makes a minor bump by hand (then move the series in `tests/unit/test_k0s_version.py`). |
 
 ## Build Outputs
 

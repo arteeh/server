@@ -4,7 +4,7 @@ description: Build, ship and operate the opt-in kubeadm worker systemd-sysext (k
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
 ---
 # kubeadm worker sysext
 
@@ -42,6 +42,32 @@ Versions live in `include/kubeadm.yml`; every download is pinned by sha256 in
 Nothing ships under `/opt`: `/opt/cni/bin` stays a writable host directory for
 the cluster CNI (Cilium's `cilium-cni`). containerd searches
 `/opt/cni/bin` then `/usr/libexec/cni`.
+
+## Versions
+
+The sysext runs the Kubernetes minor of the cluster it joins: the series of
+`kubernetes-version` in `include/kubeadm.yml`. It does not follow k0s, which
+bundles its own Kubernetes for a separate cluster
+([k0s-sysext.md](k0s-sysext.md)); the two minors move independently.
+`kubeadm join` must use the minor that last ran `kubeadm init` or
+`kubeadm upgrade` on that cluster, and kubelet may be older than the API server
+but never newer. Patch releases change neither constraint.
+
+- **Patches** are automatic. `.github/workflows/track-binaries.yml` opens one
+  pull request per component (Kubernetes, cri-tools, containerd, runc, CNI
+  plugins) when a newer patch of its pinned series is out, with the version
+  and its sha256 refs changed together and checked against the checksum files
+  upstream publishes.
+- **Minors** are manual, once the cluster's control plane runs the new minor:
+  1. `python3 .github/scripts/track-binaries.py apply kubernetes --version X.Y.Z`,
+     and the same for `cri-tools` (its minor follows Kubernetes). `apply`
+     verifies the checksums exactly as the tracker does.
+  2. Set `pause-image` to the tag that
+     `kubeadm config images list --kubernetes-version vX.Y.Z` prints.
+  3. Check containerd's `RELEASES.md` support table for the new minor; move
+     `containerd` and `runc` with `apply` if it asks for newer ones.
+  4. Move the series in `tests/unit/test_kubeadm_sysext.py`, then boot-verify
+     as in [Verify](#verify).
 
 ## Runtime contract
 

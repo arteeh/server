@@ -11,8 +11,10 @@ def test_k0s_version_ssot():
     assert k0s_yml.is_file(), "include/k0s.yml missing"
     data = yaml.safe_load(k0s_yml.read_text())
     vars_ = data.get("variables", {})
-    assert vars_.get("k0s-k8s-version") == "1.36.4"
-    assert vars_.get("k0s-patch") == "0"
+    # Patch releases arrive through .github/workflows/track-binaries.yml; the
+    # 1.36 series only moves by hand.
+    assert re.fullmatch(r"1\.36\.\d+", vars_.get("k0s-k8s-version", ""))
+    assert re.fullmatch(r"\d+", vars_.get("k0s-patch", ""))
     assert vars_.get("k0s-version") == "%{k0s-k8s-version}-k0s.%{k0s-patch}"
 
 
@@ -22,7 +24,7 @@ def test_k0s_bin_element():
     content = bin_bst.read_text()
     assert "base/base-stack.bst" in content
     assert "github:k0sproject/k0s/releases/download/" in content
-    assert "ca1e9e68107335846e8296777fce2ccd654284e6265b4b5d32c34ead872af98f" in content
+    assert re.search(r"^\s+ref: [0-9a-f]{64}$", content, re.MULTILINE)
 
 
 def test_k0s_version_checker_reads_the_component_transfer():
