@@ -29,8 +29,8 @@ metadata:
 Every `uses:` line must reference a full commit SHA. Never use `@v2` or `@main`.
 
 ```yaml
-# correct
-- uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2
+# correct (see build.yml for the current pinned SHA)
+- uses: taiki-e/install-action@<full-commit-sha> # v2
 
 # wrong — mutable tag, supply-chain risk
 - uses: taiki-e/install-action@v2
@@ -48,7 +48,7 @@ Pin the tool version too, not only the action SHA. Without `@<version>`,
 a binary chosen by an upstream release rather than by a commit in this repo.
 
 ```yaml
-- uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2
+- uses: taiki-e/install-action@<full-commit-sha> # v2 — see build.yml for the current pin
   with:
     tool: just@1.58.0
 ```
