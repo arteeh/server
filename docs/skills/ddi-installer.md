@@ -4,7 +4,7 @@ description: Use when building or debugging the Bluefin Server boot chain, the d
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
   context7-sources:
     - /systemd/systemd
     - /apache/buildstream
@@ -87,9 +87,11 @@ ships gnupg and the image keyring, and importd fetches `SHA256SUMS` and
 using the manifest. The manifest hash check pins the DDI, the signed UKI pins
 `usrhash=`, and dm-verity checks every `/usr` block against it; a tampered DDI
 or a re-hashed unsigned manifest is refused. A failed boot never drops to an
-emergency shell: the initrd prints the errors and reboots
-(`files/initrd/usr/lib/systemd/system/emergency.service.d/10-reboot.conf`),
-which is what lets boot counting work unattended.
+emergency shell: the initrd prints a failure summary on every console and
+reboots (`files/initrd/usr/lib/systemd/system/emergency.service.d/10-reboot.conf`),
+which is what lets boot counting work unattended. Before the pull, a check
+refuses an image that cannot fit in RAM. What the node prints, minimum RAM,
+failure modes and logs: [diskless-troubleshooting.md](diskless-troubleshooting.md).
 
 ### UEFI HTTP boot
 
@@ -222,7 +224,10 @@ EFI variable and, when the server offers `bluefin-node.ign` next to the UKI,
 applies it. Ignition runs on **every** boot (there is no first-boot marker on
 a tmpfs root), so configs must be idempotent. See
 `tests/fixtures/ignition/var-on-disk.ign` for a dogfood-tested example
-(persistent /var on a second disk plus an SSH key).
+(persistent /var on a second disk plus an SSH key). The supported stages and
+config sections, the idempotency rules, and the warning for ignored
+`ignition.*` kernel arguments are in
+the Ignition section of [diskless-troubleshooting.md](diskless-troubleshooting.md).
 
 ## PXE / HTTP boot service
 
@@ -249,7 +254,7 @@ specifying the URL to pull `bluefin-server_<ver>.raw` and its signed SHA256SUMS.
 | "Kernel image is at `/boot/vmlinuz`." | FSDK installs kernels into `/usr/lib/modules/<kver>/vmlinuz`; `bluefin-server-boot.bst` picks it up from there for ukify. |
 | "The initrd needs dracut." | The initrd is a hand-assembled systemd userspace (`initrd-stack.bst`) packed as newc cpio + zstd. No dracut anywhere in the tree. |
 | "The diskless pull is unverified." | The initrd pulls with `verify=signature` against the keyring it ships; the signed UKI also pins `usrhash=`, and dm-verity checks every `/usr` block read. |
-| "Ignition needs a karg." | The cmdline is sealed in the signed UKI. Ignition configs arrive as `ignition.config` / `ignition.config.url` system credentials, or as `bluefin-node.ign` next to the UKI on a UEFI HTTP boot. |
+| "Ignition needs a karg." | The cmdline is sealed in the signed UKI. Ignition configs arrive as `ignition.config` / `ignition.config.url` system credentials, or as `bluefin-node.ign` next to the UKI on a UEFI HTTP boot; `ignition.*` kargs are ignored with a console warning. |
 | "Diskless nodes need sysupdate." | Diskless nodes update by rebooting into a newer image; sysupdate is disabled when booted diskless. |
 
 ## Verification
@@ -264,6 +269,7 @@ specifying the URL to pull `bluefin-server_<ver>.raw` and its signed SHA256SUMS.
 ## See also
 
 - [ddi-installer-build.md](ddi-installer-build.md) — local build, export, and dogfood workflow.
+- [diskless-troubleshooting.md](diskless-troubleshooting.md) — failure summary, minimum RAM, logs, supported Ignition subset.
 - [systemd-sysupdate-verification.md](systemd-sysupdate-verification.md) — release signing and transfer verification.
 - [CONTEXT.md](../../CONTEXT.md) — canonical project domain glossary (OS DDI, Netboot UKI, Disk UKI, Slot).
 - `systemd-sysinstall(8)`, `systemd-repart(8)`, `systemd-sysupdate(8)`, `bootctl(1)`, `ukify(1)`

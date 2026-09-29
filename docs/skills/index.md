@@ -28,6 +28,7 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 | [`ci-tooling.md`](ci-tooling.md) | GitHub Actions, workflow SHA pinning, CI conventions | CI conventions and release pipeline rules. |
 | [`ddi-installer-build.md`](ddi-installer-build.md) | Building and dogfooding the image set | Local build, export, and QEMU dogfood workflow. |
 | [`ddi-installer.md`](ddi-installer.md) | Boot flow, diskless pull, `systemd-sysinstall`, A/B sysupdate | Boot, install, and update architecture. |
+| [`diskless-troubleshooting.md`](diskless-troubleshooting.md) | Diskless node reboot-loops, RAM sizing, keeping logs, writing Ignition configs | Failure summary, minimum RAM, failure modes, logs, supported Ignition subset. |
 | [`factory-integration.md`](factory-integration.md) | Lab integration, boot-test workflow, factory role | How Bluefin Server is consumed by the CI lab. |
 | [`gap-analysis-distros.md`](gap-analysis-distros.md) | Comparing Bluefin Server to other server OSes | Source-verified comparison to Ubuntu, Talos, Flatcar, FCOS. |
 | [`kubeadm-sysext.md`](kubeadm-sysext.md) | Joining a kubeadm cluster, kubelet/containerd sysext, Kubernetes kernel options | Build and runtime contract for the kubeadm worker sysext. |

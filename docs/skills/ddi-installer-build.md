@@ -102,6 +102,8 @@ Useful environment variables:
 - `DOGFOOD_SERVE_EXTRA=<dir>` — also serve the files in `<dir>`.
 - `DOGFOOD_TAMPER=raw|sums` — serve a corrupted DDI or a re-hashed, unsigned
   `SHA256SUMS`; the boot must fail, proving the signature check.
+- `DOGFOOD_MEM=<MiB>` — guest RAM (default 4096); below the diskless minimum
+  the boot must fail with the RAM message (see `diskless-troubleshooting.md`).
 - `DOGFOOD_EXTRA_PROBE=<file>` — shell snippet appended to the in-guest probe.
 
 `scripts/dogfood-install.sh <dir> [<next-dir> [<broken-dir>]]` is the full

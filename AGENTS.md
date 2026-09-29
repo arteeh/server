@@ -63,6 +63,7 @@ All local `just` targets run BuildStream inside the FSDK `bst2` container via `j
 | Task | Skill |
 |---|---|
 | Boot / install / update architecture and local build + dogfood | [`docs/skills/ddi-installer.md`](docs/skills/ddi-installer.md), [`docs/skills/ddi-installer-build.md`](docs/skills/ddi-installer-build.md) |
+| Diskless boot failures, RAM sizing, node logs, Ignition configs | [`docs/skills/diskless-troubleshooting.md`](docs/skills/diskless-troubleshooting.md) |
 | Factory role, k0s sysext rationale, lab integration | [`docs/skills/factory-integration.md`](docs/skills/factory-integration.md) |
 | Work with `systemd-sysext` / `systemd-confext` | [`docs/skills/systemd-sysext-extensions.md`](docs/skills/systemd-sysext-extensions.md) |
 | Build or run the kubeadm worker sysext | [`docs/skills/kubeadm-sysext.md`](docs/skills/kubeadm-sysext.md) |

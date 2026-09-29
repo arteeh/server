@@ -154,6 +154,7 @@ config:
     ln -sf ../systemd-resolved.service "${wants}/initrd.target.wants/systemd-resolved.service"
     ln -sf ../imports.target "${wants}/initrd.target.wants/imports.target"
     ln -sf ../bluefin-populate-etc.service "${wants}/initrd.target.wants/bluefin-populate-etc.service"
+    ln -sf ../bluefin-ignition-kargs.service "${wants}/initrd.target.wants/bluefin-ignition-kargs.service"
     ln -sf ../systemd-networkd-wait-online.service "${wants}/network-online.target.wants/systemd-networkd-wait-online.service"
     for tool in systemd-importd systemd-pull; do
       [ -x "usr/lib/systemd/${tool}" ] || { echo "ERROR: initrd lacks ${tool}" >&2; exit 1; }
@@ -162,6 +163,10 @@ config:
       [ -x "usr/bin/${tool}" ] || { echo "ERROR: initrd lacks ${tool}" >&2; exit 1; }
     done
     [ -x usr/lib/systemd/systemd-veritysetup ] || { echo "ERROR: initrd lacks systemd-veritysetup" >&2; exit 1; }
+    # bluefin-boot-diagnostics (failure summary, RAM check) and what it runs.
+    for tool in libexec/bluefin-boot-diagnostics bin/bash bin/curl bin/stat bin/timeout bin/tee; do
+      [ -x "usr/${tool}" ] || { echo "ERROR: initrd lacks ${tool}" >&2; exit 1; }
+    done
     rm -rf usr/share/man usr/share/doc usr/share/info usr/include usr/lib/*/pkgconfig
     find . -name '*.a' -delete
     du -sh /initrd
