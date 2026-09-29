@@ -56,10 +56,13 @@ config:
     set -eu
     systemd-sysusers --root=/sysroot
     chmod 0600 /sysroot/etc/shadow /sysroot/etc/gshadow
-    # Console bring-up password: root/bluefin, expired so the first login
-    # forces a rotation. sshd refuses passwords (os-sshd-config.bst).
+    # No shipped password: root is locked. "!unprovisioned" is systemd's
+    # marker for a root account nobody has configured yet; login, su and
+    # sulogin treat it as locked, and systemd-firstboot still applies a
+    # passwd.hashed-password.root / passwd.plaintext-password.root
+    # credential over it (docs/skills/tpm2-credential-sealing.md).
     sed -i '/^root:/d' /sysroot/etc/shadow
-    printf 'root:%s:0:0:99999:7:::\n' '$6$bluefin123$o2pQjPN1n3ZCnYUROlA01xAdnGO7mhVRAVw98x4xc8LAUIJv7b44bBNoER6fM4P.rrj4ePYFfkx9WvZICU8nt/' >> /sysroot/etc/shadow
+    printf 'root:!unprovisioned:::::::\n' >> /sysroot/etc/shadow
     grep -q '^root:' /sysroot/etc/passwd
     chmod 0400 /sysroot/etc/shadow /sysroot/etc/gshadow
 

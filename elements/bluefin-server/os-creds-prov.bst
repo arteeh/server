@@ -5,6 +5,10 @@ description: |
   Supports sysusers credentials, systemd-network-generator network.* credentials,
   and the firstboot.* credentials (locale, keymap, timezone, hostname).
 
+  The systemd-firstboot.service drop-in removes upstream's interactive root
+  password prompt: root ships locked, so without it every headless boot would
+  wait on the console. The passwd.*.root credentials still apply.
+
   Flatcar's /usr is built without systemd-firstboot, so the firstboot.*
   credentials are applied by /usr/libexec/bluefin-firstboot-credentials, a
   bash + coreutils helper that writes the same files systemd-firstboot would

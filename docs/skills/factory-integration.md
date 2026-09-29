@@ -4,7 +4,7 @@ description: Understand Bluefin Server's role as the core OS for an image-based 
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
 ---
 # Factory Integration
 
@@ -65,7 +65,7 @@ the base /usr image (hard rule 4 forbids container runtimes in the base image).
 
 ## SSH and Remote Diagnostics
 
-> `sshd` is present in the OS image for on-demand diagnostics and bring-up troubleshooting, but is disabled by default via `disable sshd.service` in systemd presets. Operators can start it on-demand with `systemctl start sshd` or enable it when remote access is required. Root login is permitted with password and pubkey.
+> `sshd` is present in the OS image for on-demand diagnostics and bring-up troubleshooting, but is disabled by default via `disable sshd.service` in systemd presets. Operators can start it on-demand with `systemctl start sshd` or enable it when remote access is required. Login is key-only (`PermitRootLogin prohibit-password`, `PasswordAuthentication no`), and root ships locked; provision keys per node as described under "Node access" in [tpm2-credential-sealing.md](tpm2-credential-sealing.md).
 
 ## When to Use
 

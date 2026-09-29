@@ -4,7 +4,7 @@ description: Lazy-load manifest for Bluefin Server skills. Load this file after 
 metadata:
   type: index
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
 ---
 # docs/skills — Index
 
@@ -37,7 +37,7 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 | [`system-containers.md`](system-containers.md) | Running `systemd-nspawn` toolboxes | System container operation with `machinectl`. |
 | [`systemd-sysext-extensions.md`](systemd-sysext-extensions.md) | Optional layers via `systemd-sysext` / `systemd-confext` | Extension identity, loading, and version matching. |
 | [`systemd-sysupdate-verification.md`](systemd-sysupdate-verification.md) | Image-based A/B updates and signed manifests | Release signing, `systemd-sysupdate`, and trust model. |
-| [`tpm2-credential-sealing.md`](tpm2-credential-sealing.md) | TPM2-bound first-boot credentials | Credential sealing with `systemd-creds` and TPM2. |
+| [`tpm2-credential-sealing.md`](tpm2-credential-sealing.md) | First-boot credentials, root/SSH node access, TPM2 sealing | Provisioning credentials, node access, and sealing with `systemd-creds`. |
 
 ## Standing facts
 

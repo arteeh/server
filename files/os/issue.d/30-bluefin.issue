@@ -1,3 +1,3 @@
 Bluefin Server (\l)
-Default login: root / bluefin (password change forced at first login)
+No default login; root is locked. Provision access: https://github.com/projectbluefin/server/blob/main/docs/skills/tpm2-credential-sealing.md#node-access
 

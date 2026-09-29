@@ -4,7 +4,7 @@ description: Build, export, and dogfood the Bluefin Server image set (OS DDI, si
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
   context7-sources:
     - /systemd/systemd
     - /apache/buildstream
@@ -86,6 +86,8 @@ Useful environment variables:
 
 - `DOGFOOD_IGNITION=<file>` — pass an Ignition config as the `ignition.config`
   credential (see `tests/fixtures/ignition/var-on-disk.ign`).
+- `DOGFOOD_CREDS=<dir>` — pass every file in `<dir>` as a system credential
+  named after the file (SMBIOS type 11).
 - `DOGFOOD_STATE_DISK=<file>` — attach a persistent second disk (`/dev/vdb`).
 - `DOGFOOD_VARS=<file>` — persistent UEFI variable store (keeps enrolled keys
   across runs).
