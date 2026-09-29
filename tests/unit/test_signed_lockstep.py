@@ -51,8 +51,8 @@ def test_version_locked_sysexts_are_optional_features(name: str, transfer: str) 
 @pytest.mark.parametrize("element,name", [("zfs-sysext.bst", "zfs"), ("kubestellar-sysext.bst", "kubestellar"), ("kubeadm-sysext.bst", "kubeadm")])
 def test_extension_release_name_carries_the_image_version(element: str, name: str) -> None:
     text = (ROOT / "elements" / "oci" / element).read_text(encoding="utf-8")
-    assert f"extension-release.{name}_%{{image-version}}" in text
-    assert f'{name}_%{{image-version}}.raw' in text
+    assert f'sysext-release: "{name}_%{{image-version}}"' in text
+    assert f'sysext-image: "{name}_%{{image-version}}"' in text
 
 
 def test_sysext_units_are_started_after_a_boot_time_merge() -> None:

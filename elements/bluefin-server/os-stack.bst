@@ -50,5 +50,5 @@ depends:
   # system-container helper (machinectl wrapper)
   - bluefin-server/os-system-container.bst
 
-  # Console issue banner with KubeStellar dashboard URL
+  # Console issue banner (the KubeStellar sysext adds its dashboard URL)
   - bluefin-server/os-issue.bst

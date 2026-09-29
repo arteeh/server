@@ -23,6 +23,7 @@ description: |
 - include/arch.yml
 - include/image.yml
 - include/zfs.yml
+- include/sysext.yml
 
 build-depends:
 - base/base-stack.bst
@@ -45,6 +46,11 @@ sources:
 
 variables:
   strip-binaries: ""
+  sysext-name: "zfs"
+  sysext-image: "zfs_%{image-version}"
+  sysext-release: "zfs_%{image-version}"
+  sysext-version: "%{image-version}"
+  sysext-architecture: "%{systemd-arch}"
 
 config:
   install-commands:
@@ -120,21 +126,4 @@ config:
       ln -s "../${u}" "${unitdir}/zfs.target.wants/${u}"
     done
 
-    install -d "sysext%{indep-libdir}/extension-release.d"
-    rel="sysext%{indep-libdir}/extension-release.d/extension-release.zfs_%{image-version}"
-    cp sysext-src/extension-release.zfs "${rel}"
-    echo "VERSION_ID=%{image-version}" >> "${rel}"
-    echo "ARCHITECTURE=%{systemd-arch}" >> "${rel}"
-
-  - |
-    set -euo pipefail
-    OUT="%{install-root}"
-    FNAME="zfs_%{image-version}.raw"
-
-    mkdir -p "${OUT}"
-    mkfs.erofs -d0 "${OUT}/${FNAME}" sysext
-    zstd -T0 -19 -q "${OUT}/${FNAME}" -o "${OUT}/${FNAME}.zst"
-    (
-      cd "${OUT}"
-      sha256sum --binary "${FNAME}.zst" > SHA256SUMS
-    )
+  - "%{sysext-pack}"

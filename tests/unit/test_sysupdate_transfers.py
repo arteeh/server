@@ -48,10 +48,16 @@ def load_transfer(path: Path) -> configparser.ConfigParser:
 
 
 def element_texts() -> str:
-    """Every element definition concatenated, for artifact-name lookups."""
-    return "\n".join(
+    """Every element definition concatenated, for artifact-name lookups.
+
+    Sysext elements name their image in ``sysext-image:`` and
+    ``include/sysext.yml`` writes ``%{sysext-image}.raw``; spell that out.
+    """
+    text = "\n".join(
         p.read_text() for p in sorted(ELEMENTS_DIR.rglob("*.bst"))
     )
+    images = re.findall(r'^\s*sysext-image:\s*"([^"]+)"', text, re.MULTILINE)
+    return "\n".join([text, *(f"{image}.raw" for image in images)])
 
 
 def split_match_pattern(pattern: str) -> tuple[str, str]:

@@ -126,7 +126,8 @@ what democratic-csi's `chroot /host ... iscsiadm` node plugin needs.
 
 ## Known gaps
 
-- x86_64 only (amd64 release binaries).
+- aarch64: the arm64 release binaries are pinned, but no aarch64 image has
+  been built or booted.
 
 ## Verify
 
