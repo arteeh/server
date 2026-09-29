@@ -22,10 +22,12 @@
 # enabled; a boot-counted UKI is blessed only after boot-complete.target,
 # which requires that no unit failed.
 # Usage: [DOGFOOD_BROKEN=slot|unit] dogfood-install.sh <dir> [<next-dir> [<broken-dir>]]
+# <next-dir> and <broken-dir> are image sets with increasingly higher versions.
+# DOGFOOD_PORT (default 8765) is shared with dogfood-diskless.sh's server.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-dir="$(realpath "${1:?usage: $0 <dir> [<next-dir>]}")"
+dir="$(realpath "${1:?usage: $0 <dir> [<next-dir> [<broken-dir>]]}")"
 next="${2:+$(realpath "$2")}"
 broken="${3:+$(realpath "$3")}"
 state="$(realpath "${DOGFOOD_STATE:-dist/dogfood-install}")"
@@ -33,6 +35,7 @@ rm -rf "${state}"
 mkdir -p "${state}"
 truncate -s 16G "${state}/disk.raw"
 
+export DOGFOOD_PORT="${DOGFOOD_PORT:-8765}"
 export DOGFOOD_STATE_DISK="${state}/disk.raw"
 export DOGFOOD_VARS="${state}/vars.fd"
 run() { DOGFOOD_EXTRA_PROBE="$2" bash "${here}/dogfood-diskless.sh" "$1" --check; }
@@ -66,7 +69,7 @@ cat > "${state}/update.probe" <<'EOF'
 mkdir -p /etc/sysupdate.d/zfs.feature.d
 printf '[Feature]\nEnabled=true\n' > /etc/sysupdate.d/zfs.feature.d/enable.conf
 for f in /usr/lib/sysupdate.d/*.transfer; do
-    sed -e 's|^Path=https://.*|Path=http://10.0.2.2:8765/|' \
+    sed -e 's|^Path=https://.*|Path=http://10.0.2.2:@DOGFOOD_PORT@/|' \
         "${f}" > "/etc/sysupdate.d/${f##*/}"
 done
 rm -f /run/reboot-required
@@ -81,6 +84,7 @@ systemctl start systemd-sysupdate-reboot.service
 echo "PROBE interlock=$(systemctl show -P Result systemd-sysupdate-reboot.service)"
 systemctl stop kubelet.service
 EOF
+sed -i "s|@DOGFOOD_PORT@|${DOGFOOD_PORT}|" "${state}/update.probe"
 
 echo "==> 1/4 diskless boot + systemd-sysinstall"
 run "${dir}" "${state}/install.probe" | tee "${state}/1-install.log"

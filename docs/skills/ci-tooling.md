@@ -83,8 +83,9 @@ freedesktop-sdk and gnome-build-meta bumps. It now lives in
 `track-junctions.yml` on a schedule, opening its own PR on its own branch.
 
 The `build` job (validation, compile, signing) runs with the read-only default
-on every event. If a new job needs additional permissions, keep them as narrow
-as possible and document why.
+on every event. `changes` adds only `pull-requests: read`, to list a pull
+request's files. If a new job needs additional permissions, keep them as
+narrow as possible and document why.
 
 ### `sudo` scope
 
@@ -116,8 +117,9 @@ sudo_cmd := if `podman info >/dev/null 2>&1 && echo 1 || echo 0` == "1" { "" } e
 | Job | Workflow | Trigger | Purpose |
 |-----|----------|---------|---------|
 | `track-junctions` | `track-junctions.yml` | `schedule` (08:00 UTC), `workflow_dispatch` | Resolves the `freedesktop-sdk.bst` + `gnome-build-meta.bst` junction refs, syncs `project.conf`'s `installer-version`, and opens/updates its own PR on `auto/track-junctions`. `contents: write` + `pull-requests: write`, never on `pull_request`. |
-| `build` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Resolves the element graph, sets `image-version`, and runs the full BuildStream compile of the image set (OS DDI, signed UKIs, netboot ESP, k0s/KubeStellar/OpenZFS sysext assets), which also writes and signs the combined `SHA256SUMS` inside `oci/bluefin-server-image.bst`. On `main` it installs the `BOOT_KEYS_TARBALL` and `SYSUPDATE_SIGNING_KEY` secrets; both are required there. Read-only token. |
-| `boot-test` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Downloads the build job's exported image set and runs the Secure Boot QEMU checks: `scripts/dogfood-diskless.sh --check` (diskless boot) and `scripts/dogfood-install.sh` (install to disk and boot it). Read-only token. |
+| `changes` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Decides whether `build` and `boot-test` run: always outside pull requests; on a pull request only if `.github/scripts/image-build-needed.py`, checked out from the PR's base revision, finds a changed path that can reach the image set or the boot test (see [Build time and caches](#build-time-and-caches)). `contents: read` + `pull-requests: read`. |
+| `build` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Resolves the element graph, sets `image-version`, and runs the full BuildStream compile of the image set (OS DDI, signed UKIs, netboot ESP, k0s/KubeStellar/OpenZFS sysext assets), which also writes and signs the combined `SHA256SUMS` inside `oci/bluefin-server-image.bst`. On `main` it installs the `BOOT_KEYS_TARBALL` and `SYSUPDATE_SIGNING_KEY` secrets; both are required there. Off `main` it also exports two higher-versioned sets (`1.<run>.1`, `1.<run>.2`) for the update test. Read-only token. |
+| `boot-test` | `build.yml` | `pull_request`, `push/main`, `workflow_dispatch` | Runs the Secure Boot QEMU checks on the exported sets (see Core Process step 4). Read-only token. |
 | `release` | `build.yml` | `push/main`, `workflow_dispatch` | Publishes `dist/diskless/` as-is: an immutable GitHub Release tagged `v<image-version>` plus an ORAS OCI artifact at `ghcr.io/<owner>/bluefin-server:<ver>,latest` (one layer per file, artifact type `application/vnd.projectbluefin.server.release.v1`) (`if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/main' }}`). `contents: write` + `packages: write`. |
 | `docs` | `docs-checks.yml` | `pull_request`, `push/main` | Runs markdown and skill metadata checks via `docs-checks.py`. Read-only token. |
 | `unit` | `unit-tests.yml` | `pull_request`, `push/main` | Runs pytest and BATS unit test suites. Read-only token. |
@@ -141,10 +143,34 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     and push to `main`, and signs the combined `SHA256SUMS` inside
     `oci/bluefin-server-image.bst` (gpg sign plus a `gpgv` proof against the
     shipped keyring).
- 4. **Boot test:** Downloads the exported image set and runs
-    `scripts/dogfood-diskless.sh --check` (diskless Secure Boot boot) and
-    `scripts/dogfood-install.sh` (diskless boot, `systemd-sysinstall` to disk,
-    boot the installed disk) in QEMU with OVMF.
+ 4. **Boot test:** Downloads the exported image sets and runs, in QEMU with
+    Secure Boot OVMF, each as one `scripts/dogfood-diskless.sh --check` or
+    `scripts/dogfood-install.sh` call. The firmware is Fedora's
+    `edk2-ovmf` (Koji URL + SHA-256 in `build.yml`), not Ubuntu's `ovmf`:
+    Ubuntu 26.04's OVMF 2025.11 rejects systemd-boot's PK enrollment
+    (`Failed to write PK secure boot variable: Security violation`), and
+    until this was caught every CI boot ran in setup mode with Secure Boot
+    off. `--check` now fails unless the probe reports
+    `secureboot=enabled` (or, for tamper runs, the kernel logs
+    `Secure boot enabled`). Bump the pin by hand; Renovate does not track it.
+    - diskless netboot, no failed units;
+    - `DOGFOOD_TAMPER=raw`: a corrupted DDI must be refused by the manifest
+      check (`DOWNLOAD INVALID: Checksum of ... did not check out`);
+      `DOGFOOD_TAMPER=sums`: the same DDI with `SHA256SUMS` re-hashed to match
+      it must be refused by the signature check (`DOWNLOAD INVALID: Signature
+      verification failed`). Both only after the image, `SHA256SUMS` and
+      `SHA256SUMS.gpg` were served, and nothing may boot;
+    - Ignition from the `ignition.config` credential, and UEFI HTTP boot with
+      `bluefin-node.ign` served next to the UKI, both with
+      `tests/fixtures/ignition/apply-marker.ign`: the probe must see the
+      written file and the Ignition-enabled unit active (`DOGFOOD_EXPECT`);
+    - on `main`: diskless boot, `systemd-sysinstall` to disk, boot the disk;
+    - off `main`: the same, then `systemd-sysupdate` A->B to `1.<run>.1` and
+      a boot-counted rollback from a corrupted `1.<run>.2` (see
+      [ddi-installer-build.md](ddi-installer-build.md) for why not
+      `0.<run>.N`). Main skips this
+      because its extra sets would be release-signed versions nobody
+      publishes; every change reaches main through a pull request that ran it.
  5. **Version Derivation:** The release version is set per build with
     `just set-version`: `YY.MM.<run>` on main, `0.<run>` on pull requests so
     a PR build can never sort above a release.
@@ -153,6 +179,59 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     GitHub Release `v<image-version>` and an ORAS OCI artifact
     `ghcr.io/<owner>/bluefin-server:<ver>,latest`. Nodes verify updates
     against the `SHA256SUMS` / `SHA256SUMS.gpg` already in that set.
+
+## Build time and caches
+
+Measured on run 36499270842 (pull request, cold runner): `Build and export the
+image set` took 2 h. BuildStream pulled 239 artifacts and built 85 (about 3.9 h
+of build time over 4 cores). The critical path is FSDK's
+`components/linux.bst`: 6 min to fetch its source (not in any source cache)
+and 1 h 43 min to build. FSDK's caches never hold it for us, because the
+`components/linux-module-cert.bst` junction override (our module certificate)
+and `patches/freedesktop-sdk/0006-linux-*.patch` change its cache key. Next are
+about 40 FSDK elements our FSDK patches or their reverse dependencies change
+(glib-stage1, gobject-introspection, harfbuzz, go, vala, ...; about 70 min of
+build time in parallel with the kernel). Changing only `image-version`
+rebuilds 13 version-stamped elements (os-release to `oci/bluefin-server-image.bst`
+and the sysexts), 2 min locally on a warm cache; CI's
+per-set cost is estimated at under 10 min.
+
+- **Docs-only pull requests skip the build.** The `changes` job feeds the PR's
+  changed paths (renames under both names) to
+  `.github/scripts/image-build-needed.py` from the base revision, so a PR
+  cannot edit the classifier to skip its own build; a change to the
+  classifier or `build.yml` always builds. It answers `false` only when every
+  path is docs, Markdown outside the build inputs, `tests/unit/`,
+  `tests/e2e/`, or a workflow or script that does not build the image;
+  `tests/unit/test_image_build_needed.py` fails if any tracked build input
+  (`elements/`, `files/`, `include/`, `patches/`, `plugins/`, `scripts/`,
+  `tests/fixtures/`, `project.conf`, `Justfile`, `build.yml`) would skip. No
+  status check is required on `main` today; a skipped job reports as passing,
+  so they can be made required without `paths-ignore` leaving them pending.
+- **No cache push.** CI only pulls from the caches `project.conf` lists.
+  `bluefin-server/keys/boot-keys.bst` imports `files/boot-keys/`, which on
+  `main` holds the Secure Boot, module-signing and sysupdate private keys, and
+  the image, UKIs, `kernel-modules.bst`, `efi-keys.bst`,
+  `os-sd-boot-signed.bst` and `openzfs-signed.bst` build-depend on it, so
+  `bst artifact push --deps all` of the image would upload the keys to a cache
+  every build pulls from. Pushing needs an explicit element allow-list, with a
+  unit test proving no listed element is, or build-depends on,
+  `boot-keys.bst`. FSDK's `components/linux.bst` only stages the public
+  certificate (`bluefin-server/keys/linux-module-cert.bst`), so the kernel is
+  the candidate worth listing.
+- **Pull requests still build the kernel.** `just gen-dev-keys` makes a new
+  module certificate on every PR run, so the PR kernel's cache key never
+  matches anything cached. Caching it needs a stable, non-release PR module
+  key pair that PR builds can use (fork PRs get no secrets) and a job that
+  pushes the kernel built with it; that is a maintainer decision about key
+  handling, not a workflow change.
+- **No `actions/cache` for sources or artifacts.** The kernel source fetch
+  (6 min, 1 of the 85 fetches) is the only one on the critical path, and it
+  only matters when the kernel is rebuilt anyway. The runner's BuildStream
+  cache after a build holds every pulled and built artifact of the graph,
+  several times the 2.1 GB image set, and would churn the 10 GB repository
+  cache quota; BuildStream 2 cannot import a single artifact from a tarball,
+  so the kernel alone cannot be cached that way.
 
 ## Common Rationalizations
 
@@ -176,6 +255,8 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
 - [ ] Every `uses:` line has a full 40-character SHA and a `# vX` comment.
 - [ ] Every `install-action` `tool:` names an explicit version (`just@1.58.0`).
 - [ ] `just validate` passes after workflow changes.
+- [ ] A new directory the build or boot test reads is listed in
+      `BUILD_PREFIXES` in `.github/scripts/image-build-needed.py`.
 - [ ] No new mutable action refs introduced.
 - [ ] Release signing happens in `oci/bluefin-server-image.bst`; there is no
       separate CI signing step, and the release job publishes `dist/diskless/`

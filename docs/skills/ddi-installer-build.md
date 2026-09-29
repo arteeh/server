@@ -69,6 +69,10 @@ their images are never published.
 All dogfood paths boot with Secure Boot firmware (OVMF secboot). The firmware
 starts in setup mode; systemd-boot enrolls the dev keys from the ESP
 (`secure-boot-enroll if-safe`) and reboots, so every later boot is verified.
+`--check` fails if the guest did not boot with Secure Boot enabled: some OVMF
+builds (Ubuntu 26.04's 2025.11) refuse the enrollment and would otherwise boot
+on in setup mode, verifying nothing. Point `OVMF_CODE` / `OVMF_VARS` at
+another build (Fedora's `edk2-ovmf` works) if yours does.
 
 ```bash
 just dogfood                     # interactive diskless boot of dist/diskless/
@@ -100,11 +104,20 @@ Useful environment variables:
 - `DOGFOOD_NODE_IGN=<file>` — serve it as `bluefin-node.ign` next to the UKI
   (picked up by HTTP-booted nodes with no Ignition credential).
 - `DOGFOOD_SERVE_EXTRA=<dir>` — also serve the files in `<dir>`.
-- `DOGFOOD_TAMPER=raw|sums` — serve a corrupted DDI or a re-hashed, unsigned
-  `SHA256SUMS`; the boot must fail, proving the signature check.
+- `DOGFOOD_TAMPER=raw|sums` — serve a corrupted DDI (`raw`), or the corrupted
+  DDI with `SHA256SUMS` re-hashed to match it, so only `SHA256SUMS.gpg` no
+  longer fits (`sums`). `--check` then passes only if the initrd's pull
+  refuses it for that reason (checksum mismatch, bad signature) after the
+  image and both manifest files were served, and nothing booted. Credential
+  drop-ins copy `systemd-importd`'s messages to the serial console.
 - `DOGFOOD_MEM=<MiB>` — guest RAM (default 4096); below the diskless minimum
   the boot must fail with the RAM message (see `diskless-troubleshooting.md`).
 - `DOGFOOD_EXTRA_PROBE=<file>` — shell snippet appended to the in-guest probe.
+- `DOGFOOD_EXPECT=<ERE>` — `--check` also requires the probe output to match,
+  e.g. with `tests/fixtures/ignition/apply-marker.ign` and its `.probe`:
+  `PROBE ignition marker=applied unit=active enabled=enabled ran=yes`.
+- `DOGFOOD_PORT`, `DOGFOOD_MEM`, `DOGFOOD_TIMEOUT` — HTTP port (8765), guest
+  memory in MiB (4096), `--check` deadline in seconds (600).
 
 Every diskless `--check` boot also runs `bluefin-diskless-update-check` once
 and reports `PROBE update-check=<result> flag=<set|none>`. Its origin is the
@@ -128,10 +141,16 @@ only and shortens the boot deadline (`DOGFOOD_DEADLINE`, default `2min`): each
 counted boot reaches `multi-user.target`, misses `boot-complete.target`, and
 `bluefin-boot-deadline` reboots it. The run asserts three such boots, the
 fallback boot with the deadline timer inactive, and then no kured flag and a
-skipped `systemd-sysupdate-reboot.service` for the failed version. CI runs the first two stages
-(`dogfood-diskless.sh --check`, `dogfood-install.sh dist/diskless`) as the
-`boot-test` job in `.github/workflows/build.yml` on every pull request and
-push to main.
+skipped `systemd-sysupdate-reboot.service` for the failed version. `<next-dir>` and `<broken-dir>` are
+ordinary image sets with higher versions, e.g.
+`just set-version <next> && just export-image dist/diskless-next` (and a
+higher one into `dist/diskless-broken`); the script breaks the
+broken set itself. The versions must also sort above `1.<ver>` for systemd-boot: the
+Type #1 entry `systemd-sysinstall` writes for the installed image carries
+`version 1.<ver>` (`bluefin-server-commit_1.<ver>.conf`), so after
+installing `0.674` an update to `0.674.1` still boots `0.674`; use `1.674.1`.
+Release versions (`YY.MM.<run>`) sort above it. Which of these scenarios CI runs is listed in
+[ci-tooling.md](ci-tooling.md) (the `boot-test` job).
 
 ## Local builds with a remote cache
 
