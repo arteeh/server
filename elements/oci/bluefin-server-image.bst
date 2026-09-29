@@ -17,6 +17,11 @@ description: |
     bluefin-server-netboot_<ver>.esp.raw   ESP image: signed systemd-boot + diskless
                                            UKI + key enrollment; write it to a USB
                                            stick to boot diskless without HTTP boot
+    bluefin-server-installer_<ver>.raw     offline USB installer: usr + usr-verity
+                                           (bluefin-installer-* labels) and an ESP with
+                                           signed systemd-boot, the installer UKI, key
+                                           enrollment, and the disk UKI + repart.d that
+                                           systemd-sysinstall lays onto the target disk
     efi-keys/                              Secure Boot enrollment payloads
     zfs_<ver>.raw.zst, kubestellar_<ver>.raw.zst, kubeadm_<ver>.raw.zst
                                            opt-in sysexts locked to this image version
@@ -62,6 +67,7 @@ variables:
   image-name: bluefin-server_%{image-version}
   netboot-name: bluefin-server-netboot_%{image-version}
   disk-uki: bluefin-server-%{image-version}.efi
+  installer-uki: bluefin-server-installer_%{image-version}.efi
   efi-arch: x64
   (?):
   - arch == "aarch64":
@@ -114,6 +120,29 @@ config:
     systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
       --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e002 \
       --definitions="${d}" "%{install-root}/%{netboot-name}.esp.raw"
+
+  - |
+    set -eu
+    esp=/tmp/installer-esp
+    sdboot=/sd-boot/usr/lib/systemd/boot/efi/systemd-boot%{efi-arch}.efi.signed
+    arch_upper="$(echo '%{efi-arch}' | tr a-z A-Z)"
+    install -Dm644 "${sdboot}" "${esp}/EFI/BOOT/BOOT${arch_upper}.EFI"
+    install -Dm644 "${sdboot}" "${esp}/EFI/systemd/systemd-boot%{efi-arch}.efi"
+    install -Dm644 /boot-out/%{installer-uki} "${esp}/EFI/Linux/%{installer-uki}"
+    # Outside EFI/Linux so systemd-boot never offers the disk UKI on the
+    # stick; systemd-sysinstall --kernel= installs it onto the target disk.
+    install -Dm644 /boot-out/%{disk-uki} "${esp}/bluefin/%{disk-uki}"
+    install -Dm644 -t "${esp}/bluefin/repart.d" /boot-out/repart.d/*.conf
+    install -Dm644 -t "${esp}/loader/keys/auto" /boot-out/efi-keys/*.auth
+    printf 'timeout 3\nconsole-mode keep\nsecure-boot-enroll if-safe\n' > "${esp}/loader/loader.conf"
+    d=/tmp/installer.repart.d
+    mkdir -p "${d}"
+    printf '[Partition]\nType=usr\nLabel=bluefin-installer-usr\nCopyBlocks=/usr-image/%{image-name}.usr.raw\n' > "${d}/10-usr.conf"
+    printf '[Partition]\nType=usr-verity\nLabel=bluefin-installer-usr-verity\nCopyBlocks=/usr-image/%{image-name}.usr-verity.raw\n' > "${d}/20-usr-verity.conf"
+    printf '[Partition]\nType=esp\nLabel=bluefin-installer\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=256M\n' "${esp}" > "${d}/30-esp.conf"
+    systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
+      --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e004 \
+      --definitions="${d}" "%{install-root}/bluefin-server-installer_%{image-version}.raw"
 
   - |
     set -eu

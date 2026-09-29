@@ -9,8 +9,8 @@ The discoverable disk image (`bluefin-server_<ver>.raw`) carrying the `/usr` ero
 _Avoid_: base image, OS rootfs, root tarball
 
 **Installer**:
-Not separate media. Boot a node diskless, then run `systemd-sysinstall` (with `--kernel` and `--definitions`, see `ddi-installer.md`) against a target disk; it block-copies `/usr` from the running image and installs the disk UKI.
-_Avoid_: live ISO, installation media, setup script
+Stock `systemd-sysinstall`, run from either the offline USB installer (`bluefin-server-installer_<ver>.raw`, which boots straight into `systemd-sysinstall.service`) or a diskless-booted node; either way it block-copies `/usr` from the running image onto the target disk and installs the disk UKI. See `ddi-installer.md`.
+_Avoid_: live ISO, setup script, shell installer
 
 **Netboot UKI**:
 The signed unified kernel image (`bluefin-server-netboot_<ver>.efi`) that pulls the OS DDI into RAM (`rd.systemd.pull`) and boots a tmpfs root with a dm-verity `/usr`. The UEFI HTTP boot / PXE target.

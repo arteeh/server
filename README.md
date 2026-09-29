@@ -10,7 +10,7 @@
 
 Bluefin Server targets the same use-case space as Flatcar Container Linux, Fedora CoreOS, and Talos, and is built with [BuildStream 2](https://buildstream.build/). Its entire userspace, kernel, and boot chain compose from [freedesktop-sdk](https://freedesktop-sdk.freedesktop.org/) (FSDK 26.08, systemd v261) components. No other distro's binaries ship in the image.
 
-It is [DDI first](https://0pointer.net/blog/fitting-everything-together.html) and diskless-first: one build produces a verity-sealed `/usr` image, two signed UKIs, and an OS DDI that a node pulls into RAM over HTTP. Rebooting is how a diskless node updates. Installing to disk is optional.
+It is [DDI first](https://0pointer.net/blog/fitting-everything-together.html) and diskless-first: one build produces a verity-sealed `/usr` image, signed UKIs, an OS DDI that a node pulls into RAM over HTTP, and an offline USB installer. Rebooting is how a diskless node updates. Installing to disk is optional.
 
 > The only thing worse than a nightmare is a factory of nightmares that makes other nightmares
 

@@ -37,6 +37,7 @@ GPT partition label with room to spare):
 | `bluefin-server-<ver>.efi` | Disk UKI (installed nodes); also the sysupdate source for `$BOOT`. |
 | `bluefin-server-netboot_<ver>.efi` | Netboot UKI (diskless nodes); the UEFI HTTP boot / PXE target. |
 | `bluefin-server-netboot_<ver>.esp.raw` | Netboot ESP image: signed systemd-boot, the netboot UKI, and Secure Boot key enrollment payloads. Write it to a USB stick to boot diskless without HTTP boot. |
+| `bluefin-server-installer_<ver>.raw` | Offline USB installer: the same usr + verity images (labelled `bluefin-installer-usr` / `bluefin-installer-usr-verity`) plus an ESP with signed systemd-boot, the installer UKI, key enrollment payloads, and the disk UKI + install-time `repart.d` under `bluefin/`. Write it to a USB stick to install without a network. |
 | `zfs_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the `zfs` / `kubestellar` / `kubeadm` sysupdate features. |
 | `k0s-<k0s-ver>.raw.zst` | Opt-in k0s sysext asset, on its own version axis. |
 | `efi-keys/` | PK/KEK/db enrollment payloads. |
@@ -55,10 +56,10 @@ live in `/usr/share/factory/etc` and are copied in by `systemd-tmpfiles`.
 
 ## The boot chain
 
-Both UKIs are built by `oci/bluefin-server-boot.bst` from the FSDK kernel
+All UKIs are built by `oci/bluefin-server-boot.bst` from the FSDK kernel
 (`bluefin-server/kernel-modules.bst`, modules signed with our module key) and a
 systemd-native initrd (no dracut; `bluefin-server/initrd/initrd-stack.bst`).
-Both pin `usrhash=` of the same /usr image on their command lines and are
+They all pin `usrhash=` of the same /usr image on their command lines and are
 signed with DB, so Secure Boot locks those command lines. `lockdown=integrity`
 is always on. `os-sd-boot-signed.bst` signs systemd-boot with the same DB key
 so installed disks and the netboot ESP get a loader firmware accepts.
@@ -118,12 +119,50 @@ automatic rollback path.
 
 ## Installing to disk
 
-A running diskless node is the installer. The OS DDI's ESP partition is
-mounted at `/run/bluefin/boot` (`run-bluefin-boot.mount`), which carries
-`bluefin/repart.d`: the disk layout from `files/os/repart.d/` (ESP, usr slot A
-+ verity copied from the running image, empty slot B, persistent xfs root)
-with slot A's UUIDs pinned to the usrhash derivation by
-`bluefin-server-boot.bst`.
+Both install paths run stock `systemd-sysinstall` with the disk layout from
+`files/os/repart.d/` (ESP, usr slot A + verity copied from the running image,
+empty slot B, persistent xfs root), exported as `bluefin/repart.d` with slot A's
+UUIDs pinned to the usrhash derivation by `bluefin-server-boot.bst`.
+`systemd-sysinstall` writes the ESP and slot A and links the disk UKI; the
+first boot of the installed disk runs the initrd's `systemd-repart` (reading
+`/sysusr/usr/lib/repart.d`) to create slot B and the persistent root. The
+installed disk is identical whichever path installed it. No shell installer.
+
+### From the USB installer (offline)
+
+```bash
+sudo dd if=bluefin-server-installer_<ver>.raw of=/dev/<usb> bs=4M conv=fsync status=progress
+```
+
+```text
+firmware -> systemd-boot -> bluefin-server-installer_<ver>.efi
+  -> /usr from the stick's bluefin-installer-usr partition (dm-verity, usrhash=)
+  -> tmpfs root, systemd.unit=system-install.target
+  -> systemd-sysinstall.service on the monitor (/dev/console = tty0)
+```
+
+The installer UKI finds its /usr by partition label, not by the
+usrhash-derived UUIDs. Those UUIDs belong to installed usr slots, so an
+existing Bluefin install (including the disk being overwritten) is never opened
+as the installer's /usr, and an installed node booted with the stick still
+plugged in never opens the stick's usr. `run-bluefin-installer.mount` mounts
+the stick's ESP (`bluefin-installer`) at `/run/bluefin/installer`; the
+`systemd-sysinstall.service` drop-in passes
+`--definitions=/run/bluefin/installer/bluefin/repart.d` and
+`--kernel=${BLUEFIN_INSTALL_KERNEL}` (the disk UKI, named by the installer
+UKI's `systemd.setenv=`). The disk UKI sits outside `EFI/Linux` on the stick so
+systemd-boot never offers it there. sysinstall prompts for the target disk,
+erasing it, and confirmation, then reboots; remove the stick when it does.
+
+Secure Boot: the stick's systemd-boot and UKIs are signed with the project DB
+key. On bare metal put the firmware into Setup Mode and pick the enrollment
+entry in the systemd-boot menu (`secure-boot-enroll if-safe` only
+auto-enrolls in VMs), or turn Secure Boot off.
+
+### From a diskless node
+
+A running diskless node is also an installer. The OS DDI's ESP partition is
+mounted at `/run/bluefin/boot` (`run-bluefin-boot.mount`):
 
 ```bash
 systemctl start run-bluefin-boot.mount
@@ -131,11 +170,6 @@ kernel="$(ls /run/bluefin/boot/EFI/Linux/bluefin-server-[0-9]*.efi)"
 systemd-sysinstall --kernel="${kernel}" \
     --definitions=/run/bluefin/boot/bluefin/repart.d /dev/sdX
 ```
-
-`systemd-sysinstall` writes the ESP and slot A and links the disk UKI; the
-first boot of the installed disk runs the initrd's `systemd-repart` (reading
-`/sysusr/usr/lib/repart.d`) to create slot B and the persistent root. There is
-no separate installer image, no shell installer, no offline media.
 
 ## Updates
 

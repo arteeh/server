@@ -1,0 +1,9 @@
+[Unit]
+Description=ESP of the Bluefin Server USB installer (installer source)
+Documentation=man:systemd-sysinstall(8)
+
+[Mount]
+What=/dev/disk/by-partlabel/bluefin-installer
+Where=/run/bluefin/installer
+Type=vfat
+Options=ro,nosuid,nodev,noexec

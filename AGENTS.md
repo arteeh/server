@@ -2,9 +2,10 @@
 
 Bluefin Server is an image-based Linux server OS composed from freedesktop-sdk (FSDK) 26.08 components with BuildStream 2. One build of `oci/bluefin-server-image.bst` produces the full release set for one image version:
 - the /usr image (`oci/bluefin-server-usr.bst`): an erofs partition plus its dm-verity hash partition, with the root hash recorded in a `usrhash` file
-- two signed UKIs (`oci/bluefin-server-boot.bst`): a netboot UKI that pulls the OS DDI into RAM for a diskless boot, and a disk UKI for installed nodes
-- the OS DDI `bluefin-server_<ver>.raw` (usr + usr-verity + ESP), which doubles as the installer payload
+- three signed UKIs (`oci/bluefin-server-boot.bst`): a netboot UKI that pulls the OS DDI into RAM for a diskless boot, a disk UKI for installed nodes, and an installer UKI for the USB installer
+- the OS DDI `bluefin-server_<ver>.raw` (usr + usr-verity + ESP), which doubles as the installer payload for diskless installs
 - a netboot ESP image with signed systemd-boot and Secure Boot key enrollment payloads
+- an offline USB installer `bluefin-server-installer_<ver>.raw` (usr + usr-verity + ESP with systemd-boot, the installer UKI, the disk UKI and `repart.d`) that boots into `systemd-sysinstall`
 - optional opt-in `systemd-sysext` images: `oci/k0s-sysext.bst` (controller, or worker when `/etc/k0s/token` exists), `oci/kubestellar-sysext.bst` (Argo CD, KubeStellar, kiosk; needs k0s), `oci/kubeadm-sysext.bst` (kubeadm worker: kubelet, containerd) and `oci/zfs-sysext.bst`
 - a `SHA256SUMS` over the whole set, signed in-element (`SHA256SUMS.gpg`); nodes verify it against `/etc/systemd/import-pubring.pgp`
 

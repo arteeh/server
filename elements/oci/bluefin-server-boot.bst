@@ -8,6 +8,10 @@ description: |
                                       credential), dm-verity /usr, tmpfs root
     bluefin-server-<ver>.efi          installed: A/B usr slot found by partition label,
                                       persistent root found by gpt-auto
+    bluefin-server-installer_<ver>.efi
+                                      USB installer: usr from the installer medium's
+                                      bluefin-installer-* partitions, tmpfs root,
+                                      boots into system-install.target (systemd-sysinstall)
     efi-keys/{PK,KEK,db}.auth         Secure Boot enrollment payloads
     repart.d/                         disk layout: ESP, usr A/B + verity, root.
                                       Slot A is copied from the running image
@@ -15,7 +19,7 @@ description: |
                                       derives from usrhash, for
                                       systemd-sysinstall --definitions=
 
-  Both pin usrhash= of the same /usr image and are signed with DB, so
+  All three pin usrhash= of the same /usr image and are signed with DB, so
   Secure Boot locks their command lines.
 
 (@):
@@ -65,7 +69,6 @@ variables:
   common-cmdline: >-
     mount.usr=/dev/mapper/usr mount.usrfstype=erofs mount.usrflags=ro
     lockdown=integrity
-    console=tty0 console=ttyS0,115200
   netboot-cmdline: >-
     root=tmpfs
     rd.systemd.pull=raw,machine,verify=signature,blockdev,bootorigin:rootdisk:%{image-name}.raw
@@ -74,9 +77,25 @@ variables:
     systemd.default_device_timeout_sec=300
     rd.systemd.mask=systemd-repart.service systemd.mask=systemd-repart.service
     systemd.mask=boot.automount systemd.mask=boot.mount
+    console=tty0 console=ttyS0,115200
   disk-cmdline: >-
     rw
     rd.systemd.mask=systemd-networkd-wait-online.service
+    console=tty0 console=ttyS0,115200
+  # The installer medium opens its own usr/verity by partition label, not by
+  # the usrhash-derived UUIDs: those belong to installed usr slots, so an
+  # existing install (or the disk being installed) is never picked up as the
+  # installer's /usr. tty0 comes last so /dev/console, where
+  # systemd-sysinstall.service draws its interface, is the monitor.
+  installer-cmdline: >-
+    root=tmpfs
+    systemd.verity_usr_data=/dev/disk/by-partlabel/bluefin-installer-usr
+    systemd.verity_usr_hash=/dev/disk/by-partlabel/bluefin-installer-usr-verity
+    rd.systemd.mask=systemd-repart.service systemd.mask=systemd-repart.service
+    systemd.mask=boot.automount systemd.mask=boot.mount
+    systemd.unit=system-install.target
+    systemd.setenv=BLUEFIN_INSTALL_KERNEL=/run/bluefin/installer/bluefin/bluefin-server-%{image-version}.efi
+    console=ttyS0,115200 console=tty0
 
 config:
   commands:
@@ -170,5 +189,6 @@ config:
     }
     uki bluefin-server-netboot_%{image-version} "%{netboot-cmdline}"
     uki bluefin-server-%{image-version} "%{disk-cmdline}"
+    uki bluefin-server-installer_%{image-version} "%{installer-cmdline}"
     cp /efi-keys/usr/share/bluefin-server/efi-keys/*.auth "%{install-root}/efi-keys/"
     ls -l "%{install-root}"

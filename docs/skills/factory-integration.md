@@ -85,7 +85,7 @@ the base /usr image (hard rule 4 forbids container runtimes in the base image).
 | Rationalization | Reality |
 |---|---|
 | “k0s should be in the base image.” | Keep the base /usr minimal. k0s is optional and delivered OTA as a sysext. |
-| “Nodes need an offline installer image.” | The diskless boot carries everything `systemd-sysinstall` needs; a node installs itself from the image already in RAM. |
+| “The USB installer needs its own installer logic.” | It is the same image booted from a stick into stock `systemd-sysinstall.service`; the install path and the installed disk are identical to a diskless install. |
 | “Let’s add heavy debug tools.” | Base OS includes bash for login; heavy developer/debug tools belong in sysexts or system containers. |
 | “Package updates are small patches.” | Image-based updates are whole-OS replacements; the rollback unit is the OS image, not a package delta. |
 
