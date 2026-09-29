@@ -6,7 +6,10 @@ description: |
   sshd-generated@.service drop-ins), the installer
   source ESP mounts (run-bluefin-boot.mount for netboot,
   run-bluefin-installer.mount for the USB installer), and the
-  systemd-sysinstall.service drop-in the USB installer boots into.
+  systemd-sysinstall.service drop-in the USB installer boots into, and the
+  update units: systemd-sysupdate(-reboot) drop-ins (diskless conditions, the
+  kured flag, the reboot interlock: operator lock files, failed-update guard,
+  Kubernetes), the boot deadline and the diskless update check.
 
 sources:
   - kind: local

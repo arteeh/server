@@ -4,7 +4,7 @@ description: Build, export, and dogfood the Bluefin Server image set (OS DDI, si
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-28"
+  last_updated: "2026-09-29"
   context7-sources:
     - /systemd/systemd
     - /apache/buildstream
@@ -106,13 +106,29 @@ Useful environment variables:
   the boot must fail with the RAM message (see `diskless-troubleshooting.md`).
 - `DOGFOOD_EXTRA_PROBE=<file>` — shell snippet appended to the in-guest probe.
 
+Every diskless `--check` boot also runs `bluefin-diskless-update-check` once
+and reports `PROBE update-check=<result> flag=<set|none>`. Its origin is the
+versioned `import.pull` file, so a newer release in the served directory only
+logs that the node is pinned; an HTTP boot through a fixed-name UKI
+(`DOGFOOD_BOOT=http`, `DOGFOOD_BOOT_URL=.../bluefin-server-netboot.efi`)
+sets the flag.
+
 `scripts/dogfood-install.sh <dir> [<next-dir> [<broken-dir>]]` is the full
 end-to-end check: install from a diskless boot, boot the installed disk,
-`systemd-sysupdate` A->B to `<next-dir>` with the default `Verify=yes` against
-the signed manifest (with the `zfs` feature enabled, so the ZFS sysext follows
-the OS in lock-step), and with `<broken-dir>` corrupt the updated slot and
-confirm boot counting rolls the node back to `<next-dir>` on its own, with the
-matching ZFS sysext still merged. CI runs the first two stages
+`systemd-sysupdate` A->B to `<next-dir>` through `systemd-sysupdate.service`
+(the unit the timer starts) with the default `Verify=yes` against the signed
+manifest (with the `zfs` feature enabled, so the ZFS sysext follows the OS in
+lock-step), then asserts the kured flag, the Kubernetes reboot interlock, both
+timers enabled and the new UKI blessed after `boot-complete.target`, and with
+`<broken-dir>` break the update and confirm boot counting rolls the node back
+to `<next-dir>` on its own, with the matching ZFS sysext still merged.
+`DOGFOOD_BROKEN=slot` (default) corrupts the updated usr slot, so the initrd
+fails. `DOGFOOD_BROKEN=unit` adds a unit that fails on `<broken-dir>`'s version
+only and shortens the boot deadline (`DOGFOOD_DEADLINE`, default `2min`): each
+counted boot reaches `multi-user.target`, misses `boot-complete.target`, and
+`bluefin-boot-deadline` reboots it. The run asserts three such boots, the
+fallback boot with the deadline timer inactive, and then no kured flag and a
+skipped `systemd-sysupdate-reboot.service` for the failed version. CI runs the first two stages
 (`dogfood-diskless.sh --check`, `dogfood-install.sh dist/diskless`) as the
 `boot-test` job in `.github/workflows/build.yml` on every pull request and
 push to main.
@@ -149,7 +165,7 @@ nodes may already trust.
 | "Skip `gen-dev-keys`, the build has defaults." | Signing needs real key material in `files/boot-keys/`; the recipe generates throwaway keys so local builds boot under Secure Boot. |
 | "Test the UKI with `-kernel`/`-initrd`." | That bypasses the signed boot chain. The dogfood scripts boot the netboot ESP or installed disk through OVMF the way firmware does. |
 | "Reboot loops mean the boot hung." | With Secure Boot in setup mode the first boot enrolls keys and reboots; that is expected once per fresh variable store. |
-| "A failed update needs manual recovery." | Boot counting handles it: three failed boots of the new UKI and systemd-boot falls back to the previous image. `dogfood-install.sh <dir> <next> <broken>` proves it. |
+| "A failed update needs manual recovery." | Boot counting handles it: three failed boots of the new UKI and systemd-boot falls back to the previous image; `bluefin-boot-deadline` reboots a boot that comes up with a failed unit. `dogfood-install.sh <dir> <next> <broken>` proves it (`DOGFOOD_BROKEN=unit` for the failed-unit case). |
 | "`chmod 4755` in install-commands makes a file setuid in the image." | No. BuildStream artifacts keep one executable bit per file, so every staged file is 0644/0755. FSDK components declare their special modes as initial scripts, and `oci/bluefin-server-usr.bst` runs them (`os-initial-scripts.bst`) while assembling /sysroot; special modes must be set in the `script` element that writes the image. |
 
 ## Red flags

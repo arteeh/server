@@ -4,7 +4,7 @@ description: Operator runbook for the k0s and KubeStellar systemd-sysext extensi
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-29"
   context7-sources:
     - /systemd/systemd
 ---
@@ -42,6 +42,12 @@ systemctl enable --now k0s-first-boot.service
 The unit copies `/var/lib/k0s/k0s.raw` to `/run/extensions/k0s.raw`, runs
 `systemd-sysext refresh`, and then enables either `k0scontroller.service` or
 `k0sworker.service` depending on whether `/etc/k0s/token` exists.
+
+While either k0s unit runs, the base image's automatic reboot stands down,
+and so does the boot-deadline rollback reboot, which flags
+`/run/reboot-required` instead; deploy kured to roll staged OS updates (and
+rollbacks) across the cluster (see "Updates" in
+[ddi-installer.md](ddi-installer.md)).
 
 ### Worker nodes
 

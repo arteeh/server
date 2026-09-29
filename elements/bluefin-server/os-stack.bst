@@ -19,6 +19,11 @@ depends:
   # A/B System Update Configurations
   - bluefin-server/os-sysupdate.bst
 
+  # Diskless update signal (bluefin-diskless-update-check) and the shared
+  # boot-origin helper it uses
+  - bluefin-server/os-update-check.bst
+  - bluefin-server/boot-origin.bst
+
   # k0s component system update configuration
   - bluefin-server/os-k0s-sysupdate.bst
 
@@ -38,9 +43,6 @@ depends:
 
   # First-Boot Credentials Provisioning
   - bluefin-server/os-creds-prov.bst
-
-  # Reboot Coordination for Kured
-  - bluefin-server/os-kured-hook.bst
 
   # System Management Justfile
   - bluefin-server/os-justfile.bst

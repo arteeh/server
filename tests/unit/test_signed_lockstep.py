@@ -63,8 +63,10 @@ def test_sysext_units_are_started_after_a_boot_time_merge() -> None:
 
 def test_http_booted_nodes_look_for_ignition_next_to_the_uki() -> None:
     helper = (IGN / "libexec" / "bluefin-ignition-credentials").read_text(encoding="utf-8")
-    assert "StubDeviceURL-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" in helper
-    assert "rd.systemd.pull=*:http://*" in helper, "iPXE-chainloaded nodes use the explicit pull URL"
+    origin = (ROOT / "files" / "boot-origin" / "usr" / "libexec" / "bluefin-boot-origin").read_text(encoding="utf-8")
+    assert "/usr/libexec/bluefin-boot-origin" in helper
+    assert "StubDeviceURL-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" in origin
+    assert "rd.systemd.pull=*)" in origin and "*:http://*|*:https://*)" in origin, "iPXE-chainloaded nodes use the explicit pull URL"
     assert "NODE_CONFIG=bluefin-node.ign" in helper
     assert "curl -sfI" in helper
     for stage in ("disks", "fetch", "fetch-offline", "files", "mount"):

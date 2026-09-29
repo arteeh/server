@@ -4,7 +4,7 @@ description: Roadmap for future Bluefin Server architecture work. Use when plann
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-29"
   context7-sources:
     - /systemd/systemd
 ---
@@ -30,6 +30,7 @@ For reference, so future planning does not redo them:
 - OCI artifact output (`ghcr.io/<owner>/bluefin-server:<ver>,latest`) alongside the raw release files, via ORAS in CI and `just publish-oci` locally.
 - Booty HTTP boot: per-MAC serving of the UKI, DDI, `SHA256SUMS(.gpg)`, and per-host `bluefin-node.ign`, verified end to end in QEMU with Secure Boot; the Booty branch is not yet merged upstream.
 - ZFS and KubeStellar sysexts version-locked to the image, delivered in lock-step with OS updates through sysupdate features; rollback keeps the matching sysext.
+- Automatic updates on installed nodes (preset-enabled `systemd-sysupdate.timer` and `systemd-sysupdate-reboot.timer`), operator reboot lock files and a kured interlock for Kubernetes nodes (from #182), a boot health gate (`systemd-boot-check-no-failures.service`) whose deadline reboots an unhealthy counted boot back to the previous image (`bluefin-boot-deadline.timer`), and a signed update signal for diskless nodes that are not pinned to a versioned image (`bluefin-diskless-update-check`); see [ddi-installer.md](ddi-installer.md) "Updates".
 
 ## Planned work
 
@@ -41,7 +42,7 @@ Priorities are derived from [gap-analysis-distros.md](gap-analysis-distros.md).
 | 2 | aarch64 build axis | `project.conf` and `include/arch.yml` already model it; no CI coverage yet. |
 | 3 | Booty merge and its Secure Boot shim story | The Bluefin HTTP-boot support works from [Booty](https://github.com/jeefy/booty) `feat/bluefin-http-boot`; it still needs to merge, and enrollment-free first boots need a shim-signed path. |
 | 4 | Credential provisioning smoke tests on real hardware | SSH keys, static network, and firstboot settings are wired through systemd credentials; TPM2-sealed credential decryption still needs hardware proof. |
-| 5 | Native reboot coordination for non-Kubernetes and single-node hosts | Kured only covers Kubernetes nodes; no FleetLock/locksmith equivalent. |
+| 5 | Cluster-wide reboot lock for non-Kubernetes fleets | Single hosts reboot in the nightly window and Kubernetes nodes use kured; several non-Kubernetes hosts sharing a service still have no FleetLock/locksmith-style lock, so they may reboot in the same window. |
 
 ## Status notes
 

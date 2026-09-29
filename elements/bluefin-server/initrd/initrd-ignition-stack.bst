@@ -16,6 +16,8 @@ depends:
 - ignition/ignition.bst
 - ignition/gptfdisk.bst
 - bluefin-server/initrd/initrd-ignition.bst
+# bluefin-boot-origin: the HTTP boot origin, for bluefin-node.ign next to the UKI
+- bluefin-server/boot-origin.bst
 
 # bash, coreutils
 - freedesktop-sdk.bst:public-stacks/runtime-gnu.bst

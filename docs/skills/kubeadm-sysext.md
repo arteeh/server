@@ -4,7 +4,7 @@ description: Build, ship and operate the opt-in kubeadm worker systemd-sysext (k
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-28"
+  last_updated: "2026-09-29"
 ---
 # kubeadm worker sysext
 
@@ -89,6 +89,10 @@ but never newer. Patch releases change neither constraint.
   `--volume-plugin-dir=/var/lib/kubelet/volumeplugins` because `/usr` is read-only.
 - `/etc/resolv.conf` links to systemd-resolved's `/run/systemd/resolve/resolv.conf`
   (base image), the path kubelet's `resolvConf` expects.
+- While `kubelet.service` runs or restarts, the base image's automatic reboot
+  and the boot-deadline rollback reboot stand down and reboots belong to kured
+  (the deadline flags `/run/reboot-required`); see "Updates" in
+  [ddi-installer.md](ddi-installer.md).
 
 ## Host tools
 

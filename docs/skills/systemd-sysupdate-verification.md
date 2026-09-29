@@ -4,7 +4,7 @@ description: Configure and operate GPG signature verification for Bluefin Server
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-28"
   context7-sources:
     - /systemd/systemd
 ---
@@ -65,6 +65,14 @@ Only the k0s sysext stays a separate component
 (`files/os/sysupdate.k0s.d/`, `systemd-sysupdate --component=k0s update`) with
 its own version axis. Diskless nodes update by rebooting into a newer
 image; `systemd-sysupdate.service` is disabled when booted diskless.
+Update scheduling, the kured flag, and the boot health gate are covered in
+[ddi-installer.md](ddi-installer.md) under "Updates".
+
+The diskless update check (`bluefin-diskless-update-check`) uses the same trust
+root: it trusts a newer release only after `gpgv` verifies the boot server's
+`SHA256SUMS.gpg` against the keyring systemd reads
+(`/etc/systemd/import-pubring.pgp`, else the vendor keyring). An unsigned or
+foreign-signed manifest never sets `/run/reboot-required`.
 
 ## Signing happens inside the image build
 

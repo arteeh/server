@@ -144,6 +144,12 @@ echo "PROBE root-passwd=$(passwd -S root 2>&1 | cut -d' ' -f2)"
 boots=$(( $(cat /var/lib/dogfood-boots 2>/dev/null || echo 0) + 1 ))
 echo "${boots}" > /var/lib/dogfood-boots
 echo "PROBE boots=${boots}"
+echo "PROBE update-timers=$(systemctl is-active systemd-sysupdate.timer systemd-sysupdate-reboot.timer bluefin-diskless-update-check.timer | tr '\n' ' ')"
+if [ -e /run/machines/rootdisk.raw ]; then
+    systemctl start bluefin-diskless-update-check.service || true
+    echo "PROBE update-check=$(systemctl show -P Result bluefin-diskless-update-check.service) flag=$(test -e /run/reboot-required && echo set || echo none)"
+    journalctl -b -o cat --no-pager -u bluefin-diskless-update-check.service | grep -v '^gpgv:' | tail -n 3 | sed 's/^/PROBE-LOG /'
+fi
 PROBE
 [ -n "${DOGFOOD_EXTRA_PROBE:-}" ] && cat "${DOGFOOD_EXTRA_PROBE}" >> "${work}/probe.sh"
 echo 'sync' >> "${work}/probe.sh"
