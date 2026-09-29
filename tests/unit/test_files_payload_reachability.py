@@ -13,11 +13,6 @@ element names is invisible to ``just validate`` (which only runs
 also invisible to the unit suite, because bats tests execute helper scripts
 straight out of the checkout whether or not they ship.
 
-That gap is not hypothetical: ``files/bin/system-container`` is documented in
-``docs/skills/system-containers.md`` as "shipped in the OS image" at
-``/usr/bin/system-container`` and has bats coverage, yet no element stages it —
-see issue #154.
-
 This module enforces both directions of the contract:
 
 * every ``path:`` an element declares still exists on disk, so renaming a
@@ -63,12 +58,7 @@ KEY_GENERATOR = ROOT / "scripts" / "gen-dev-keys.sh"
 
 # Payload that claims to ship but is staged by no element. Each entry must name
 # the issue tracking its resolution. Shrink this set; never grow it.
-KNOWN_UNSTAGED = {
-    # docs/skills/system-containers.md promises /usr/bin/system-container in the
-    # OS image. No element stages it. Tracked by issue #154 — fixing that issue
-    # (staging it, or correcting the docs) must remove this entry.
-    "files/bin/system-container",
-}
+KNOWN_UNSTAGED = set()
 
 
 def _element_files():

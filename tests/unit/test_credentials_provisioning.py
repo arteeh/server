@@ -85,8 +85,10 @@ def test_firstboot_credentials_are_noninteractive_and_presence_gated() -> None:
         assert f"ConditionCredential=|{credential}" in unit
         assert f"ImportCredential={credential}" in unit
 
-    # Flatcar's /usr ships no systemd-firstboot: the unit must not call it, or
-    # it fails at step EXEC and every firstboot.* credential is a silent no-op.
+    # The unit must not call systemd-firstboot: Bluefin's helper applies
+    # firstboot.hostname unconditionally and sets the live kernel hostname,
+    # which systemd-firstboot does not do. It also runs before sysinit.target
+    # with minimal dependencies (bash + coreutils only).
     assert "systemd-firstboot" not in unit
     assert "ExecStart=/usr/libexec/bluefin-firstboot-credentials" in unit
     assert unit.index("ExecStart=/usr/libexec/bluefin-firstboot-credentials") < unit.index(

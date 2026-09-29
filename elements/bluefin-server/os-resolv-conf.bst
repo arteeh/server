@@ -1,10 +1,10 @@
 kind: import
 description: |
-  Install the tmpfiles.d rule that recreates Flatcar's /etc/resolv.conf
-  symlink to systemd-resolved's resolv.conf. The Flatcar /usr payload does
-  not carry it (Flatcar ships the symlink in the image /etc, which this DDI
-  does not import), and kubelet requires /etc/resolv.conf to create any pod
-  sandbox.
+  Install the tmpfiles.d rule that creates /etc/resolv.conf as a symlink to
+  systemd-resolved's resolv.conf. FSDK 26.08 ships no /etc/resolv.conf rule
+  (upstream systemd leaves the symlink to the distro), and this DDI boots
+  with an empty /etc, so nothing ever creates the symlink and kubelet fails
+  every pod sandbox with "open /etc/resolv.conf: no such file or directory".
 
 sources:
   - kind: local

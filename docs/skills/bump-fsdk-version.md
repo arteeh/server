@@ -62,7 +62,7 @@ Before merging a bump:
 
 - [ ] `just validate` passes (element graph resolves with new ref)
 - [ ] `just tags` output matches the expected `latest / YY.MM / YY.MM.PP` triple
-- [ ] The `patches/freedesktop-sdk/0001-project.conf-Add-GNOME-CAS-servers.patch` applied cleanly (no patch failure in `just validate`)
+- [ ] All patches in `patches/freedesktop-sdk/` apply cleanly (no patch failure in `just validate`)
 - [ ] `just build-image` completes without error
 - [ ] The built image's `/usr/lib/os-release` carries the new `image-version`
 
@@ -71,7 +71,12 @@ Before merging a bump:
   - `components/systemd-base.bst` was dropped in FSDK 26.08, and FSDK now ships its own systemd directly, so the previous `gnome-build-meta` systemd overrides were removed from `elements/freedesktop-sdk.bst`.
 - A point-release tag is immutable: once a GitHub Release for a given
   `image-version` is published, never republish different bits under it.
-- **Only one CAS-config patch remains.** FSDK 26.08 absorbed the old `0001` CAS-limits patch (upstream `project.conf` sets `retry-limit`/`retry-delay`/`request-timeout` itself), so `patches/freedesktop-sdk/` carries only `0001-project.conf-Add-GNOME-CAS-servers.patch`.
+- **Six patches live under `patches/freedesktop-sdk/`.** `0001` adds the GNOME
+  CAS servers to `project.conf`; `0002`–`0005` are FSDK build fixes; **`0006`
+  carries the Cilium/Kubernetes kernel options** (VXLAN, GENEVE, tc BPF,
+  conntrack/ss diagnostics). A bumper must not drop `0006` or the kubeadm and
+  k0s sysexts lose their datapath. If a release changed a patched file,
+  refresh the patch in place; never delete `0006` because "it looks small".
 - Junction overrides are only meaningful for components your local elements
   reference directly. The 25 GNOME sdk/* overrides (cairo, gtk3, pango, glib,
   gdk-pixbuf…) were dead weight — none of our `base-stack`, `brew-deps` etc. ever

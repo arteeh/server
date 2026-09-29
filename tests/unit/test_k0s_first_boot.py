@@ -163,9 +163,8 @@ def test_presets_sort_between_ignition_and_fsdk_defaults() -> None:
 
 
 def test_etc_resolv_conf_symlink_is_seeded_for_kubelet() -> None:
-    # Flatcar ships /etc/resolv.conf inside the image /etc and strips
-    # /etc-populating lines from /usr/lib/tmpfiles.d at image build. This DDI
-    # imports only Flatcar's /usr and first-boots with an empty /etc, so
+    # FSDK 26.08 ships no /etc/resolv.conf rule (upstream systemd leaves the
+    # symlink to the distro), and this DDI boots with an empty /etc, so
     # without an explicit tmpfiles.d rule the symlink never exists and
     # kubelet fails every pod sandbox with
     # "open /etc/resolv.conf: no such file or directory".

@@ -45,5 +45,8 @@ depends:
   # System Management Justfile
   - bluefin-server/os-justfile.bst
 
+  # system-container helper (machinectl wrapper)
+  - bluefin-server/os-system-container.bst
+
   # Console issue banner with KubeStellar dashboard URL
   - bluefin-server/os-issue.bst

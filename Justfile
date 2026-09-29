@@ -75,11 +75,6 @@ test-unit:
     bats tests/unit
 
 # ── Build ─────────────────────────────────────────────────────────────
-# Build and export the release image set (alias for export-image).
-[group('build')]
-build:
-    just export-image
-
 # Build the k0s and KubeStellar systemd-sysext images.
 [group('sysext')]
 build-sysext:
