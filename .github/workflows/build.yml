@@ -6,9 +6,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Pull requests cancel superseded runs. Pushes to main queue instead: a run
+# on main ends in a release, and cancelling it would skip that version.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege by default: this workflow executes PR-controlled build code
 # (the Justfile and build scripts come from the PR head), so the workflow-wide
@@ -286,6 +288,7 @@ jobs:
           path: |
             dist/*/dogfood-*.log
             dist/dogfood-install/*.log
+            dist/dogfood-installer/*.log
           if-no-files-found: ignore
           retention-days: 7
 
