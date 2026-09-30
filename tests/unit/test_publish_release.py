@@ -40,7 +40,9 @@ def release_files(version: str) -> list[str]:
         f"zfs_{version}.raw.zst",
         f"kubestellar_{version}.raw.zst",
         f"kubeadm_{version}.raw.zst",
+        f"nvidia-open-595_{version}.raw.zst",
         "k0s-1.36.4-k0s.0.raw.zst",
+        "nvidia-container-toolkit-1.20.1.raw.zst",
     ]
 
 
@@ -112,7 +114,7 @@ def verify(release: Path, keyring: Path, version: str = VERSION) -> subprocess.C
 def test_complete_release_set_verifies(release: Path, signers) -> None:
     result = verify(release, signers[0].keyring)
     assert result.returncode == 0, result.stderr
-    assert f"release set {VERSION}: 12 files match SHA256SUMS, signature verified" in result.stdout
+    assert f"release set {VERSION}: 14 files match SHA256SUMS, signature verified" in result.stdout
     subjects = release.parent / f"release-subjects-{VERSION}.sha256"
     assert f"subjects={subjects}" in result.stdout
     names = sorted(line.split("  ", 1)[1] for line in subjects.read_text().splitlines())

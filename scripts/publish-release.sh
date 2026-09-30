@@ -47,7 +47,7 @@ check_version() {
 
 # The file names one image version ships (see the description of
 # elements/oci/bluefin-server-image.bst). Each must appear exactly once;
-# k0s carries its own version axis.
+# k0s and the NVIDIA Container Toolkit carry their own version axis.
 expected_patterns() {
     local v="${1//./\\.}"
     local uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -63,7 +63,9 @@ expected_patterns() {
         "zfs_${v}\\.raw\\.zst" \
         "kubestellar_${v}\\.raw\\.zst" \
         "kubeadm_${v}\\.raw\\.zst" \
-        "k0s-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst"
+        "nvidia-open-595_${v}\\.raw\\.zst" \
+        "k0s-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst" \
+        "nvidia-container-toolkit-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst"
 }
 
 cmd_verify() {

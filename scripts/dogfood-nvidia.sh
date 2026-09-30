@@ -3,9 +3,10 @@
 #   1. dogfood-install.sh <dir>: diskless boot, systemd-sysinstall, disk boot
 #   2. disk boot: download the sysext into /var/lib/extensions
 #   3. disk boot: systemd-sysext merges it at boot, and the probe asserts
-#      that the extension-release matches the image, `modprobe nvidia` gets
-#      as far as the driver's own init (which finds no GPU) with no module
-#      signature rejection, ldconfig lists libcuda.so.1, the flavour guard
+#      that the extension-release matches the image, loading nvidia through
+#      bluefin-sysext-modules gets as far as the driver's own init (which
+#      finds no GPU) with no module signature rejection or unknown symbol,
+#      ldconfig lists libcuda.so.1, the flavour guard
 #      passed, and no unit failed: without a GPU the NVIDIA units skip
 #      themselves, so the expected set of failed units is empty.
 # Usage: dogfood-nvidia.sh <dir> <flavour>_<image-version>.raw.zst
@@ -44,13 +45,14 @@ echo "PROBE release=\$(tr '\n' ' ' < /usr/lib/extension-release.d/extension-rele
 echo "PROBE guard=\$(systemctl is-active nvidia-flavour-guard.service) ldconfig-unit=\$(systemctl is-active nvidia-ldconfig.service)"
 echo "PROBE load-unit=\$(systemctl show -P Result nvidia-load.service) \$(systemctl show -P ActiveState nvidia-load.service)"
 echo "PROBE nodes-unit=\$(systemctl show -P ConditionResult nvidia-device-nodes.service) persistenced=\$(systemctl show -P ConditionResult nvidia-persistenced.service)"
-echo "PROBE sig=\$(modinfo -F sig_hashalgo nvidia) \$(modinfo -F sig_hashalgo nvidia-uvm) \$(modinfo -F sig_hashalgo nvidia-modeset) \$(modinfo -F sig_hashalgo nvidia-drm)"
-echo "PROBE nouveau-blacklisted=\$(modprobe -c | grep -cx 'blacklist nouveau')"
-rc=0; modprobe nvidia > /run/modprobe.log 2>&1 || rc=\$?
-echo "PROBE modprobe=\${rc} \$(tr '\n' ' ' < /run/modprobe.log)"
+kmods="\$(/usr/libexec/bluefin-sysext-modules --basedir 2>/dev/null)"
+echo "PROBE sig=\$(for m in nvidia nvidia-uvm nvidia-modeset nvidia-drm; do modinfo -b "\${kmods}" -F sig_hashalgo "\${m}"; done | tr '\n' ' ')"
+echo "PROBE nouveau-blacklisted=\$(modprobe -d "\${kmods}" -c | grep -cx 'blacklist nouveau')"
+rc=0; /usr/libexec/bluefin-sysext-modules nvidia > /run/modprobe.log 2>&1 || rc=\$?
+echo "PROBE modprobe=\${rc} \$(grep -v ' indexed ' /run/modprobe.log | tr '\n' ' ')"
 journalctl -k -b -o cat --no-pager | grep -E 'NVRM|nvidia' | head -n 5 | sed 's/^/PROBE-LOG /'
 echo "PROBE no-gpu=\$(journalctl -k -b -o cat --no-pager | grep -c 'NVRM: No NVIDIA GPU found')"
-echo "PROBE sig-rejected=\$(journalctl -k -b -o cat --no-pager | cat - /run/modprobe.log | grep -ciE 'module verification failed|key was rejected|unsigned module|required key not available')"
+echo "PROBE sig-rejected=\$(journalctl -k -b -o cat --no-pager | cat - /run/modprobe.log | grep -ciE 'module verification failed|key was rejected|unsigned module|required key not available|unknown symbol')"
 echo "PROBE libcuda=\$(ldconfig -p | grep -c 'libcuda.so.1 ')"
 echo "PROBE firmware=\$(ls /usr/lib/firmware/nvidia/*/ | tr '\n' ' ')"
 echo "PROBE nvidia-smi=\$(nvidia-smi -L > /dev/null 2>&1; echo \$?)"
@@ -68,7 +70,7 @@ grep -q "PROBE release=NAME=${flavour} ID=bluefin-server EXTENSION_RELOAD_MANAGE
 grep -q "PROBE guard=active ldconfig-unit=active" "${log}"
 grep -q "PROBE load-unit=exec-condition inactive" "${log}"
 grep -q "PROBE nodes-unit=no persistenced=no" "${log}"
-grep -q "PROBE sig=sha512 sha512 sha512 sha512" "${log}"
+grep -q "PROBE sig=sha512 sha512 sha512 sha512 " "${log}"
 grep -q "PROBE nouveau-blacklisted=1" "${log}"
 grep -q "PROBE modprobe=1 modprobe: ERROR: could not insert 'nvidia': No such device" "${log}"
 grep -q "PROBE no-gpu=1" "${log}"

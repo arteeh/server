@@ -38,6 +38,10 @@ build-depends:
 - kubeadm/kubeadm-bin.bst
 - oci/zfs-sysext.bst
 - zfs/openzfs.bst
+- oci/nvidia-open-595-sysext.bst
+- nvidia/nvidia-open-595.bst
+- oci/nvidia-container-toolkit-sysext.bst
+- nvidia/nvidia-container-toolkit.bst
 
 config:
   path: /bluefin-server.spdx.json

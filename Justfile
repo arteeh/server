@@ -135,10 +135,13 @@ set-version VERSION:
     sed -i 's/^  image-version: .*/  image-version: "{{VERSION}}"/' include/image.yml
     grep image-version include/image.yml
 
-# Install diskless -> disk, then (with NEXT) sysupdate A->B and reboot, all in QEMU.
+# Install diskless -> disk, then (with NEXT) sysupdate A->B and reboot, and (with
+# BROKEN) break that update and prove the boot-counted rollback, all in QEMU.
+# DOGFOOD_SYSEXT=nvidia follows the NVIDIA driver and toolkit sysexts instead of ZFS,
+# DOGFOOD_SYSEXT=zfs,nvidia follows both.
 [group('diskless')]
-dogfood-install NEXT="":
-    bash scripts/dogfood-install.sh dist/diskless {{NEXT}}
+dogfood-install NEXT="" BROKEN="":
+    bash scripts/dogfood-install.sh dist/diskless {{NEXT}} {{BROKEN}}
 
 # Boot the offline USB installer, install unattended to a blank disk, boot it (QEMU).
 [group('diskless')]
@@ -215,10 +218,10 @@ export-nvidia-sysext FLAVOUR="nvidia-open-595": (build-nvidia-sysext FLAVOUR)
     rm -rf dist/{{FLAVOUR}}-checkout
     @echo "==> wrote {{FLAVOUR}} sysext:" && ls -lh dist/sysext/
 
-# Install dist/diskless/ in QEMU, merge the exported NVIDIA sysext and probe it (no GPU).
+# Install dist/diskless/ in QEMU, merge its NVIDIA sysext and probe it (no GPU).
 [group('sysext')]
 dogfood-nvidia FLAVOUR="nvidia-open-595":
-    bash scripts/dogfood-nvidia.sh dist/diskless "dist/sysext/{{FLAVOUR}}_$(sed -n 's/^  image-version: "\(.*\)"$/\1/p' include/image.yml).raw.zst"
+    bash scripts/dogfood-nvidia.sh dist/diskless "dist/diskless/{{FLAVOUR}}_$(sed -n 's/^  image-version: "\(.*\)"$/\1/p' include/image.yml).raw.zst"
 
 # Build the NVIDIA Container Toolkit (CDI) systemd-sysext (own version axis).
 [group('sysext')]

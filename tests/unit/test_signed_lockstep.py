@@ -42,7 +42,7 @@ def test_keyring_updates_with_usr_and_replaces_fsdk_vendor_key() -> None:
     assert "freedesktop-sdk.bst:components/gnupg.bst" in INITRD.read_text()
 
 
-@pytest.mark.parametrize("name,transfer", [("zfs", "30-zfs.transfer"), ("kubestellar", "31-kubestellar.transfer"), ("kubeadm", "32-kubeadm.transfer")])
+@pytest.mark.parametrize("name,transfer", [("zfs", "30-zfs.transfer"), ("kubestellar", "31-kubestellar.transfer"), ("kubeadm", "32-kubeadm.transfer"), ("nvidia-open-595", "33-nvidia-open-595.transfer")])
 def test_version_locked_sysexts_are_optional_features(name: str, transfer: str) -> None:
     feature = ini(SYSUPDATE / f"{name}.feature")["Feature"]
     assert feature.get("Enabled", "false") == "false", "features are opt-in"
@@ -53,7 +53,7 @@ def test_version_locked_sysexts_are_optional_features(name: str, transfer: str) 
     assert t["Target"]["MatchPattern"] == f"{name}_@v.raw"
 
 
-@pytest.mark.parametrize("element,name", [("zfs-sysext.bst", "zfs"), ("kubestellar-sysext.bst", "kubestellar"), ("kubeadm-sysext.bst", "kubeadm")])
+@pytest.mark.parametrize("element,name", [("zfs-sysext.bst", "zfs"), ("kubestellar-sysext.bst", "kubestellar"), ("kubeadm-sysext.bst", "kubeadm"), ("nvidia-open-595-sysext.bst", "nvidia-open-595")])
 def test_extension_release_name_carries_the_image_version(element: str, name: str) -> None:
     text = (ROOT / "elements" / "oci" / element).read_text(encoding="utf-8")
     assert f'sysext-release: "{name}_%{{image-version}}"' in text

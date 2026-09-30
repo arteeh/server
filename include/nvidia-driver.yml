@@ -212,26 +212,15 @@ variables:
     mkdir -p sysext
     cp -a "/nvidia-driver%{prefix}" "sysext%{prefix}"
 
-    # depmod over the base image's modules plus NVIDIA's; ship only its
-    # outputs, which shadow the base image's copies through the overlay. Safe
-    # only because the sysext is locked to one image VERSION_ID. The OpenZFS
-    # sysext shadows the same files, so the two are mutually exclusive;
-    # nvidia-flavour-guard.service refuses a merge that holds both.
-    mkdir -p "depmod-root%{indep-libdir}"
-    cp -a "/kernel-modules${moddir}" "depmod-root${moddir}"
-    mkdir -p "depmod-root${moddir}/${kver}/extra"
-    cp -a "sysext${moddir}/${kver}/extra/." "depmod-root${moddir}/${kver}/extra/"
-    depmod -b "${PWD}/depmod-root%{prefix}" "${kver}"
-    case "$(cat "depmod-root${moddir}/${kver}/modules.dep")" in
-      *"extra/nvidia/nvidia.ko.zst:"*) ;;
-      *) echo "ERROR: depmod did not index extra/nvidia/nvidia.ko.zst" >&2; exit 1 ;;
-    esac
-    for f in "depmod-root${moddir}/${kver}"/modules.*; do
-      case "${f##*/}" in
-        modules.order|modules.builtin|modules.builtin.modinfo|modules.builtin.ranges) ;;
-        *) cp -a "${f}" "sysext${moddir}/${kver}/" ;;
-      esac
-    done
+    # Only the modules under extra/nvidia/, no modules.* index: that would
+    # hide the base image's and every other module sysext's. nvidia-load.service
+    # loads them through the base image's bluefin-sysext-modules.
+    modroot="sysext${moddir}/${kver}"
+    if [ -n "$(find "sysext${moddir}" -name 'modules.*' -print -quit)" ] ||
+       [ "$(ls -A "${modroot}")" != extra ] || [ "$(ls -A "${modroot}/extra")" != nvidia ]; then
+      echo "ERROR: the sysext must ship only ${moddir}/${kver}/extra/nvidia" >&2
+      exit 1
+    fi
 
     src=sysext-src
     lib="sysext%{indep-libdir}"

@@ -16,9 +16,10 @@ the OS image.
 
 ## When to Use
 
-- Modifying `files/os/sysupdate.d/*.transfer` (including the `zfs` and
-  `kubestellar` feature transfers) or the k0s component directory
-  (`files/os/sysupdate.k0s.d/`).
+- Modifying `files/os/sysupdate.d/*.transfer` (including the `zfs`,
+  `kubestellar`, `kubeadm` and `nvidia-open-595` feature transfers) or a
+  component directory (`files/os/sysupdate.k0s.d/`,
+  `files/os/sysupdate.nvidia-container-toolkit.d/`).
 - Rotating or replacing the image signing key.
 - Debugging `systemd-sysupdate` or diskless `rd.systemd.pull` failures related
   to `SHA256SUMS.gpg` verification.
@@ -56,15 +57,16 @@ Installed nodes carry A/B usr and usr-verity slots plus matching UKIs. The usr
 and usr-verity transfers live in `sysupdate.d` and fill the inactive slot; the
 UKI transfer installs the new disk UKI into `/EFI/Linux` with boot counting
 (`TriesLeft=3`), so a failed image rolls back to the previous slot on its own.
-The optional OpenZFS and KubeStellar sysexts are version-locked to the image
-and follow OS updates through the optional `zfs` and `kubestellar` sysupdate
-**features** (`files/os/sysupdate.d/zfs.feature`, `kubestellar.feature`,
-`30-zfs.transfer`, `31-kubestellar.transfer`), enabled per node with
-`updatectl enable zfs` or a drop-in such as
+The optional OpenZFS, KubeStellar, kubeadm and NVIDIA driver sysexts are
+version-locked to the image and follow OS updates through the optional `zfs`,
+`kubestellar`, `kubeadm` and `nvidia-open-595` sysupdate **features**
+(`files/os/sysupdate.d/<name>.feature` and `3N-<name>.transfer`), enabled per
+node with `updatectl enable zfs` or a drop-in such as
 `/etc/sysupdate.d/zfs.feature.d/enable.conf` containing `[Feature] Enabled=true`.
-Only the k0s sysext stays a separate component
-(`files/os/sysupdate.k0s.d/`, `systemd-sysupdate --component=k0s update`) with
-its own version axis. Diskless nodes update by rebooting into a newer
+The k0s and NVIDIA Container Toolkit sysexts stay separate components
+(`files/os/sysupdate.k0s.d/`, `files/os/sysupdate.nvidia-container-toolkit.d/`;
+`systemd-sysupdate --component=<name> update`) with their own version axes.
+Diskless nodes update by rebooting into a newer
 image; `systemd-sysupdate.service` is disabled when booted diskless.
 Update scheduling, the kured flag, and the boot health gate are covered in
 [ddi-installer.md](ddi-installer.md) under "Updates".
@@ -78,7 +80,8 @@ foreign-signed manifest never sets `/run/reboot-required`.
 ## Signing happens inside the image build
 
 `oci/bluefin-server-image.bst` assembles the whole release set (OS images,
-UKIs, netboot ESP, and the k0s/KubeStellar/OpenZFS sysext assets), writes one
+UKIs, netboot ESP, and the k0s, KubeStellar, kubeadm, OpenZFS, NVIDIA driver
+and NVIDIA Container Toolkit sysext assets), writes one
 combined `SHA256SUMS` over all of it, and signs it in-element with
 `files/boot-keys/sysupdate-signing.asc` (gpg `--detach-sign`). It then proves
 the shipped keyring accepts the signature with
@@ -192,8 +195,9 @@ Use `--type spdxjson` to get the SBOM attestation instead.
   locally and in CI: [secure-boot-keys.md](secure-boot-keys.md).
 - `elements/bluefin-server/os-sysupdate-keys.bst` — installs
   `files/boot-keys/import-pubring.pgp` as `/usr/lib/systemd/import-pubring.pgp`.
-- `files/os/sysupdate.d/*.transfer` and the k0s component directory
-  (`files/os/sysupdate.k0s.d/`) — each transfer points its static `Path=` at
+- `files/os/sysupdate.d/*.transfer` and the component directories
+  (`files/os/sysupdate.k0s.d/`, `files/os/sysupdate.nvidia-container-toolkit.d/`)
+  — each transfer points its static `Path=` at
   `https://github.com/projectbluefin/server/releases/latest/download/` so all
   transfers share the same signed manifest.
 
@@ -262,8 +266,8 @@ own; see [secure-boot-keys.md](secure-boot-keys.md).
 
 ## Verification
 
-- [ ] `files/os/sysupdate.d/*.transfer` and `files/os/sysupdate.k0s.d/` do not
-      contain `Verify=no`.
+- [ ] `files/os/sysupdate.d/*.transfer` and the `files/os/sysupdate.*.d/`
+      component directories do not contain `Verify=no`.
 - [ ] `elements/bluefin-server/os-stack.bst` and
       `elements/bluefin-server/initrd/initrd-stack.bst` include
       `bluefin-server/os-sysupdate-keys.bst`.

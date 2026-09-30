@@ -6,7 +6,7 @@ Bluefin Server is an image-based Linux server OS composed from freedesktop-sdk (
 - the OS DDI `bluefin-server_<ver>.raw` (usr + usr-verity + ESP), which doubles as the installer payload for diskless installs
 - a netboot ESP image with signed systemd-boot and Secure Boot key enrollment payloads
 - an offline USB installer `bluefin-server-installer_<ver>.raw` (usr + usr-verity + ESP with systemd-boot, the installer UKI, the disk UKI and `repart.d`) that boots into `systemd-sysinstall`
-- optional opt-in `systemd-sysext` images: `oci/k0s-sysext.bst` (controller, or worker when `/etc/k0s/token` exists), `oci/kubestellar-sysext.bst` (Argo CD, KubeStellar, kiosk; needs k0s), `oci/kubeadm-sysext.bst` (kubeadm worker: kubelet, containerd), `oci/zfs-sysext.bst` and `oci/nvidia-open-595-sysext.bst` (NVIDIA open kernel modules; not yet in the release set, and mutually exclusive with `oci/zfs-sysext.bst`)
+- optional opt-in `systemd-sysext` images: `oci/k0s-sysext.bst` (controller, or worker when `/etc/k0s/token` exists), `oci/kubestellar-sysext.bst` (Argo CD, KubeStellar, kiosk; needs k0s), `oci/kubeadm-sysext.bst` (kubeadm worker: kubelet, containerd), `oci/zfs-sysext.bst`, `oci/nvidia-open-595-sysext.bst` (NVIDIA open kernel modules) and `oci/nvidia-container-toolkit-sysext.bst` (CDI; own version axis like k0s)
 - an SPDX 2.3 SBOM `bluefin-server_<ver>.spdx.json` (`oci/bluefin-server-sbom.bst`)
 - a `SHA256SUMS` over the whole set, signed in-element (`SHA256SUMS.gpg`); nodes verify it against the image keyring (see the sysupdate verification skill)
 
@@ -54,12 +54,12 @@ All local `just` targets run BuildStream inside the FSDK `bst2` container via `j
 | `just set-version V` | Set `image-version` in `include/image.yml` (≤17 chars, increasing under strverscmp). |
 | `just build-image` / `just export-image` | Build and export the release image set to `dist/diskless/`. |
 | `just dogfood` / `just dogfood-check` | Boot `dist/diskless/` diskless in QEMU with Secure Boot (interactive / headless probe). |
-| `just dogfood-install NEXT=<dir>` | QEMU end-to-end: diskless boot, install to disk, boot it, then A/B update to NEXT. |
+| `just dogfood-install [<next-dir> [<broken-dir>]]` | QEMU end-to-end: diskless boot, install to disk, boot it, A/B update to `<next-dir>`, then roll back from a broken `<broken-dir>` (`DOGFOOD_SYSEXT=nvidia` or `zfs,nvidia` follows the NVIDIA sysexts instead of, or with, ZFS). |
 | `just publish-oci REF [DIR] [PLAIN_HTTP]` | Push `dist/diskless/` as an ORAS OCI artifact tagged `<version>,latest` (one layer per file). Local rehearsal; CI publishes via `scripts/publish-release.sh`. |
 | `just build-sysext` / `just export-sysext` | Build and export the k0s and KubeStellar `systemd-sysext` images. |
 | `just build-zfs-sysext` / `just export-zfs-sysext` | Build and export the OpenZFS `systemd-sysext`. |
 | `just build-nvidia-sysext` / `just export-nvidia-sysext` | Build and export an NVIDIA open-kernel-module `systemd-sysext` (`FLAVOUR=nvidia-open-595`). |
-| `just dogfood-nvidia` | Install `dist/diskless/` in QEMU, merge the exported NVIDIA sysext and probe it (no GPU). |
+| `just dogfood-nvidia` | Install `dist/diskless/` in QEMU, merge its NVIDIA sysext and probe it (no GPU). |
 
 ## Skill routing
 

@@ -439,8 +439,12 @@ jobs:
         if: needs.changes.outputs.release == 'true'
         run: bash scripts/dogfood-install.sh dist/diskless
 
+      # Both kernel-module sysexts (ZFS and the NVIDIA driver, plus the
+      # toolkit) follow the update and the rollback together.
       - name: Install, A/B update and boot-counted rollback
         if: needs.changes.outputs.release != 'true'
+        env:
+          DOGFOOD_SYSEXT: zfs,nvidia
         run: bash scripts/dogfood-install.sh dist/diskless dist/diskless-next dist/diskless-broken
 
       - name: Install from the offline USB installer and boot it

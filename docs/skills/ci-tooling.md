@@ -4,7 +4,7 @@ description: CI workflow conventions for Bluefin Server. Use when writing or edi
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-28"
+  last_updated: "2026-09-30"
   context7-sources:
     - /websites/github_en_actions
     - /websites/cli_github_manual
@@ -124,7 +124,7 @@ sudo_cmd := if `podman info >/dev/null 2>&1 && echo 1 || echo 0` == "1" { "" } e
 | `track-junctions` | `track-junctions.yml` | `schedule` (08:00 UTC), `workflow_dispatch` | Resolves the `freedesktop-sdk.bst` junction ref, syncs `project.conf`'s `installer-version`, and opens/updates its own PR on `auto/track-junctions`. `contents: write` + `pull-requests: write`, never on `pull_request`. |
 | `changes` | `build.yml` | `pull_request` (`opened`, `synchronize`, `reopened`, `labeled`), `push/main`, `schedule` (05:30 UTC), `workflow_dispatch` | Decides what the run builds. `release=true` only for a push or dispatch on `main`; it is the one switch that hands out the signing secrets, picks the release version and publishes. `image=true` (full `build` + `boot-test`) for releases, the nightly schedule and dispatches; on a pull request only with the `full-build` label or when it changes `elements/freedesktop-sdk.bst` or `patches/`, and never when `.github/scripts/image-build-needed.py`, checked out from the PR's base revision, finds no changed path that can reach the image set or the boot test (see [Build time and caches](#build-time-and-caches)). `validate=true` for every pull request event except adding an unrelated label. `contents: read` + `pull-requests: read`. |
 | `validate` | `build.yml` | `pull_request` | `just validate` with throwaway keys: resolves every shipped element graph and runs the version-invariant checks, in minutes. Read-only token. |
-| `build` | `build.yml` | when `changes` says `image=true` | Resolves the element graph, sets `image-version`, and runs the full BuildStream compile of the image set (OS DDI, signed UKIs, netboot ESP, k0s/KubeStellar/OpenZFS sysext assets), which also writes and signs the combined `SHA256SUMS` inside `oci/bluefin-server-image.bst`. For releases it installs the `BOOT_KEYS_TARBALL` and `SYSUPDATE_SIGNING_KEY` secrets; both are required there. Every other build uses throwaway keys and also exports two higher-versioned sets (`1.<run>.1`, `1.<run>.2`) for the update test. Read-only token. |
+| `build` | `build.yml` | when `changes` says `image=true` | Resolves the element graph, sets `image-version`, and runs the full BuildStream compile of the image set (OS DDI, signed UKIs, netboot ESP, k0s/KubeStellar/kubeadm/OpenZFS/NVIDIA sysext assets), which also writes and signs the combined `SHA256SUMS` inside `oci/bluefin-server-image.bst`. For releases it installs the `BOOT_KEYS_TARBALL` and `SYSUPDATE_SIGNING_KEY` secrets; both are required there. Every other build uses throwaway keys and also exports two higher-versioned sets (`1.<run>.1`, `1.<run>.2`) for the update test. Read-only token. |
 | `boot-test` | `build.yml` | after `build` | Runs the Secure Boot QEMU checks on the exported sets (see Core Process step 4). Read-only token. |
 | `release` | `build.yml` | `release=true` | Publishes `dist/diskless/` as-is through `scripts/publish-release.sh`: an immutable GitHub Release tagged `v<image-version>` plus an ORAS OCI artifact at `ghcr.io/<owner>/bluefin-server:<ver>,latest` (one layer per file, artifact type `application/vnd.projectbluefin.server.release.v1`), with provenance and SBOM attestations for both (`if: ${{ !failure() && !cancelled() && needs.changes.outputs.release == 'true' }}`). Write permissions listed above. |
 | `release-dry-run` | `build.yml` | `pull_request` that builds | Runs the same `scripts/publish-release.sh` commands against the PR's image set: verify, render `gh release create`, and a real `oras push` to a `registry` service container (pinned by digest) that it pulls back. Read-only token, no secrets. |
@@ -147,7 +147,7 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     syncs `installer-version` to the tracked FSDK point release, and proposes the
     result as its own pull request against `main`.
  3. **Full Compilation:** Builds the OS DDI, signed UKIs, netboot ESP, and the
-    k0s, KubeStellar, and OpenZFS systemd-sysext assets for every push to
+    k0s, KubeStellar, kubeadm, OpenZFS and NVIDIA systemd-sysext assets for every push to
     `main`, every night, and on pull requests that carry `full-build` or change
     the FSDK junction or its patches, and signs the combined `SHA256SUMS`
     inside `oci/bluefin-server-image.bst` (gpg sign plus a `gpgv` proof
@@ -179,8 +179,10 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     - releases: diskless boot, `systemd-sysinstall` to disk, boot the disk;
     - every other build (the nightly build of `main`, `full-build` and FSDK
       pull requests, dispatches): the same, then `systemd-sysupdate` A->B to
-      `1.<run>.1` and a boot-counted rollback from a corrupted `1.<run>.2`
-      (see [ddi-installer-build.md](ddi-installer-build.md) for why not
+      `1.<run>.1` and a boot-counted rollback from a corrupted `1.<run>.2`,
+      with the ZFS and NVIDIA sysexts merged together
+      (`DOGFOOD_SYSEXT=zfs,nvidia`; see
+      [ddi-installer-build.md](ddi-installer-build.md), also for why not
       `0.<run>.N`). Releases skip this because their extra sets would be
       release-signed versions nobody publishes; the nightly dev-key build of
       `main` runs it instead.
@@ -217,6 +219,10 @@ graph. Go (for ignition) still builds from source. Changing only `image-version`
 rebuilds 13 version-stamped elements (os-release to `oci/bluefin-server-image.bst`
 and the sysexts), 2 min locally on a warm cache; CI's
 per-set cost is estimated at under 10 min.
+Every image build also builds the NVIDIA driver sysext (a ~400 MB `.run`
+download, about 1 min of module build, signing, and a repack per image
+version) and the NVIDIA Container Toolkit (Go); the driver sysext adds about
+183 MB to each image set.
 
 - **Docs-only pull requests skip the build.** The `changes` job feeds the PR's
   changed paths (renames under both names) to
@@ -258,7 +264,8 @@ per-set cost is estimated at under 10 min.
 - **No other cache push.** `bluefin-server/keys/boot-keys.bst` imports
   `files/boot-keys/`, which on `main` holds the Secure Boot, module-signing
   and sysupdate private keys, and the image, UKIs, `kernel-modules.bst`,
-  `efi-keys.bst`, `os-sd-boot-signed.bst` and `openzfs-signed.bst`
+  `efi-keys.bst`, `os-sd-boot-signed.bst`, `openzfs-signed.bst` and the
+  `nvidia-open-*-signed.bst` elements
   build-depend on it, so a release build's own cache must never be saved or
   pushed anywhere a pull request can read.
 - **Most pull requests do not build the image.** The full build costs about

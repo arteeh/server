@@ -10,10 +10,11 @@ description: |
   and VERSION_ID=<image-version>.
 
   Contents: the signed modules under /usr/lib/modules/<kver>/extra/nvidia/
-  and the depmod index over the base modules plus them, the headless
-  userspace, GSP firmware and license from nvidia/nvidia-open-595-signed.bst,
-  and the units and modprobe/sysusers/tmpfiles drop-ins shared by every
-  flavour (files/nvidia/sysext). Recipe: include/nvidia-driver.yml.
+  (no modules.* index: nvidia-load.service loads them through the base
+  image's /usr/libexec/bluefin-sysext-modules), the headless userspace, GSP
+  firmware and license from nvidia/nvidia-open-595-signed.bst, and the units
+  and modprobe/sysusers/tmpfiles drop-ins shared by every flavour
+  (files/nvidia/sysext). Recipe: include/nvidia-driver.yml.
 
 (@):
 - include/arch.yml
@@ -26,7 +27,6 @@ build-depends:
 - base/base-stack.bst
 - freedesktop-sdk.bst:components/erofs-utils.bst
 - freedesktop-sdk.bst:components/findutils.bst
-- freedesktop-sdk.bst:components/kmod.bst
 - freedesktop-sdk.bst:components/sed.bst
 - freedesktop-sdk.bst:components/zstd.bst
 - filename: bluefin-server/kernel-modules.bst
