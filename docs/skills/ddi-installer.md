@@ -45,7 +45,9 @@ GPT partition label with room to spare):
 
 A release publishes this directory as-is (GitHub Release `v<ver>` plus an ORAS
 OCI artifact); see the `release` job in [ci-tooling.md](ci-tooling.md).
-`just publish-oci REF [DIR] [PLAIN_HTTP]` pushes the same artifact locally.
+`just publish-oci REF [DIR] [PLAIN_HTTP]` pushes the same artifact locally, as
+a rehearsal; CI publishes through `scripts/publish-release.sh`, which also
+verifies the pushed manifest against the local files.
 
 The /usr image itself is built by `oci/bluefin-server-usr.bst` with an offline
 `systemd-repart`: an erofs partition (`bluefin_usr_<ver>`) plus its dm-verity
