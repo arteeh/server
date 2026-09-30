@@ -125,6 +125,24 @@ off. `/etc/iscsi/iscsid.conf` comes from the factory `/etc`
 (`30-bluefin-iscsi.conf` restores it and creates `/var/lib/iscsi`), which is
 what democratic-csi's `chroot /host ... iscsiadm` node plugin needs.
 
+## NFS
+
+The base image ships an NFS client built from source
+(`bluefin-server/nfs-utils.bst`, `bluefin-server/rpcbind.bst`; FSDK 26.08
+has neither): `mount.nfs`/`mount.nfs4`/`umount.nfs` in `/usr/bin` (reached
+through `/sbin -> usr/sbin -> bin`), `rpc.statd`, `sm-notify`, `nfsidmap`,
+`nfsstat`, `showmount`. Without `mount.nfs`, util-linux `mount -t nfs`
+falls through to the new mount API and the kernel refuses (`fsconfig()
+failed: NFS: mount program didn't pass remote address`), which is what
+kubelet reported for every NFS PV. Client only: no server daemons, no
+GSS/Kerberos (`sec=krb5*` mounts are unsupported). `80-bluefin-nfs.preset`
+enables `nfs-client.target` and `rpcbind.socket`; `mount.nfs` starts
+`rpc-statd.service` on demand for NFSv3 locking (NFSv4 needs neither).
+`/var/lib/nfs/statd` comes from tmpfiles.d, owned by `rpcuser`; on a
+diskless node it is lost at reboot, so NFSv3 servers are not notified when a
+rebooted diskless client held locks. NFSv4 id mapping uses the kernel
+`request-key` upcall to `nfsidmap` (`/etc/request-key.d/id_resolver.conf`).
+
 ## Known gaps
 
 - aarch64: the arm64 release binaries are pinned, but no aarch64 image has

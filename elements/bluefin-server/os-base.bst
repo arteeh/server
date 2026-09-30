@@ -39,4 +39,9 @@ depends:
 # iSCSI initiator (iscsiadm, iscsid; socket-activated) for iSCSI CSI volumes.
 - freedesktop-sdk.bst:components/open-iscsi.bst
 
+# NFS client (mount.nfs, rpc.statd; nfs-client.target) for NFS CSI/PV volumes.
+# Built from source: FSDK 26.08 has no nfs-utils or rpcbind element.
+- bluefin-server/nfs-utils.bst
+- bluefin-server/rpcbind.bst
+
 - bluefin-server/kernel-modules.bst
