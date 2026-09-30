@@ -4,7 +4,7 @@ description: The offline USB installer bluefin-server-installer_<ver>.raw. Load 
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-29"
+  last_updated: "2026-09-30"
   context7-sources:
     - /systemd/systemd
 ---
@@ -44,8 +44,12 @@ not warn about executable definition files). The
 `--definitions=/run/bluefin/installer/bluefin/repart.d` and
 `--kernel=${BLUEFIN_INSTALL_KERNEL}` (the disk UKI, named by the installer
 UKI's `systemd.setenv=`), `--erase=yes`, and `--reboot=no` with
-`SuccessAction=reboot`. The disk UKI sits outside `EFI/Linux` on the stick
-so systemd-boot never offers it there.
+`SuccessAction=reboot`, plus `RemainAfterExit=no` so that still fires once
+upstream's unit is `Type=oneshot` with `RemainAfterExit=yes` (systemd v262).
+It also sets `FailureAction=none` and leaves out upstream's
+`--mute-console=yes`; what that changes is described after the install steps
+below. The disk UKI sits outside `EFI/Linux` on the stick so systemd-boot
+never offers it there.
 
 ## Using the installer
 
@@ -90,10 +94,18 @@ Only two answers cancel: an empty answer at either prompt, and `no` at the
 confirmation (`Installation not confirmed, cancelling.`). Anything else
 upstream does not accept — a typo, an out-of-range number — is rejected with
 `Invalid input …` and the same prompt is asked again, so a mistyped answer
-never halts the machine. After a cancel or a real install failure, upstream's
-`FailureAction=halt` halts the machine — it stops at `System halted` with the
-message still on screen, but does not power off. Power-cycle and boot the stick
-again to retry.
+never ends the install.
+
+After a cancel or a failed install the machine stays up: the drop-in sets
+`FailureAction=none` where upstream's unit halts. sysinstall's error stays on
+the monitor, and the journal, which lives only in RAM, is kept until you power
+off (`journalctl -u systemd-sysinstall`, for example over SSH with the
+developer-mode credentials below). sysinstall runs without upstream's
+`--mute-console=yes`, so kernel and service-manager messages, such as disk I/O
+errors, reach the monitor too and can land between its prompts; its own output
+is shown either way. A failure after sysinstall has erased the disk leaves it
+blank ([#308](https://github.com/projectbluefin/server/issues/308)).
+Power-cycle and boot the stick again to retry.
 
 The installed disk is identical to one a diskless node installs: stock
 `systemd-sysinstall` with the layout from `files/os/repart.d/` (see
