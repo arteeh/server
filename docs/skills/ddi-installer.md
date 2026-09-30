@@ -104,11 +104,12 @@ directly from the boot server; no systemd-boot runs. systemd-stub records the
 boot URL in the `StubDeviceURL` EFI variable, and the initrd derives the URL
 of `bluefin-server_<ver>.raw` (and of `SHA256SUMS` / `SHA256SUMS.gpg`) from
 the same directory. `bluefin-ignition-credentials` also uses it: with no
-`ignition.config` / `ignition.config.url` credential it HEADs
-`bluefin-node.ign` next to the UKI and applies it through `config.replace`
-when present. Because HTTP boot skips systemd-boot's key enrollment, the
-firmware must already trust the image DB key; `scripts/dogfood-diskless.sh`
-with `DOGFOOD_BOOT=http` enrolls once from the netboot ESP first.
+`ignition.config` / `ignition.config.url` credential it looks for
+`bluefin-node.ign` next to the UKI and applies it only as "Per-node
+configuration" in [booty-integration.md](booty-integration.md) allows.
+Because HTTP boot skips systemd-boot's key enrollment, the firmware must
+already trust the image DB key; `scripts/dogfood-diskless.sh` with
+`DOGFOOD_BOOT=http` enrolls once from the netboot ESP first.
 
 ### Installed disk (disk UKI)
 
@@ -293,10 +294,10 @@ signed UKI, the `ignition.config.url=` karg cannot be used; configs arrive as
 
 `bluefin-ignition-credentials` stages whichever is set into
 `/run/ignition/user.ign`; the downstream Ignition units are conditioned on
-that file, so a node with no config runs none of it. A UEFI HTTP-booted node
-needs no credential: the script reads the boot URL from the `StubDeviceURL`
-EFI variable and, when the server offers `bluefin-node.ign` next to the UKI,
-applies it. Ignition runs on **every** boot (there is no first-boot marker on
+that file, so a node with no config runs none of it. A network-booted node
+needs no credential: a `bluefin-node.ign` next to its UKI is staged only as
+"Per-node configuration" in [booty-integration.md](booty-integration.md)
+allows. Ignition runs on **every** boot (there is no first-boot marker on
 a tmpfs root), so configs must be idempotent. See
 `tests/fixtures/ignition/var-on-disk.ign` for a dogfood-tested example
 (persistent /var on a second disk plus an SSH key). The supported stages and

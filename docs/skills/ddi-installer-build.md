@@ -129,8 +129,11 @@ Useful environment variables:
   netboot ESP once per variable store first.
 - `DOGFOOD_BOOT_URL=<url>` — HTTP boot from another server (e.g. Booty)
   instead of the built-in one.
-- `DOGFOOD_NODE_IGN=<file>` — serve it as `bluefin-node.ign` next to the UKI
-  (picked up by HTTP-booted nodes with no Ignition credential).
+- `DOGFOOD_NODE_IGN=<file>` — serve it, unsigned, as `bluefin-node.ign` next
+  to the UKI. An HTTP-booted node with no Ignition credential applies it
+  through the netboot UKI's transitional `bluefin.ignition.allow-unsigned`
+  default (see "Per-node configuration" in
+  [booty-integration.md](booty-integration.md)).
 - `DOGFOOD_SERVE_EXTRA=<dir>` — also serve the files in `<dir>`.
 - `DOGFOOD_TAMPER=raw|sums` — serve a corrupted DDI (`raw`), or the corrupted
   DDI with `SHA256SUMS` re-hashed to match it, so only `SHA256SUMS.gpg` no

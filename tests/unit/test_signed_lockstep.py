@@ -73,7 +73,6 @@ def test_http_booted_nodes_look_for_ignition_next_to_the_uki() -> None:
     assert "StubDeviceURL-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" in origin
     assert "rd.systemd.pull=*)" in origin and "*:http://*|*:https://*)" in origin, "iPXE-chainloaded nodes use the explicit pull URL"
     assert "NODE_CONFIG=bluefin-node.ign" in helper
-    assert "curl -sfI" in helper
     for stage in ("disks", "fetch", "fetch-offline", "files", "mount"):
         unit = (IGN / "lib" / "systemd" / "system" / f"ignition-{stage}.service").read_text(encoding="utf-8")
         assert "ConditionPathExists=/run/ignition/user.ign" in unit
