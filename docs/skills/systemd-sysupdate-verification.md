@@ -4,7 +4,7 @@ description: Configure and operate GPG signature verification for Bluefin Server
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-28"
+  last_updated: "2026-09-30"
   context7-sources:
     - /systemd/systemd
 ---
@@ -88,9 +88,26 @@ no separate CI signing step: a release publishes `dist/diskless/` as-is.
 
 `elements/bluefin-server/os-sysupdate-keys.bst` installs the matching public
 keyring from `files/boot-keys/import-pubring.pgp` to
-`/etc/systemd/import-pubring.pgp`. systemd reads that path before the vendor
-`/usr/lib/systemd/import-pubring.pgp` that FSDK ships, so the image trusts
-exactly the key that signed the build.
+`/usr/lib/systemd/import-pubring.pgp`, replacing FSDK's vendor keyring. A
+runtime dependency on FSDK's systemd orders the replacement, and a narrow
+BuildStream overlap whitelist permits that file alone. Both the OS and initrd
+therefore trust the build keyring. The OS keyring lives on the immutable `/usr`
+image, so A/B updates and rollbacks change it with the image. It is not copied
+into persistent `/etc` by factory tmpfiles rules.
+
+`/etc/systemd/import-pubring.pgp` remains an operator override and takes
+precedence over the image keyring. Nodes installed before this change retain
+the old factory copy there. After booting an image containing this fix, inspect
+that file and the vendor keyring; if it is only the old factory copy, back it up
+outside systemd's keyring paths and remove it to follow the image keyring.
+Preserve intentional operator overrides. There is no automatic deletion,
+since an old factory copy cannot reliably be distinguished from an override.
+
+A dev-installed node still cannot authenticate its first official update with
+a dev key. Provision the authenticated release public keyring as an `/etc`
+override through a trusted administrative channel for that transition; after
+booting the official image with this fix, remove the temporary override to
+follow its vendor keyring. Do not disable signature verification.
 
 The diskless pull verifies the same signature: the initrd ships gnupg and the
 keyring (`bluefin-server/initrd/initrd-stack.bst` depends on
@@ -174,7 +191,7 @@ Use `--type spdxjson` to get the SBOM attestation instead.
   key and public keyring for a build (gitignored). Where they come from
   locally and in CI: [secure-boot-keys.md](secure-boot-keys.md).
 - `elements/bluefin-server/os-sysupdate-keys.bst` — installs
-  `files/boot-keys/import-pubring.pgp` as `/etc/systemd/import-pubring.pgp`.
+  `files/boot-keys/import-pubring.pgp` as `/usr/lib/systemd/import-pubring.pgp`.
 - `files/os/sysupdate.d/*.transfer` and the k0s component directory
   (`files/os/sysupdate.k0s.d/`) — each transfer points its static `Path=` at
   `https://github.com/projectbluefin/server/releases/latest/download/` so all
@@ -199,17 +216,25 @@ Use `--type spdxjson` to get the SBOM attestation instead.
    EOF
    gpg --batch --gen-key "$GNUPGHOME/keygen"
    KEYID=$(gpg --list-keys --with-colons 'releases@projectbluefin.io' | awk -F: '/^pub:/ {print $5; exit}')
-   gpg --export --output files/os/sysupdate-keys/import-pubring.gpg "$KEYID"
+   gpg --export --output /secure/offline/new-public.pgp "$KEYID"
    gpg --export-secret-keys --armor "$KEYID" > /secure/offline/backup.asc
    rm -rf "$GNUPGHOME"
    ```
-2. Update the GitHub Actions repository secret `SYSUPDATE_SIGNING_KEY` with the
+2. Combine the existing release public keys with `/secure/offline/new-public.pgp`
+   in `files/os/sysupdate-keys/import-pubring.gpg`. Before switching signers,
+   ship a bridge release carrying this combined vendor keyring, signed by the
+   **old** private key. Keep `SYSUPDATE_SIGNING_KEY` unchanged for that release. Ensure nodes
+   have booted it and any legacy `/etc` factory copies have been migrated as
+   described above before proceeding. Nodes that skip the bridge need their
+   trust provisioned through a trusted administrative channel.
+3. Update the GitHub Actions repository secret `SYSUPDATE_SIGNING_KEY` with the
    new ASCII-armored private key.
-3. Rebuild and publish a release under a new `image-version` (a key rotation
+4. Rebuild and publish a release under a new `image-version` (a key rotation
    is never a rebuild of an existing version; see
    "Keys" in [ddi-installer-build.md](ddi-installer-build.md)). Existing hosts only
    trust updates signed by the key in their keyring, so plan the rotation
-   around a release boundary.
+   around a release boundary. Retire the old public key in a later image
+   only after the transition is complete.
 
 For a throwaway local signing key, `just gen-dev-keys` writes the pair on its
 own; see [secure-boot-keys.md](secure-boot-keys.md).
