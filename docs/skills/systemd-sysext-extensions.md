@@ -51,6 +51,14 @@ The first-party extensions make opposite choices:
 
 - **k0s** (`files/k0s/sysext/extension-release.k0s`) uses `ID=_any` and does
   not pin the image version, so it merges on any host image.
+- **NVIDIA Container Toolkit** (`oci/nvidia-container-toolkit-sysext.bst`,
+  version in `include/nvidia-container-toolkit.yml`) follows k0s: `ID=_any`,
+  its own version, merged as `nvidia-container-toolkit.raw`. It is CDI only:
+  `nvidia-ctk`, `nvidia-cdi-hook` and `nvidia-cdi-refresh.{service,path}`,
+  which write `/var/run/cdi/nvidia.yaml` at boot for containerd (CDI is on by
+  default in containerd 2.x). No `nvidia-container-runtime`, OCI hook or
+  `nvidia` runtime class. The refresh is ordered after the driver sysext's
+  units without requiring them, and skips on nodes without an NVIDIA GPU.
 - **OpenZFS and KubeStellar** are version-locked to the image: their
   extension-release file is named after the versioned image file
   (`extension-release.zfs_<image-version>`,

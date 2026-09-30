@@ -51,7 +51,7 @@ def test_flavour_table_matches_the_element_files() -> None:
     assert set(pins()) == {f"{f}-{atom}" for f in flavours() for atom in ("version", "sha256")}
     on_disk = sorted(p.stem for p in (ELEMENTS / "nvidia").glob("nvidia-open-*.bst") if not p.stem.endswith("-signed"))
     assert on_disk == flavours()
-    assert sorted(p.name.removesuffix("-sysext.bst") for p in (ELEMENTS / "oci").glob("nvidia-*-sysext.bst")) == flavours()
+    assert sorted(p.name.removesuffix("-sysext.bst") for p in (ELEMENTS / "oci").glob("nvidia-open-*-sysext.bst")) == flavours()
 
 
 @pytest.mark.parametrize("flavour", flavours())
