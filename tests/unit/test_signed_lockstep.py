@@ -6,6 +6,7 @@ import configparser
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SYSUPDATE = ROOT / "files" / "os" / "sysupdate.d"
@@ -28,13 +29,17 @@ def test_diskless_pull_verifies_the_signature() -> None:
     assert "verify=no" not in boot
 
 
-def test_keyring_is_installed_where_systemd_reads_it_first() -> None:
-    keys = KEYS.read_text(encoding="utf-8")
-    assert "path: files/boot-keys/import-pubring.pgp" in keys
-    assert "target: /etc/systemd" in keys
-    initrd = INITRD.read_text(encoding="utf-8")
-    assert "bluefin-server/os-sysupdate-keys.bst" in initrd
-    assert "freedesktop-sdk.bst:components/gnupg.bst" in initrd
+def test_keyring_updates_with_usr_and_replaces_fsdk_vendor_key() -> None:
+    keys = yaml.safe_load(KEYS.read_text(encoding="utf-8"))
+    assert keys["sources"] == [{"kind": "local", "path": "files/boot-keys/import-pubring.pgp"}]
+    assert keys["config"]["target"] == "/usr/lib/systemd"
+    # Dependency order must make our key win in every consumer; allow only
+    # this replacement, without masking unrelated staging collisions.
+    assert "freedesktop-sdk.bst:components/systemd.bst" in keys["runtime-depends"]
+    assert keys["public"]["bst"]["overlap-whitelist"] == ["/usr/lib/systemd/import-pubring.pgp"]
+    for stack in (INITRD, ROOT / "elements/bluefin-server/os-stack.bst"):
+        assert "bluefin-server/os-sysupdate-keys.bst" in yaml.safe_load(stack.read_text())["depends"]
+    assert "freedesktop-sdk.bst:components/gnupg.bst" in INITRD.read_text()
 
 
 @pytest.mark.parametrize("name,transfer", [("zfs", "30-zfs.transfer"), ("kubestellar", "31-kubestellar.transfer"), ("kubeadm", "32-kubeadm.transfer")])

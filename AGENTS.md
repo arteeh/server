@@ -8,7 +8,7 @@ Bluefin Server is an image-based Linux server OS composed from freedesktop-sdk (
 - an offline USB installer `bluefin-server-installer_<ver>.raw` (usr + usr-verity + ESP with systemd-boot, the installer UKI, the disk UKI and `repart.d`) that boots into `systemd-sysinstall`
 - optional opt-in `systemd-sysext` images: `oci/k0s-sysext.bst` (controller, or worker when `/etc/k0s/token` exists), `oci/kubestellar-sysext.bst` (Argo CD, KubeStellar, kiosk; needs k0s), `oci/kubeadm-sysext.bst` (kubeadm worker: kubelet, containerd), `oci/zfs-sysext.bst` and `oci/nvidia-open-595-sysext.bst` (NVIDIA open kernel modules; not yet in the release set, and mutually exclusive with `oci/zfs-sysext.bst`)
 - an SPDX 2.3 SBOM `bluefin-server_<ver>.spdx.json` (`oci/bluefin-server-sbom.bst`)
-- a `SHA256SUMS` over the whole set, signed in-element (`SHA256SUMS.gpg`); nodes verify it against `/etc/systemd/import-pubring.pgp`
+- a `SHA256SUMS` over the whole set, signed in-element (`SHA256SUMS.gpg`); nodes verify it against the image keyring (see the sysupdate verification skill)
 
 A release publishes `dist/diskless/` as-is: a GitHub Release `v<ver>` and an ORAS OCI artifact `ghcr.io/<owner>/bluefin-server:<ver>,latest`, both with provenance and SBOM attestations; pull requests that build rehearse it in `release-dry-run`. Most pull requests run only `validate`; the full build runs on `main`, nightly, and on pull requests labeled `full-build` or changing the FSDK junction or its patches.
 
