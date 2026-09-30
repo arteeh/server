@@ -361,6 +361,10 @@ jobs:
   # systemd-sysinstall -> disk; outside releases also A/B update and rollback.
   boot-test:
     needs: [changes, build]
+    # build needs kernel-cache, which is skipped outside release builds; a
+    # skipped job anywhere upstream skips this one unless it checks build's
+    # own result.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
@@ -556,7 +560,7 @@ jobs:
   # gh release command without running it, and pushes the OCI artifact to a
   # local registry and pulls it back. No secrets, read-only token.
   release-dry-run:
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.build.result == 'success' }}
     needs: build
     runs-on: ubuntu-26.04
     timeout-minutes: 45

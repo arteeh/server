@@ -50,7 +50,7 @@ def test_build_and_dry_run_check_out_the_triggering_commit() -> None:
 
 
 def test_dry_run_is_read_only_and_secret_free() -> None:
-    assert DRY_RUN["if"] == "${{ github.event_name == 'pull_request' }}"
+    assert "github.event_name == 'pull_request'" in DRY_RUN["if"]
     assert DRY_RUN["permissions"] == {"contents": "read"}
     assert "secrets." not in json.dumps(DRY_RUN)
     assert "@sha256:" in DRY_RUN["services"]["registry"]["image"]
@@ -83,3 +83,11 @@ def test_boot_test_uploads_every_harness_log_directory() -> None:
     paths = upload["with"]["path"].split()
     for d in ("dist/dogfood-install/", "dist/dogfood-installer/"):
         assert any(p.startswith(d) for p in paths), d
+
+
+def test_jobs_after_build_run_when_kernel_cache_is_skipped() -> None:
+    # kernel-cache only runs for release builds; without an explicit check of
+    # build's result, a skipped kernel-cache skips every job downstream of build.
+    for name in ("boot-test", "release-dry-run"):
+        cond = JOBS[name].get("if", "")
+        assert "!cancelled()" in cond and "needs.build.result == 'success'" in cond, name
