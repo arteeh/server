@@ -162,7 +162,10 @@ uploaded to a GitHub Release tagged `v<image-version>` (`YY.MM.<run>` on main).
     off. `--check` now fails unless the probe reports
     `secureboot=enabled` (or, for tamper runs, the kernel logs
     `Secure boot enabled`). Bump the pin by hand; Renovate does not track it.
-    - diskless netboot, no failed units;
+    - diskless netboot, no failed units; `tests/fixtures/nfs/netdb.probe`
+      must see `tcp` and `sunrpc` resolve, the local portmapper answer
+      `rpcinfo`, and an NFSv3 mount get past the protocol lookup
+      (`DOGFOOD_EXPECT`);
     - `DOGFOOD_TAMPER=raw`: a corrupted DDI must be refused by the manifest
       check (`DOWNLOAD INVALID: Checksum of ... did not check out`);
       `DOGFOOD_TAMPER=sums`: the same DDI with `SHA256SUMS` re-hashed to match

@@ -405,6 +405,9 @@ jobs:
           echo "OVMF_VARS=${RUNNER_TEMP}/ovmf/usr/share/edk2/ovmf/OVMF_VARS.fd" >> "$GITHUB_ENV"
 
       - name: Diskless boot
+        env:
+          DOGFOOD_EXTRA_PROBE: tests/fixtures/nfs/netdb.probe
+          DOGFOOD_EXPECT: "PROBE netdb protocols=0 services=0 rpcinfo=0 nfs3-tcp=resolved "
         run: bash scripts/dogfood-diskless.sh dist/diskless --check
 
       - name: Refuse a tampered image
