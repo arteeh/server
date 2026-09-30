@@ -1,0 +1,12 @@
+[Unit]
+Description=Load the NVIDIA kernel modules
+Requires=nvidia-flavour-guard.service
+After=nvidia-flavour-guard.service systemd-sysext.service systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Skip (not fail) unless a PCI display controller (class 0x03) from NVIDIA
+# (vendor 0x10de) is present.
+ExecCondition=/usr/bin/sh -c 'for d in /sys/bus/pci/devices/*; do [ "$$(cat "$$d/vendor")" = 0x10de ] && case "$$(cat "$$d/class")" in 0x03*) exit 0 ;; esac; done; exit 1'
+ExecStart=/usr/bin/modprobe -a nvidia nvidia-uvm nvidia-modeset nvidia-drm

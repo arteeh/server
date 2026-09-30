@@ -68,7 +68,7 @@ validate: gen-dev-keys
     python3 .github/scripts/check-release-version.py
     python3 .github/scripts/check-k0s-version.py
     python3 .github/scripts/check-renovate-series.py
-    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/kubestellar-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst
+    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/kubestellar-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst oci/nvidia-open-595-sysext.bst
 
 # Run the unit test suite (pytest + bats; bats from a container if not installed).
 [group('dev')]
@@ -194,10 +194,31 @@ export-zfs-sysext: build-zfs-sysext
     rm -rf dist/zfs-checkout
     mkdir -p dist/sysext
     just bst artifact checkout oci/zfs-sysext.bst --directory /src/dist/zfs-checkout
-    cp dist/zfs-checkout/zfs-*.raw.zst dist/sysext/
+    cp dist/zfs-checkout/zfs_*.raw.zst dist/sysext/
     grep 'raw.zst$' dist/zfs-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
     rm -rf dist/zfs-checkout
     @echo "==> wrote zfs sysext:" && ls -lh dist/sysext/
+
+# Build an NVIDIA driver sysext (open kernel modules; locked to one image version).
+[group('sysext')]
+build-nvidia-sysext FLAVOUR="nvidia-open-595": gen-dev-keys
+    just bst build oci/{{FLAVOUR}}-sysext.bst
+
+# Export an NVIDIA driver sysext + SHA256SUMS to dist/sysext/.
+[group('sysext')]
+export-nvidia-sysext FLAVOUR="nvidia-open-595": (build-nvidia-sysext FLAVOUR)
+    rm -rf dist/{{FLAVOUR}}-checkout
+    mkdir -p dist/sysext
+    just bst artifact checkout oci/{{FLAVOUR}}-sysext.bst --directory /src/dist/{{FLAVOUR}}-checkout
+    cp dist/{{FLAVOUR}}-checkout/{{FLAVOUR}}_*.raw.zst dist/sysext/
+    grep 'raw.zst$' dist/{{FLAVOUR}}-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
+    rm -rf dist/{{FLAVOUR}}-checkout
+    @echo "==> wrote {{FLAVOUR}} sysext:" && ls -lh dist/sysext/
+
+# Install dist/diskless/ in QEMU, merge the exported NVIDIA sysext and probe it (no GPU).
+[group('sysext')]
+dogfood-nvidia FLAVOUR="nvidia-open-595":
+    bash scripts/dogfood-nvidia.sh dist/diskless "dist/sysext/{{FLAVOUR}}_$(sed -n 's/^  image-version: "\(.*\)"$/\1/p' include/image.yml).raw.zst"
 
 # Set up KubeStellar kc-agent for the user in ONE command.
 [group('test')]

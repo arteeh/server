@@ -4,7 +4,7 @@ description: Extensibility via systemd-sysext and systemd-confext for Bluefin Se
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-27"
+  last_updated: "2026-09-30"
   context7-sources:
     - /systemd/systemd
 ---
@@ -65,6 +65,29 @@ The first-party extensions make opposite choices:
   (see `systemd-sysupdate-verification.md`); diskless nodes get them from
   Ignition, which writes `/etc/extensions/<name>_<ver>.raw` with a sha256
   verification hash.
+
+The NVIDIA driver sysexts (`nvidia-open-<branch>_<image-version>.raw`, open
+kernel modules only; flavours and pins in `include/nvidia.yml`) are
+version-locked the same way. They are built and exported only by
+`just build-nvidia-sysext` / `just export-nvidia-sysext` and checked in QEMU
+by `just dogfood-nvidia`; they are not yet part of the release image set.
+Their units skip themselves on a node without an NVIDIA GPU, and
+`nvidia-flavour-guard.service` fails when two flavours are merged.
+
+**The NVIDIA and OpenZFS sysexts are mutually exclusive.** Both run `depmod`
+over the base image's modules plus their own and ship the resulting
+`/usr/lib/modules/<kver>/modules.*` index, so whichever image systemd-sysext
+overlays last hides the other's index and `modprobe` can no longer find the
+other's modules. `nvidia-flavour-guard.service` refuses the merge (and with it
+`nvidia-load.service`) when a `zfs_*` extension is merged alongside, so the
+conflict fails with a clear message instead of a bare `Module nvidia not
+found`. A node that needs both has to wait for a single sysext that indexes
+both module sets.
+
+The GPU-present path (`nvidia-load.service`, `nvidia-device-nodes.service`,
+`nvidia-persistenced.service`) is not exercised by `just dogfood-nvidia`, which
+runs on a QEMU guest with no NVIDIA GPU and asserts only that those units skip
+themselves. It is verified on real hardware during the GPU rollout phase.
 
 Third-party extensions built for another distribution (for example the Flatcar
 System Extension Bakery) only merge with `systemd-sysext merge --force`, and

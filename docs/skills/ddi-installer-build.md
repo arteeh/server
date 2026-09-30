@@ -31,6 +31,9 @@ just build-sysext      # build oci/k0s-sysext.bst
 just export-sysext     # export k0s sysext + SHA256SUMS to dist/sysext/
 just build-zfs-sysext  # build oci/zfs-sysext.bst
 just export-zfs-sysext # export OpenZFS sysext + SHA256SUMS to dist/sysext/
+just build-nvidia-sysext  # build oci/<flavour>-sysext.bst (nvidia-open-595)
+just export-nvidia-sysext # export NVIDIA sysext + SHA256SUMS to dist/sysext/
+just dogfood-nvidia       # QEMU disk install + merge/probe the NVIDIA sysext
 just version / just tags  # FSDK-derived point release and tag set
 ```
 
