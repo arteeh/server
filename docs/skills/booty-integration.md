@@ -19,10 +19,11 @@ From a release `v<ver>` (GitHub Releases or the ORAS OCI artifact at
 UKI `bluefin-server-netboot_<ver>.efi`, the OS DDI `bluefin-server_<ver>.raw`,
 `SHA256SUMS` and `SHA256SUMS.gpg`, and any listed sysext assets
 (`zfs_<ver>.raw.zst`, `kubestellar_<ver>.raw.zst`, `kubeadm_<ver>.raw.zst`,
-`k0s-<k0s-ver>.raw.zst`), verifies them against `SHA256SUMS` (and, with
-`--bluefinKeyring`, against the GPG signature), and serves them over plain
-HTTP. The netboot ESP image, the disk UKI and the USB installer are not
-synced; they are for booting without Booty.
+`nvidia-open-<branch>_<ver>.raw.zst`, `k0s-<k0s-ver>.raw.zst`,
+`nvidia-container-toolkit-<ctk-ver>.raw.zst`), verifies them against
+`SHA256SUMS` (and, with `--bluefinKeyring`, against the GPG signature), and
+serves them over plain HTTP. The netboot ESP image, the disk UKI and the USB
+installer are not synced; they are for booting without Booty.
 
 ## Boot paths
 
@@ -37,7 +38,13 @@ synced; they are for booting without Booty.
 Booty renders a `bluefin-node.ign` (Ignition spec 3.6.0) per MAC address and
 serves it next to the UKI. Fields include hostname, SSH keys (which also
 enable `sshd.service`, disabled by preset in the image), state disk,
-extensions (any of `zfs`, `kubestellar`, `k0s`), and a k0s token.
+extensions (any of `zfs`, `kubestellar`, `k0s`, `nvidia-container-toolkit`,
+and at most one NVIDIA driver flavour `nvidia-open-<branch>`, which combines
+with `zfs`), and a k0s token. The image-locked extensions land in
+`/etc/extensions/<name>_<ver>.raw` and the toolkit in
+`/etc/extensions/nvidia-container-toolkit.raw`, so they merge at boot. Booty's
+NVIDIA rules are in the Booty README's
+[NVIDIA GPU hosts](https://github.com/jeefy/booty#nvidia-gpu-hosts).
 
 A node with no `ignition.config` / `ignition.config.url` credential HEADs
 `bluefin-node.ign` next to its boot origin. Nothing there means nothing to

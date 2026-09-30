@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -135,14 +136,17 @@ config:
 
 
 class Upstream:
-    """Serves registered URLs; everything else is a 404."""
+    """Serves registered URLs; `status` forces an HTTP error, anything else is a 404."""
 
     def __init__(self):
         self.files: dict[str, bytes] = {}
+        self.status: dict[str, int] = {}
         self.requests: list[urllib.request.Request] = []
 
     def urlopen(self, request, timeout=None):
         self.requests.append(request)
+        if request.full_url in self.status:
+            raise urllib.error.HTTPError(request.full_url, self.status[request.full_url], "Error", Message(), None)
         if request.full_url not in self.files:
             raise urllib.error.HTTPError(request.full_url, 404, "Not Found", Message(), None)
         return io.BytesIO(self.files[request.full_url])
@@ -189,8 +193,9 @@ def repo(tmp_path):
     return tmp_path
 
 
-def snapshot(root: Path) -> dict[str, str]:
-    return {path: (root / path).read_text(encoding="utf-8") for path in FILES}
+def snapshot(root: Path, extra=()) -> dict[str, str]:
+    paths = list(FILES) + list(extra)
+    return {path: (root / path).read_text(encoding="utf-8") for path in paths}
 
 
 def changed_lines(before: dict[str, str], root: Path) -> dict[str, list[tuple[str, str]]]:
@@ -543,7 +548,7 @@ def test_no_op_run_leaves_multi_arch_files_byte_identical(repo, upstream, capsys
     assert capsys.readouterr().out == ""
 
 
-@pytest.mark.parametrize("name", [n for n, c in track.COMPONENTS.items() if isinstance(c, track.BstComponent)])
+@pytest.mark.parametrize("name", [n for n, c in track.COMPONENTS.items() if isinstance(c, track.BstComponent) and c.multi_arch])
 def test_real_elements_pin_amd64_and_arm64_alike(name):
     pins = track.COMPONENTS[name].pins(track.Tree(ROOT))
     by_arch = {arch: sorted(p.url.replace(arch, "ARCH") for p in pins if arch in p.url) for arch in ("amd64", "arm64")}
@@ -560,6 +565,8 @@ def test_real_pins_are_readable(name):
     assert pins
     for pin in pins:
         assert pin.url.startswith("https://") and "%{" not in pin.url
+        # Nothing is written unless it verifies against a checksum upstream publishes.
+        assert pin.sums.startswith("https://") and pin.sums != pin.url, pin
         assert track.SUMS_LINE_RE.match(track.read_pin(tree, pin)), pin
 
 
@@ -572,3 +579,143 @@ def test_every_pinned_source_belongs_to_exactly_one_component():
             if match:
                 owners = [c.name for c in track.COMPONENTS.values() if getattr(c, "marker", None) and c.marker in match["url"]]
                 assert len(owners) == 1, f"{element}: {match['url']} is tracked by {owners}"
+
+
+NVIDIA_INDEX = "https://download.nvidia.com/XFree86/Linux-x86_64/"
+NVIDIA_PIN = "e421c202e4c79f58c3c7f3161bbe71454ebb3d88936f88205a0e327cd04c59ca"
+NVIDIA_FILES = {
+    "include/aliases.yml": FILES["include/aliases.yml"] + "  nvidia_download: https://download.nvidia.com/\n",
+    "include/nvidia.yml": f"""variables:
+  # nvidia-open-595: production branch 595
+  nvidia-open-595-version: "595.104.02"
+  nvidia-open-595-sha256: "{NVIDIA_PIN}"
+""",
+    "elements/nvidia/nvidia-open-595.bst": """kind: manual
+
+(@):
+- include/nvidia.yml
+
+sources:
+- kind: remote
+  url: nvidia_download:XFree86/Linux-x86_64/%{nvidia-version}/NVIDIA-Linux-x86_64-%{nvidia-version}.run
+  ref: "%{nvidia-open-595-sha256}"
+
+variables:
+  nvidia-version: "%{nvidia-open-595-version}"
+""",
+}
+
+
+@pytest.fixture
+def nvidia(repo, upstream, monkeypatch):
+    for path, text in NVIDIA_FILES.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(track, "COMPONENTS", {"nvidia-open-595": track.COMPONENTS["nvidia-open-595"]})
+    return upstream
+
+
+def nvidia_index(*versions: str) -> bytes:
+    """download.nvidia.com's listing: version directories among other entries."""
+    entries = ["..", "../../style/directory_listing.css", "1.0-4499/", *(f"{v}/" for v in versions), "latest.txt"]
+    links = "\n".join(f"<li><span class='dir'><a href='{e}'>{e}</a></span></li>" for e in entries)
+    return f"<!doctype html><ul class='directorycontents'>\n{links}\n</ul>".encode()
+
+
+def nvidia_release(upstream: Upstream, version: str, run: bool = True, sums: bool = True) -> str:
+    run_url = f"{NVIDIA_INDEX}{version}/NVIDIA-Linux-x86_64-{version}.run"
+    data = f"payload of {run_url}".encode()
+    if run:
+        upstream.files[run_url] = data
+    if sums:
+        upstream.files[run_url + ".sha256sum"] = f"{sha(data)}  NVIDIA-Linux-x86_64-{version}.run\n".encode()
+    return sha(data)
+
+
+def test_nvidia_driver_proposes_the_newest_uploaded_release_of_its_branch(repo, nvidia):
+    nvidia.files[NVIDIA_INDEX] = nvidia_index(
+        "595.99.02", "595.104.02", "595.105.00", "595.110.03", "595.115.00", "595.120.01", "610.43.02")
+    nvidia_release(nvidia, "595.105.00")
+    nvidia_release(nvidia, "595.110.03")
+    nvidia_release(nvidia, "595.115.00", sums=False)
+    nvidia_release(nvidia, "595.120.01", run=False)
+    nvidia_release(nvidia, "610.43.02")
+
+    assert newest("nvidia-open-595", repo) == "595.110.03"
+
+    probes = [(r.get_method(), r.full_url.removeprefix(NVIDIA_INDEX)) for r in nvidia.requests if r.full_url != NVIDIA_INDEX]
+    assert {method for method, _ in probes} == {"HEAD"}, "check never downloads a .run"
+    assert {url.split("/")[0] for _, url in probes} == {"595.105.00", "595.110.03", "595.115.00", "595.120.01"}
+
+
+def test_nvidia_driver_outage_is_an_error_not_up_to_date(repo, nvidia):
+    nvidia.files[NVIDIA_INDEX] = nvidia_index("595.104.02", "595.105.00")
+    nvidia_release(nvidia, "595.105.00")
+    nvidia.status[f"{NVIDIA_INDEX}595.105.00/NVIDIA-Linux-x86_64-595.105.00.run"] = 503
+    with pytest.raises(track.TrackError, match="HEAD .*595.105.00.run: HTTP 503"):
+        newest("nvidia-open-595", repo)
+
+
+def test_check_reports_an_index_that_no_longer_lists_the_pin(repo, nvidia, capsys):
+    nvidia.files[NVIDIA_INDEX] = b"<ul><li><a href=\"595.105.00\">595.105.00</a></li></ul>"
+    assert track.main(["check"], root=repo) == 1
+    assert f"ERROR: nvidia-open-595: {NVIDIA_INDEX} does not list the pinned 595.104.02" in capsys.readouterr().err
+
+
+def test_check_reports_the_driver_branch_as_the_series(repo, nvidia, capsys):
+    nvidia.files[NVIDIA_INDEX] = nvidia_index("595.104.02", "595.105.00")
+    nvidia_release(nvidia, "595.105.00")
+    assert track.main(["check", "--json"], root=repo) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out) == [{"component": "nvidia-open-595", "series": "595", "current": "595.104.02", "latest": "595.105.00"}]
+    assert "nvidia-open-595 595    595.104.02     595.105.00     update" in err
+
+
+def test_nvidia_driver_bump_writes_the_include_sha256_atom(repo, nvidia, tmp_path):
+    new = "595.105.00"
+    nvidia.files[NVIDIA_INDEX] = nvidia_index("595.104.02", new)
+    new_pin = nvidia_release(nvidia, new)
+    body = tmp_path / "body.md"
+    before = snapshot(repo, NVIDIA_FILES)
+
+    assert track.main(["apply", "nvidia-open-595", "--summary", str(body)], root=repo) == 0
+
+    assert changed_lines(before, repo) == {
+        "include/nvidia.yml": [
+            ('  nvidia-open-595-version: "595.104.02"', f'  nvidia-open-595-version: "{new}"'),
+            (f'  nvidia-open-595-sha256: "{NVIDIA_PIN}"', f'  nvidia-open-595-sha256: "{new_pin}"'),
+        ],
+    }
+    text = body.read_text()
+    assert f"Patch release of **nvidia-open-595** in the pinned `595` series: `595.104.02` → `{new}`." in text
+    assert f"Release notes: {NVIDIA_INDEX}{new}/" in text
+    assert f"- {NVIDIA_INDEX}{new}/NVIDIA-Linux-x86_64-{new}.run.sha256sum" in text
+    assert "a new driver branch is a new flavour (docs/skills/nvidia-sysext.md)." in text
+    assert "apply nvidia-open-595 --version" not in text
+
+
+def test_nvidia_driver_refuses_to_write_a_tampered_run(repo, nvidia, capsys):
+    new = "595.105.00"
+    nvidia.files[NVIDIA_INDEX] = nvidia_index("595.104.02", new)
+    nvidia_release(nvidia, new)
+    nvidia.files[f"{NVIDIA_INDEX}{new}/NVIDIA-Linux-x86_64-{new}.run"] = b"tampered"
+    before = snapshot(repo, NVIDIA_FILES)
+
+    assert track.main(["apply", "nvidia-open-595"], root=repo) == 1
+
+    assert snapshot(repo, NVIDIA_FILES) == before
+    assert f"{NVIDIA_INDEX}{new}/NVIDIA-Linux-x86_64-{new}.run hashes to {sha(b'tampered')}" in capsys.readouterr().err
+
+
+def test_nvidia_driver_never_leaves_its_branch(repo, nvidia):
+    before = snapshot(repo, NVIDIA_FILES)
+    with pytest.raises(track.TrackError, match="`610.43.02` does not match"):
+        track.apply(repo, "nvidia-open-595", "610.43.02")
+    assert nvidia.requests == []
+    assert snapshot(repo, NVIDIA_FILES) == before
+
+
+def test_every_nvidia_flavour_is_tracked():
+    flavours = re.findall(r"^\s+(nvidia-open-\d+)-version:", (ROOT / "include/nvidia.yml").read_text(encoding="utf-8"), re.M)
+    tracked = [n for n, c in track.COMPONENTS.items() if isinstance(c, track.NvidiaDriverComponent)]
+    assert flavours and sorted(flavours) == sorted(tracked)

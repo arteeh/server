@@ -114,6 +114,25 @@ def test_refresh_is_skipped_not_failed_without_an_nvidia_gpu(tmp_path: Path) -> 
     assert _gpu_condition(three_d) == 0
 
 
+# The ExecCondition= of upstream's deployments/systemd/nvidia-cdi-refresh.service (v1.20.1).
+UPSTREAM_REFRESH = """[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c '/usr/bin/grep -qE "/(nvidia|nvidia-current)[.]ko" /lib/modules/%v/modules.dep || [ -e /dev/dxg ]'
+ExecStart=/usr/bin/nvidia-ctk cdi generate
+"""
+
+
+def test_refresh_runs_on_a_gpu_node_although_the_base_module_index_lacks_nvidia(tmp_path: Path) -> None:
+    upstream = tmp_path / "nvidia-cdi-refresh.service"
+    upstream.write_text(UPSTREAM_REFRESH)
+    [argv] = SystemdFile(upstream, DROPIN).commands("ExecCondition")
+    assert "modules.dep" not in " ".join(argv), "the driver's modules are never in the base image's index"
+    sysfs = tmp_path / "devices"
+    _pci_device(sysfs, "0000:01:00.0", "0x10de", "0x030000")
+    script = argv[2].replace("/sys/bus/pci/devices", str(sysfs))
+    assert subprocess.run(["sh", "-c", script], check=False).returncode == 0
+
+
 def test_own_version_axis_not_locked_to_the_image() -> None:
     release = dict(
         line.split("=", 1)
