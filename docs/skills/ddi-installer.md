@@ -297,11 +297,12 @@ the Ignition section of [diskless-troubleshooting.md](diskless-troubleshooting.m
 
 ## PXE / HTTP boot service
 
-The intended network boot server is [Booty](https://github.com/jeefy/booty).
-Its `feat/bluefin-http-boot` work (not yet merged) syncs `v<ver>` releases
-from GitHub Releases or from the OCI artifact (`--bluefinOCI`, `--plain-http`
-for plain-HTTP registries), checks the signature with `--bluefinKeyring`,
-answers ProxyDHCP with an `HTTPClient` offer pointing at
+The intended network boot server is [Booty](https://github.com/jeefy/booty)
+(Bluefin support on its `main` since
+[#39](https://github.com/jeefy/booty/pull/39)). It syncs `v<ver>` releases
+from GitHub Releases or from the OCI artifact (`--bluefinOCI`, plain-HTTP
+registries via an `http://` prefix), checks the signature with
+`--bluefinKeyring`, answers ProxyDHCP with an `HTTPClient` offer pointing at
 `http://<booty>/bluefin/<mac>/bluefin-server-netboot.efi`, and serves the UKI,
 the OS DDI, `SHA256SUMS(.gpg)`, and a per-host `bluefin-node.ign` (hostname,
 SSH keys, state disk, extensions, k0s token). Its `doInstall` flag boots the
