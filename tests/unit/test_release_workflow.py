@@ -28,7 +28,7 @@ def publish_commands(job: dict) -> list[str]:
 
 
 def test_both_jobs_publish_through_the_script_only() -> None:
-    assert publish_commands(RELEASE) == ["verify", "release", "oci"]
+    assert publish_commands(RELEASE) == ["verify", "taggable", "release", "oci"]
     assert publish_commands(DRY_RUN) == ["verify", "release", "oci"]
     for job in (RELEASE, DRY_RUN):
         runs = "\n".join(s.get("run", "") for s in job["steps"])
@@ -91,3 +91,15 @@ def test_jobs_after_build_run_when_kernel_cache_is_skipped() -> None:
     for name in ("boot-test", "release-dry-run"):
         cond = JOBS[name].get("if", "")
         assert "!cancelled()" in cond and "needs.build.result == 'success'" in cond, name
+
+
+def test_release_publishes_nothing_once_the_commit_cannot_be_tagged() -> None:
+    names = [s.get("name") for s in RELEASE["steps"]]
+    check = names.index("Check this commit can still be tagged")
+    step = RELEASE["steps"][check]
+    assert step["id"] == "taggable" and "if" not in step
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "verify" in RELEASE["steps"][check - 1].get("run", "")
+    for later in RELEASE["steps"][check + 1 :]:
+        assert later.get("if") == "steps.taggable.outputs.publish == 'true'", later.get("name")
+    assert "taggable" not in json.dumps(DRY_RUN)

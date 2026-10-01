@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Publish one Bluefin Server release set (dist/diskless/), or rehearse it.
 #
-#   publish-release.sh verify  DIR VERSION KEYRING
-#   publish-release.sh release DIR VERSION [--dry-run]
-#   publish-release.sh oci     DIR VERSION REF [--plain-http] [--pull-back]
+#   publish-release.sh verify   DIR VERSION KEYRING
+#   publish-release.sh taggable VERSION
+#   publish-release.sh release  DIR VERSION [--dry-run]
+#   publish-release.sh oci      DIR VERSION REF [--plain-http] [--pull-back]
 #
 # .github/workflows/build.yml runs these same commands in the `release` job
 # on main and in the `release-dry-run` job on every pull request. The dry
@@ -130,6 +131,44 @@ cmd_verify() {
     output subjects "${subjects}"
 }
 
+# GITHUB_TOKEN cannot create a tag (gh release create, the refs API or a git
+# push) at a commit whose copy of the running workflow file differs from the
+# default branch's: that needs the workflows permission, which GITHUB_TOKEN
+# never has. Runs on main queue, so a merge that edits the workflow can land
+# before an earlier run publishes. Its content ships with the newer run under
+# that run's version; this version is skipped with a warning (publish=false)
+# instead of failing with HTTP 403.
+cmd_taggable() {
+    [ $# -eq 1 ] || die "usage: taggable VERSION"
+    local ver="$1"
+    check_version "${ver}"
+    [ -n "${GITHUB_WORKFLOW_REF:-}" ] || die "GITHUB_WORKFLOW_REF is not set"
+    local sha="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+    local repo="${GITHUB_REPOSITORY:-projectbluefin/server}"
+    # <owner>/<repo>/.github/workflows/<file>@<ref>
+    local workflow="${GITHUB_WORKFLOW_REF%@*}"
+    workflow=".github/${workflow#*/.github/}"
+
+    local ours theirs
+    ours="$(git rev-parse --verify --quiet "${sha}:${workflow}")" \
+        || die "${workflow} not found at ${sha}"
+    theirs="$(gh api "repos/${repo}/contents/${workflow}" --jq .sha)" \
+        || die "cannot read ${workflow} on the default branch of ${repo}"
+    [[ "${theirs}" =~ ^[0-9a-f]{40}$ ]] || die "unexpected blob id for ${workflow}: ${theirs}"
+
+    if [ "${ours}" = "${theirs}" ]; then
+        echo "${workflow} at ${sha} matches the default branch: v${ver} can be tagged"
+        output publish true
+        return
+    fi
+    local msg="v${ver} is not published: ${workflow} changed on the default branch after ${sha}, and GITHUB_TOKEN may not tag a commit whose running workflow differs from the default branch. The run for the newer commit publishes this content."
+    echo "::warning title=Release skipped::${msg}"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        echo "${msg}" >> "${GITHUB_STEP_SUMMARY}"
+    fi
+    output publish false
+}
+
 cmd_release() {
     [ $# -ge 2 ] || die "usage: release DIR VERSION [--dry-run]"
     local dir="$1" ver="$2" dry=0
@@ -219,7 +258,8 @@ sub="${1:-}"
 [ $# -gt 0 ] && shift
 case "${sub}" in
     verify) cmd_verify "$@" ;;
+    taggable) cmd_taggable "$@" ;;
     release) cmd_release "$@" ;;
     oci) cmd_oci "$@" ;;
-    *) die "usage: $0 verify|release|oci ..." ;;
+    *) die "usage: $0 verify|taggable|release|oci ..." ;;
 esac
