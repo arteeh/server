@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -565,9 +566,14 @@ def test_real_pins_are_readable(name):
     assert pins
     for pin in pins:
         assert pin.url.startswith("https://") and "%{" not in pin.url
-        # Nothing is written unless it verifies against a checksum upstream publishes.
+        # Nothing is written unless it verifies against something upstream
+        # publishes: a checksum file, or for a git tag the GitHub API's commit.
         assert pin.sums.startswith("https://") and pin.sums != pin.url, pin
-        assert track.SUMS_LINE_RE.match(track.read_pin(tree, pin)), pin
+        value = track.read_pin(tree, pin)
+        if isinstance(component, track.GitTagComponent):
+            assert component.COMMIT_RE.fullmatch(value), pin
+        else:
+            assert track.SUMS_LINE_RE.match(value), pin
 
 
 def test_every_pinned_source_belongs_to_exactly_one_component():
@@ -719,3 +725,181 @@ def test_every_nvidia_flavour_is_tracked():
     flavours = re.findall(r"^\s+(nvidia-open-\d+)-version:", (ROOT / "include/nvidia.yml").read_text(encoding="utf-8"), re.M)
     tracked = [n for n, c in track.COMPONENTS.items() if isinstance(c, track.NvidiaDriverComponent)]
     assert flavours and sorted(flavours) == sorted(tracked)
+
+
+CTK_REPO = "NVIDIA/nvidia-container-toolkit"
+CTK_GIT = f"https://github.com/{CTK_REPO}.git"
+CTK_PIN = "dffc40b4f820ce5c512633bac9e0418d0e05a2ee"
+CTK_FILES = {
+    "include/nvidia-container-toolkit.yml": f"""variables:
+  # NVIDIA/nvidia-container-toolkit release tag, without the leading "v".
+  nvidia-container-toolkit-version: "1.20.1"
+  # The commit that tag points to.
+  nvidia-container-toolkit-commit: "{CTK_PIN}"
+""",
+    "elements/nvidia/nvidia-container-toolkit.bst": """kind: manual
+
+(@):
+- include/nvidia-container-toolkit.yml
+
+sources:
+- kind: git_repo
+  url: github:NVIDIA/nvidia-container-toolkit.git
+  ref: "v%{nvidia-container-toolkit-version}-0-g%{nvidia-container-toolkit-commit}"
+""",
+}
+
+
+class Remote:
+    """Stands in for `git ls-remote`: serves the refs each test registers per URL."""
+
+    def __init__(self):
+        self.refs: dict[str, dict[str, str]] = {}
+        self.commands: list[list[str]] = []
+
+    def run(self, command, **kwargs):
+        self.commands.append(command)
+        assert command[:2] == ["git", "ls-remote"] and kwargs.get("check"), command
+        url, *patterns = command[2:]
+        if url not in self.refs:
+            raise subprocess.CalledProcessError(128, command, "", f"fatal: repository '{url}' not found\n")
+        listing = "".join(f"{sha}\t{name}\n" for name, sha in self.refs[url].items() if name in patterns)
+        return subprocess.CompletedProcess(command, 0, listing, "")
+
+    def tag(self, tag: str, commit: str, annotated: bool = True) -> None:
+        refs = self.refs.setdefault(CTK_GIT, {})
+        if annotated:
+            refs[f"refs/tags/{tag}"] = sha(tag.encode())[:40]
+            refs[f"refs/tags/{tag}^{{}}"] = commit
+        else:
+            refs[f"refs/tags/{tag}"] = commit
+
+
+@pytest.fixture
+def ctk(repo, upstream, monkeypatch):
+    for path, text in CTK_FILES.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(track, "COMPONENTS", {"nvidia-container-toolkit": track.COMPONENTS["nvidia-container-toolkit"]})
+    remote = Remote()
+    monkeypatch.setattr(subprocess, "run", remote.run)
+    return remote
+
+
+def ctk_api(upstream: Upstream, tag: str, commit: str) -> str:
+    url = f"https://api.github.com/repos/{CTK_REPO}/commits/refs/tags/{tag}"
+    upstream.files[url] = json.dumps({"sha": commit, "commit": {"message": tag}}).encode()
+    return url
+
+
+def commit(n: int) -> str:
+    return sha(str(n).encode())[:40]
+
+
+def test_toolkit_proposes_the_newest_stable_release_of_its_series(repo, upstream, ctk):
+    upstream.releases(CTK_REPO, [
+        release("v1.21.0", "nvidia-container-toolkit_1.21.0_rpm_x86_64.tar.gz"),
+        release("v1.21.0-rc.1", prerelease=True),
+        release("v1.20.4", prerelease=True),
+        release("v1.20.3", draft=True),
+        release("v1.20.3-rc.1", prerelease=True),
+        release("v1.20.2"),
+        release("v1.20.1"),
+        release("v1.19.9"),
+    ])
+    assert newest("nvidia-container-toolkit", repo) == "1.20.2"
+    assert ctk.commands == [], "check never asks the git remote"
+
+
+def test_toolkit_apply_writes_the_tags_commit_and_version(repo, upstream, ctk, tmp_path, capsys):
+    upstream.releases(CTK_REPO, [release("v1.20.2"), release("v1.20.1")])
+    api = ctk_api(upstream, "v1.20.2", commit(2))
+    ctk.tag("v1.20.2", commit(2))
+    before = snapshot(repo, CTK_FILES)
+    body = tmp_path / "body.md"
+
+    assert track.main(["apply", "nvidia-container-toolkit", "--summary", str(body)], root=repo) == 0
+
+    assert changed_lines(before, repo) == {
+        "include/nvidia-container-toolkit.yml": [
+            ('  nvidia-container-toolkit-version: "1.20.1"', '  nvidia-container-toolkit-version: "1.20.2"'),
+            (f'  nvidia-container-toolkit-commit: "{CTK_PIN}"', f'  nvidia-container-toolkit-commit: "{commit(2)}"'),
+        ],
+    }
+    assert capsys.readouterr().out.split() == ["include/nvidia-container-toolkit.yml"]
+    assert ctk.commands == [["git", "ls-remote", CTK_GIT, "refs/tags/v1.20.2", "refs/tags/v1.20.2^{}"]]
+    text = body.read_text()
+    assert "Patch release of **nvidia-container-toolkit** in the pinned `1.20` series: `1.20.1` → `1.20.2`." in text
+    assert "| File | Asset | commit |" in text
+    assert f"`{commit(2)}` (was `{CTK_PIN}`)" in text
+    assert f"- the GitHub API: {api}" in text
+    assert f"- the git remote: `git ls-remote {CTK_GIT} refs/tags/v1.20.2 'refs/tags/v1.20.2^{{}}'`" in text
+    assert "https://github.com/NVIDIA/nvidia-container-toolkit/releases/tag/v1.20.2" in text
+
+
+def test_toolkit_lightweight_tag_is_its_own_commit(repo, upstream, ctk):
+    ctk_api(upstream, "v1.20.2", commit(2))
+    ctk.tag("v1.20.2", commit(2), annotated=False)
+    track.apply(repo, "nvidia-container-toolkit", "1.20.2")
+    assert f'nvidia-container-toolkit-commit: "{commit(2)}"' in (repo / "include/nvidia-container-toolkit.yml").read_text()
+
+
+@pytest.mark.parametrize("annotated", [True, False])
+def test_toolkit_api_and_git_remote_that_disagree_write_nothing(repo, upstream, ctk, capsys, annotated):
+    upstream.releases(CTK_REPO, [release("v1.20.2")])
+    api = ctk_api(upstream, "v1.20.2", commit(2))
+    ctk.tag("v1.20.2", commit(3), annotated=annotated)
+    before = {p: (repo / p).read_bytes() for p in CTK_FILES}
+
+    assert track.main(["apply", "nvidia-container-toolkit"], root=repo) == 1
+
+    assert {p: (repo / p).read_bytes() for p in CTK_FILES} == before
+    assert f"ERROR: {api} says v1.20.2 is {commit(2)}, but the git remote {CTK_GIT} says {commit(3)}" in capsys.readouterr().err
+
+
+def test_toolkit_tag_missing_from_the_git_remote_writes_nothing(repo, upstream, ctk, capsys):
+    ctk_api(upstream, "v1.20.2", commit(2))
+    ctk.tag("v1.20.1", CTK_PIN)
+    before = {p: (repo / p).read_bytes() for p in CTK_FILES}
+
+    assert track.main(["apply", "nvidia-container-toolkit", "--version", "1.20.2"], root=repo) == 1
+
+    assert {p: (repo / p).read_bytes() for p in CTK_FILES} == before
+    assert f"ERROR: {CTK_GIT} has no refs/tags/v1.20.2" in capsys.readouterr().err
+
+
+def test_toolkit_api_without_a_commit_id_writes_nothing(repo, upstream, ctk):
+    url = f"https://api.github.com/repos/{CTK_REPO}/commits/refs/tags/v1.20.2"
+    upstream.files[url] = json.dumps({"message": "No commit found for SHA: refs/tags/v1.20.2"}).encode()
+    ctk.tag("v1.20.2", commit(2))
+    before = snapshot(repo, CTK_FILES)
+    with pytest.raises(track.TrackError, match="gives no commit id for v1.20.2"):
+        track.apply(repo, "nvidia-container-toolkit", "1.20.2")
+    assert snapshot(repo, CTK_FILES) == before
+
+
+def test_toolkit_no_op_leaves_files_byte_identical(repo, upstream, ctk, capsys):
+    upstream.releases(CTK_REPO, [release("v1.20.1"), release("v1.20.1-rc.1", prerelease=True)])
+    before = {p: (repo / p).read_bytes() for p in CTK_FILES}
+
+    assert track.main(["apply", "nvidia-container-toolkit"], root=repo) == 0
+
+    assert {p: (repo / p).read_bytes() for p in CTK_FILES} == before
+    assert capsys.readouterr().out == ""
+    assert ctk.commands == []
+
+
+def test_toolkit_refuses_an_element_ref_that_does_not_read_both_atoms(repo, upstream, ctk):
+    bst = repo / "elements/nvidia/nvidia-container-toolkit.bst"
+    bst.write_text(bst.read_text().replace("%{nvidia-container-toolkit-commit}", CTK_PIN))
+    with pytest.raises(track.TrackError, match="not `v%{nvidia-container-toolkit-version}-0-g%{nvidia-container-toolkit-commit}`"):
+        track.apply(repo, "nvidia-container-toolkit", "1.20.2")
+    assert upstream.requests == [] and ctk.commands == []
+
+
+def test_real_toolkit_element_pins_the_include_atoms():
+    tree = track.Tree(ROOT)
+    component = track.COMPONENTS["nvidia-container-toolkit"]
+    (pin,) = component.pins(tree)
+    assert (pin.path, pin.key, pin.url) == ("include/nvidia-container-toolkit.yml", "nvidia-container-toolkit-commit", CTK_GIT)
+    assert pin.sums == f"https://api.github.com/repos/{CTK_REPO}/commits/refs/tags/v{component.current(tree)}"

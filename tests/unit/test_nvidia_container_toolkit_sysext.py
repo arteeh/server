@@ -31,18 +31,20 @@ def commands(path: Path) -> str:
     return "\n".join(line for key in ("build-commands", "install-commands") for line in config.get(key, []))
 
 
-def test_version_is_pinned_once_and_the_source_by_sha256() -> None:
-    version = yaml.safe_load(VERSIONS.read_text(encoding="utf-8"))["variables"]["nvidia-container-toolkit-version"]
+def test_version_is_pinned_once_and_the_source_by_the_tags_commit() -> None:
+    atoms = yaml.safe_load(VERSIONS.read_text(encoding="utf-8"))["variables"]
+    version, commit = atoms["nvidia-container-toolkit-version"], atoms["nvidia-container-toolkit-commit"]
     assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert re.fullmatch(r"[0-9a-f]{40}", commit)
     [source] = element(TOOLKIT)["sources"]
-    assert source["kind"] == "tar"
-    assert source["url"] == (
-        "github:NVIDIA/nvidia-container-toolkit/archive/refs/tags/"
-        "v%{nvidia-container-toolkit-version}.tar.gz"
-    )
-    assert re.fullmatch(r"[0-9a-f]{64}", source["ref"])
+    assert source["kind"] == "git_repo"
+    assert source["url"] == "github:NVIDIA/nvidia-container-toolkit.git"
+    # git-describe form, exactly on the tag: BuildStream fetches the tag and
+    # that commit, and the tracker moves both atoms together.
+    assert source["ref"] == "v%{nvidia-container-toolkit-version}-0-g%{nvidia-container-toolkit-commit}"
     for path in (TOOLKIT, SYSEXT):
-        assert version not in path.read_text(encoding="utf-8"), path
+        text = path.read_text(encoding="utf-8")
+        assert version not in text and commit not in text, path
         assert "include/nvidia-container-toolkit.yml" in element(path)["(@)"]
 
 

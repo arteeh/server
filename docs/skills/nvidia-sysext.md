@@ -17,8 +17,7 @@ what is specific to NVIDIA: flavours, bumps, and container runtimes.
 ## When to Use
 
 - Bumping an NVIDIA driver flavour (`include/nvidia.yml`) or the NVIDIA
-  Container Toolkit (`include/nvidia-container-toolkit.yml` and the `ref:` in
-  `elements/nvidia/nvidia-container-toolkit.bst`).
+  Container Toolkit (`include/nvidia-container-toolkit.yml`).
 - Adding a driver flavour for a new NVIDIA branch (e.g. `nvidia-open-615`).
 - Changing the shared recipe (`include/nvidia-driver.yml`), the units and
   drop-ins in `files/nvidia/sysext/`, or the toolkit's drop-in in
@@ -146,21 +145,24 @@ new flavour.
 
 ### Container Toolkit
 
-The toolkit is bumped by hand and is not tracked. Its element builds from
-GitHub's auto-generated tag archive
-(`archive/refs/tags/v<version>.tar.gz`), and NVIDIA publishes no checksum
-for that archive, so a bump cannot be verified against a checksum upstream
-publishes, and the tracker writes nothing it cannot verify that way. To bump:
+The element fetches the release tag with git (`git_repo`) and builds from
+the vendored modules upstream commits. Its `ref:` reads the two atoms in
+`include/nvidia-container-toolkit.yml`: the version and the commit the tag
+points to. NVIDIA publishes no checksum for any archive of the source, so
+the tracker pins the commit instead, and writes it only when the GitHub API
+and the git remote (`git ls-remote`) name the same commit for the tag.
 
-1. Set `nvidia-container-toolkit-version` in
-   `include/nvidia-container-toolkit.yml`.
-2. Put the sha256 of
-   `https://github.com/NVIDIA/nvidia-container-toolkit/archive/refs/tags/v<version>.tar.gz`
-   in the `ref:` of `elements/nvidia/nvidia-container-toolkit.bst`;
-   BuildStream checks every fetch against it.
-3. Compare upstream's `deployments/systemd/` units for the new release with
-   `files/nvidia-container-toolkit/sysext/nvidia-cdi-refresh-bluefin.conf`,
-   which replaces upstream's `ExecCondition=`.
+The same tracker run proposes patch releases of the pinned `MAJOR.MINOR`
+(stable GitHub releases only). A minor bump runs the same verification:
+
+```bash
+python3 .github/scripts/track-binaries.py apply nvidia-container-toolkit --version <x>.<y>.<z>
+```
+
+Before merging any bump, compare upstream's `deployments/systemd/` units for
+the new release with
+`files/nvidia-container-toolkit/sysext/nvidia-cdi-refresh-bluefin.conf`,
+which replaces upstream's `ExecCondition=`.
 
 ## GPU nodes
 
@@ -228,7 +230,7 @@ rest of the GPU-present path that QEMU cannot exercise
 - Contracts: `tests/unit/test_nvidia_sysext.py` (driver),
   `tests/unit/test_nvidia_container_toolkit_sysext.py` (toolkit),
   `tests/unit/test_nvidia_container_toolkit_delivery.py` (toolkit activation
-  and sysupdate), `tests/unit/test_track_binaries.py` (driver tracking).
+  and sysupdate), `tests/unit/test_track_binaries.py` (driver and toolkit tracking).
 
 ## Repository layout
 
@@ -236,11 +238,11 @@ rest of the GPU-present path that QEMU cannot exercise
 | --- | --- |
 | `include/nvidia.yml` | The flavours: version and sha256 atoms. |
 | `include/nvidia-driver.yml` | Shared build, install, sign and stage recipe. |
-| `include/nvidia-container-toolkit.yml` | The toolkit version. |
+| `include/nvidia-container-toolkit.yml` | The toolkit version and its tag's commit. |
 | `elements/nvidia/<flavour>.bst` | Driver build: unpacks the `.run` payload, builds `kernel-open/`, unsigned. |
 | `elements/nvidia/<flavour>-signed.bst` | Signs the modules (sha512, `linux-module-cert.key`) and zstd-compresses them. |
 | `elements/oci/<flavour>-sysext.bst` | The image-locked EROFS sysext. |
-| `elements/nvidia/nvidia-container-toolkit.bst` | Toolkit build: Go with the release's vendored modules, no network. |
+| `elements/nvidia/nvidia-container-toolkit.bst` | Toolkit build: the release tag via git, Go with its vendored modules, no network. |
 | `elements/oci/nvidia-container-toolkit-sysext.bst` | The `ID=_any` toolkit sysext. |
 | `elements/bluefin-server/os-nvidia-container-toolkit-sysupdate.bst` | Installs the toolkit's sysupdate component, `/usr/lib/sysupdate.nvidia-container-toolkit.d/`. |
 | `files/nvidia/sysext/` | Driver units (`nvidia-flavour-guard`, `nvidia-load`, `nvidia-device-nodes`, `nvidia-ldconfig`, `nvidia-persistenced`), modprobe / sysusers / tmpfiles drop-ins, `extension-release.nvidia` template. |

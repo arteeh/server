@@ -10,8 +10,10 @@ description: |
   libnvidia-container. containerd reads the CDI spec that
   nvidia-cdi-refresh.service generates at /var/run/cdi/nvidia.yaml.
 
-  Go modules come from the vendor/ tree in the release tarball, so the
-  build needs no network. go-nvml needs cgo; the link flags are the ones
+  The source is the release tag's commit, fetched with git. Upstream
+  commits vendor/, so Go modules come from that tree and the build needs
+  no network. The third_party/libnvidia-container submodule is not
+  fetched; nothing built here uses it. go-nvml needs cgo; the link flags are the ones
   upstream's Makefile uses, which leave the NVML symbols to be resolved
   when libnvidia-ml is dlopen()ed.
 
@@ -27,9 +29,9 @@ build-depends:
 - freedesktop-sdk.bst:public-stacks/buildsystem-make.bst
 
 sources:
-- kind: tar
-  url: github:NVIDIA/nvidia-container-toolkit/archive/refs/tags/v%{nvidia-container-toolkit-version}.tar.gz
-  ref: 1c5b0f17bd3f56f3d1faa0ddaba8fa0c606fc416aeaf0ee0953265a438fab647
+- kind: git_repo
+  url: github:NVIDIA/nvidia-container-toolkit.git
+  ref: "v%{nvidia-container-toolkit-version}-0-g%{nvidia-container-toolkit-commit}"
 
 environment:
   GOROOT: "%{libdir}/go"

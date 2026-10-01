@@ -16,6 +16,9 @@ BuildStream source ref.
   nvidia-open-595  include/nvidia.yml                       NVIDIA-Linux-x86_64-       nvidia-open-595-sha256
                    nvidia-open-595-version                  <version>.run              in include/nvidia.yml
   oras             Justfile oras_image tag                  setup-oras url + checksum in .github/workflows/*.yml
+  nvidia-container-toolkit
+                   include/nvidia-container-toolkit.yml     the release tag's commit   nvidia-container-toolkit-
+                   nvidia-container-toolkit-version                                    commit in the same include
 
 The .bst pins cover every architecture the element fetches: the top-level
 amd64 sources and the arm64 ones under `(?): arch == "aarch64"`. Every
@@ -24,8 +27,10 @@ bump refreshes all architectures at once, and a release counts as a candidate
 only when every architecture's asset and checksum file is attached. ORAS is
 CI tooling and pinned for amd64 runners only. An NVIDIA driver flavour is
 x86_64 only, and its sha256 is an atom next to its version, which the
-element's `ref:` reads. The NVIDIA Container Toolkit is not tracked: it is
-bumped by hand (docs/skills/nvidia-sysext.md).
+element's `ref:` reads. The NVIDIA Container Toolkit is built from source
+fetched with git, and NVIDIA publishes no checksum for any archive of it, so
+its pin is the release tag's commit instead of a sha256
+(GitTagComponent).
 
 check   Newest release of each component inside its pinned MAJOR.MINOR series:
         Kubernetes from dl.k8s.io/release/stable-X.Y.txt, an NVIDIA driver
@@ -38,8 +43,9 @@ check   Newest release of each component inside its pinned MAJOR.MINOR series:
 apply   Moves one component to a version (default: the newest in its series)
         and rewrites every pin derived from it. Each sha256 is read from the
         checksum file the project publishes next to the asset, then confirmed
-        by downloading the asset and hashing it. Nothing is written unless
-        every pin verifies.
+        by downloading the asset and hashing it; a tag's commit must be the
+        same in the GitHub API and on the git remote. Nothing is written
+        unless every pin verifies.
 
 Only patch releases are proposed automatically. A minor bump is a decision: the
 kubeadm payload follows the minor of the cluster it joins
@@ -72,6 +78,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -176,7 +183,11 @@ class Tree:
 
 @dataclass(frozen=True)
 class Pin:
-    """A sha256 on the `key:` line in the same mapping as `url: anchor` in `path`."""
+    """A sha256 on the `key:` line in the same mapping as `url: anchor` in `path`.
+
+    `url` is what the pin pins and `sums` where its value is read: a checksum
+    file for a sha256, the GitHub API's commit for a git tag (GitTagComponent).
+    """
 
     path: str
     anchor: str
@@ -349,6 +360,38 @@ class Component:
     def notes(self, version: str) -> str:
         return f"https://github.com/{self.repo}/releases/tag/{urllib.parse.quote('v' + version)}"
 
+    # What a pin holds, for the pull request body.
+    pin_label = "sha256"
+
+    def verify(self, tree: Tree) -> list[Change]:
+        """Read each pin of the version `tree` is set to from upstream, confirm it and write it to `tree`.
+
+        The sha256 comes from the checksum file the project publishes next to
+        the asset and must match the downloaded asset's.
+        """
+        sums: dict[str, str] = {}
+        hashed: dict[str, str] = {}
+        changes = []
+        for pin in self.pins(tree):
+            if pin.sums not in sums:
+                sums[pin.sums] = _get(pin.sums).decode("utf-8", "replace")
+            sha = published_sha256(sums[pin.sums], pin.asset, pin.sums)
+            if pin.url not in hashed:
+                hashed[pin.url] = _download_sha256(pin.url)
+            if hashed[pin.url] != sha:
+                raise TrackError(f"{pin.url} hashes to {hashed[pin.url]}, but {pin.sums} says {sha}")
+            changes.append(Change(pin, read_pin(tree, pin), sha))
+            write_pin(tree, pin, sha)
+        return changes
+
+    def evidence(self, result: Result) -> list[str]:
+        return [
+            "Every sha256 comes from the checksum file upstream publishes next to the",
+            "asset, and matched the sha256 of the downloaded asset:",
+            "",
+            *[f"- {url}" for url in dict.fromkeys(change.pin.sums for change in result.changes)],
+        ]
+
 
 class BstComponent(Component):
     """Version atoms in a BuildStream include; sha256 refs on one element's sources."""
@@ -455,6 +498,102 @@ class NvidiaDriverComponent(BstComponent):
         return f"{self.INDEX}{version}/"
 
 
+class GitTagComponent(Component):
+    """A source fetched with git at a release tag, pinned by the tag's commit.
+
+    The version and the commit are two atoms in one include, and the
+    element's git_repo `ref:` reads both as `v<version>-0-g<commit>`, so the
+    version is written once. Candidates are the project's GitHub releases,
+    as for the binaries; a release needs no assets, only its tag.
+
+    No checksum file exists for a git tag, so `apply` asks two upstream
+    services for the tag's commit and writes nothing unless they agree: the
+    GitHub REST API (commits/refs/tags/<tag>, which peels an annotated tag)
+    and the git remote itself (`git ls-remote`, the `^{}` entry of an
+    annotated tag or the entry of a lightweight one). The commit id is the
+    content address BuildStream fetches by.
+    """
+
+    pin_label = "commit"
+    COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+
+    def __init__(self, name: str, repo: str, include: str, element: str):
+        self.name, self.repo, self.include, self.element = name, repo, include, element
+        self.version_variable, self.commit_variable = f"{name}-version", f"{name}-commit"
+        self.git_url = f"https://github.com/{repo}.git"
+
+    def current(self, tree):
+        return _variable(tree, self.include, self.version_variable)["value"]
+
+    def set_version(self, tree, version):
+        (value,) = self.parse(version)
+        match = _variable(tree, self.include, self.version_variable)
+        text = tree[self.include]
+        tree[self.include] = text[: match.start("value")] + value + text[match.end("value") :]
+
+    def ref_template(self) -> str:
+        return f"v%{{{self.version_variable}}}-0-g%{{{self.commit_variable}}}"
+
+    def pins(self, tree):
+        variables = {m["name"]: m["value"] for m in VARIABLE_RE.finditer(tree[self.include])}
+        aliases = {m["name"]: m["url"] for m in ALIAS_RE.finditer(tree["include/aliases.yml"])}
+        anchors = [
+            match["url"]
+            for match in map(URL_LINE_RE.match, tree[self.element].splitlines())
+            if match and _expand(match["url"], variables, aliases, self.element) == self.git_url
+        ]
+        if len(anchors) != 1:
+            raise TrackError(f"{self.element}: expected one source url for {self.git_url}, found {len(anchors)}")
+        ref = read_pin(tree, Pin(self.element, anchors[0], "ref", self.git_url, ""))
+        if ref != self.ref_template():
+            raise TrackError(f"{self.element}: the ref of {anchors[0]} is `{ref}`, not `{self.ref_template()}`")
+        tag = urllib.parse.quote(f"v{self.current(tree)}")
+        api = f"https://api.github.com/repos/{self.repo}/commits/refs/tags/{tag}"
+        return [Pin(self.include, "", self.commit_variable, self.git_url, api, standalone_key=True)]
+
+    def verify(self, tree):
+        (pin,) = self.pins(tree)
+        tag = f"v{self.current(tree)}"
+        from_api = json.loads(_get(pin.sums)).get("sha", "")
+        if not self.COMMIT_RE.fullmatch(from_api):
+            raise TrackError(f"{pin.sums} gives no commit id for {tag}")
+        from_git = _git_tag_commit(pin.url, tag)
+        if from_api != from_git:
+            raise TrackError(f"{pin.sums} says {tag} is {from_api}, but the git remote {pin.url} says {from_git}")
+        change = Change(pin, read_pin(tree, pin), from_api)
+        write_pin(tree, pin, from_api)
+        return [change]
+
+    def evidence(self, result):
+        tag = f"refs/tags/v{result.new}"
+        lines = ["The commit is the one two upstream answers agree on for the tag:", ""]
+        for pin, _, _ in result.changes:
+            lines += [f"- the GitHub API: {pin.sums}", f"- the git remote: `git ls-remote {pin.url} {tag} '{tag}^{{}}'`"]
+        return lines
+
+
+def _git_tag_commit(url: str, tag: str) -> str:
+    """The commit `tag` points to on the git remote at `url`, peeled if the tag is annotated."""
+    ref = f"refs/tags/{tag}"
+    command = ["git", "ls-remote", url, ref, ref + "^{}"]
+    try:
+        listing = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT, check=True,
+                                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}).stdout
+    except (OSError, subprocess.SubprocessError) as err:
+        detail = getattr(err, "stderr", None) or err
+        raise TrackError(f"{' '.join(command)}: {str(detail).strip()}") from None
+    refs = {}
+    for line in listing.splitlines():
+        commit, _, name = line.partition("\t")
+        refs[name] = commit
+    commit = refs.get(ref + "^{}") or refs.get(ref)
+    if commit is None:
+        raise TrackError(f"{url} has no {ref}")
+    if not GitTagComponent.COMMIT_RE.fullmatch(commit):
+        raise TrackError(f"{url}: {ref} is `{commit}`, not a commit id")
+    return commit
+
+
 class OrasComponent(Component):
     """The Justfile's ORAS image tag plus every setup-oras url and checksum."""
 
@@ -524,6 +663,9 @@ COMPONENTS: dict[str, Component] = {
                      element="elements/k0s/k0s-bin.bst", marker="%{k0s-upstream-tag}",
                      version_re=r"(\d+\.\d+\.\d+)\+k0s\.(\d+)", version_fmt="{0}+k0s.{1}"),
         NvidiaDriverComponent("nvidia-open-595"),
+        GitTagComponent("nvidia-container-toolkit", "NVIDIA/nvidia-container-toolkit",
+                        include="include/nvidia-container-toolkit.yml",
+                        element="elements/nvidia/nvidia-container-toolkit.bst"),
         OrasComponent(),
     )
 }
@@ -605,19 +747,7 @@ def apply(root: Path, name: str, version: str | None = None) -> Result | None:
     if version is None and new == old:
         return None
     component.set_version(tree, new)
-    sums: dict[str, str] = {}
-    hashed: dict[str, str] = {}
-    changes = []
-    for pin in component.pins(tree):
-        if pin.sums not in sums:
-            sums[pin.sums] = _get(pin.sums).decode("utf-8", "replace")
-        sha = published_sha256(sums[pin.sums], pin.asset, pin.sums)
-        if pin.url not in hashed:
-            hashed[pin.url] = _download_sha256(pin.url)
-        if hashed[pin.url] != sha:
-            raise TrackError(f"{pin.url} hashes to {hashed[pin.url]}, but {pin.sums} says {sha}")
-        changes.append(Change(pin, read_pin(tree, pin), sha))
-        write_pin(tree, pin, sha)
+    changes = component.verify(tree)
     files = tree.save()
     stale = re.compile(rf"(?<![\d.]){re.escape(old)}(?!\d)")
     mentions = [
@@ -636,17 +766,11 @@ def summary(result: Result) -> str:
         head = f"Patch release of **{component.name}** in the pinned `{series}` series: `{old}` → `{new}`."
     else:
         head = f"Moves **{component.name}** from `{old}` to `{new}`, a series change."
-    lines = [head, "", f"Release notes: {component.notes(new)}", "", "| File | Asset | sha256 |", "| --- | --- | --- |"]
+    lines = [head, "", f"Release notes: {component.notes(new)}", "", f"| File | Asset | {component.pin_label} |", "| --- | --- | --- |"]
     for pin, before, after in result.changes:
         was = "unchanged" if before == after else f"was `{before}`"
         lines.append(f"| `{pin.path}` | [`{pin.asset}`]({pin.url}) | `{after}` ({was}) |")
-    lines += [
-        "",
-        "Every sha256 comes from the checksum file upstream publishes next to the",
-        "asset, and matched the sha256 of the downloaded asset:",
-        "",
-        *[f"- {url}" for url in dict.fromkeys(change.pin.sums for change in result.changes)],
-    ]
+    lines += ["", *component.evidence(result)]
     if result.mentions:
         lines += ["", f"These lines of the changed files still mention `{old}`:", ""]
         lines += [f"- `{mention}`" for mention in result.mentions]
