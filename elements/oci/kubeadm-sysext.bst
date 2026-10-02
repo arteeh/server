@@ -4,10 +4,16 @@ description: |
   worker or a single-node control plane: kubelet, kubeadm, kubectl, crictl,
   containerd, runc and the CNI plugins from kubeadm/kubeadm-bin.bst, plus
   containerd.service, kubelet.service with kubeadm's 10-kubeadm.conf
-  drop-in, kubeadm-init.service with its default init config, and the
-  default containerd config, crictl config, module and sysctl drop-ins. No
-  preset enables anything; Ignition enables containerd.service and
-  kubelet.service (worker) or kubeadm-init.service (control plane) per node.
+  drop-in, kubeadm-init.service with its default init config, the default
+  containerd config, crictl config, module and sysctl drop-ins, and an
+  idempotent migration that prepends the containerd `imports` glob at the
+  top level of a pre-existing /etc/containerd/config.toml that lacks it
+  (line 1, the only always-valid placement for a top-level key) so drop-ins
+  (the NVIDIA Container Toolkit sysext's `nvidia` runtime handler, node
+  overrides in /etc/containerd/conf.d) deep-merge into the kubeadm config
+  on the next containerd start. No preset enables anything; Ignition
+  enables containerd.service and kubelet.service (worker) or
+  kubeadm-init.service (control plane) per node.
 
   Output: kubeadm_<image-version>.raw, .raw.zst and SHA256SUMS. Locked to
   one image version like the ZFS sysext (extension-release.kubeadm_<ver>,
@@ -56,6 +62,8 @@ config:
       "${src}/kubeadm-init.service" "${src}/kubeadm-init-config.service"
     install -D -m 0644 "${src}/10-kubeadm.conf" "${unitdir}/kubelet.service.d/10-kubeadm.conf"
     install -D -m 0755 "${src}/bluefin-kubeadm-init" "sysext%{libexecdir}/bluefin-kubeadm-init"
+    install -D -m 0755 "${src}/bluefin-kubeadm-containerd-migrate" \
+      "sysext%{libexecdir}/bluefin-kubeadm-containerd-migrate"
     install -D -m 0644 "${src}/80-kubeadm.preset" "${lib}/systemd/system-preset/80-kubeadm.preset"
     install -D -m 0644 "${src}/tmpfiles-kubeadm.conf" "${lib}/tmpfiles.d/kubeadm.conf"
     install -D -m 0644 "${src}/modules-load-kubeadm.conf" "${lib}/modules-load.d/kubeadm.conf"

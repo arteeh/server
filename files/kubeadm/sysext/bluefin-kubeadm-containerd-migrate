@@ -1,0 +1,193 @@
+#!/usr/bin/bash
+# bluefin-kubeadm-containerd-migrate — ensure /etc/containerd/config.toml has
+# a top-level `imports` glob line, so drop-ins (the NVIDIA Container Toolkit
+# sysext's `nvidia` runtime handler, the node's own overrides in
+# /etc/containerd/conf.d) deep-merge into the kubeadm containerd config
+# (files/kubeadm/sysext/config.toml).
+#
+# containerd resolves `imports` once, at config load, and only at the top
+# level — a TOML `imports = [...]` placed inside any `[plugins.*]` table is
+# not consulted. The kubeadm sysext seeds /etc/containerd/config.toml from
+# /usr/share/bluefin/containerd/config.toml only when absent (tmpfiles.d `C`);
+# an installed node from before the `imports` line existed keeps its old copy
+# until this migration runs. Once the NVIDIA Container Toolkit sysext's
+# activate unit (nvidia-container-toolkit-activate.service) restarts
+# containerd after the toolkit merges, a containerd start with the migrated
+# config makes the `nvidia` runtime handler visible to the GPU Operator.
+#
+# Idempotent: a config that already declares a top-level `imports` is left
+# alone, no mtime change, no DaemonSet or kured false trigger. A node without
+# /etc/containerd/config.toml yet (tmpfiles seeds it on the same service start)
+# is also a no-op.
+#
+# Usage: bluefin-kubeadm-containerd-migrate [--config=PATH]
+#   --config=PATH  override the config file (default /etc/containerd/config.toml);
+#                  tests use a temp file.
+#
+# Wired into files/kubeadm/sysext/containerd.service ExecStartPre.
+
+set -euo pipefail
+shopt -s inherit_errexit
+export LC_ALL=C
+
+PROG="${0##*/}"
+CONF=/etc/containerd/config.toml
+
+for arg in "$@"; do
+  case "${arg}" in
+    --config=*) CONF="${arg#--config=}" ;;
+    *) printf '%s: unknown argument: %s\n' "${PROG}" "${arg}" >&2; exit 2 ;;
+  esac
+done
+
+log() { printf '%s: %s\n' "${PROG}" "$*" >&2; }
+
+# The block both insertion paths write, so the blame comment and the globs
+# cannot drift apart between branches.
+emit_imports_block() {
+  printf '# Added by %s on containerd start: drop-ins (NVIDIA Container Toolkit\n' "${PROG}"
+  printf "# sysext's \`nvidia\` runtime handler, node overrides in /etc/containerd/conf.d)\n"
+  printf "# deep-merge into this config via containerd's \`imports\` glob. See\n"
+  printf '# docs/skills/kubeadm-sysext.md.\n'
+  printf 'imports = ["/usr/share/bluefin/containerd/conf.d/*.toml", "/etc/containerd/conf.d/*.toml"]\n'
+}
+
+# Does the file already declare a *top-level* `imports` key — the only
+# placement containerd consults? A textual `grep '^imports'` answers the
+# wrong question in both directions:
+#   * `imports = [...]` written after any `[table]` header belongs to that
+#     table (containerd ignores it), yet grep would report the node migrated
+#     and leave it broken forever;
+#   * a top-level but indented `  imports = [...]` is valid TOML that grep
+#     misses, so the helper would prepend a second top-level `imports` and
+#     write a config TOML rejects ("Cannot overwrite a value"), which
+#     containerd refuses to start with.
+# So walk the file instead: top level is everything before the first table
+# header, where a header is a line starting with `[` while no array is open
+# (bracket depth 0) — tracking depth is what keeps a continuation line of a
+# multi-line array (`  ["a"],`) from being mistaken for a header. Comments
+# and quoted strings are skipped so a `[` inside either does not shift depth.
+has_top_level_imports() {
+  local file=$1 line c quote depth=0 past_header=0 i n
+  while IFS= read -r line || [ -n "${line}" ]; do
+    if [ "${depth}" -eq 0 ] && [ "${past_header}" -eq 0 ]; then
+      if [[ ${line} =~ ^[[:space:]]*\[ ]]; then
+        past_header=1
+      elif [[ ${line} =~ ^[[:space:]]*imports[[:space:]]*= ]]; then
+        return 0
+      fi
+    fi
+    n=${#line}
+    i=0
+    while [ "${i}" -lt "${n}" ]; do
+      c=${line:i:1}
+      case ${c} in
+        '#') break ;;
+        '"'|"'")
+          quote=${c}
+          i=$((i + 1))
+          while [ "${i}" -lt "${n}" ]; do
+            c=${line:i:1}
+            if [ "${c}" = "\\" ] && [ "${quote}" = '"' ]; then
+              i=$((i + 1))
+            elif [ "${c}" = "${quote}" ]; then
+              break
+            fi
+            i=$((i + 1))
+          done
+          ;;
+        '[') depth=$((depth + 1)) ;;
+        ']') if [ "${depth}" -gt 0 ]; then depth=$((depth - 1)); fi ;;
+      esac
+      i=$((i + 1))
+    done
+  done < "${file}"
+  return 1
+}
+
+# Last line of defence before the live config is overwritten: parse the
+# composed content and refuse to install it if it is not valid TOML. The
+# `-` prefix on containerd.service's ExecStartPre cannot save a node from a
+# *successful* write of a broken config — containerd would crash-loop — so
+# the check has to happen here. python3's tomllib is preferred over
+# `containerd config dump` because it validates the TOML itself, without
+# containerd's schema and config-version opinions (a node mid-upgrade may
+# carry a config version its installed containerd rejects, which is not
+# this migration's business). containerd is the fallback when python3 has
+# no tomllib (pre-3.11).
+validate_toml() {
+  local file=$1
+  if command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import tomllib' >/dev/null 2>&1; then
+    python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${file}"
+    return
+  fi
+  if command -v containerd >/dev/null 2>&1; then
+    containerd --config "${file}" config dump >/dev/null
+    return
+  fi
+  printf 'no TOML validator available (python3 tomllib, containerd)\n' >&2
+  return 0
+}
+
+# Missing file: tmpfiles has not seeded it, or the kubeadm sysext is not
+# installed. Either way, nothing to migrate; containerd.service's tmpfiles
+# ExecStartPre will (re)seed before containerd starts.
+[ -f "${CONF}" ] || exit 0
+
+# Already declares a top-level imports key: leave the file untouched so
+# users, DaemonSets and kured see no change.
+if has_top_level_imports "${CONF}"; then
+  exit 0
+fi
+
+# Insert the same two globs the kubeadm config ships with at the very top of
+# the file. Line 1 is the only insertion point that is always valid TOML: a
+# top-level key written after any `[table]` header would belong to that table,
+# and containerd's loader only consults a top-level `imports` — placing it
+# inside `[plugins.'io.containerd.cri.v1.runtime'.cni]` (where the seeded
+# kubeadm config currently ends) nests it as `[plugins.*].imports` and is
+# silently ignored, which is why appending `imports = [...]` was not enough.
+# Scanning for the first `[section]` header instead cannot reliably tell a
+# header from a continuation line of a multi-line top-level array
+# (`required_plugins = [` / `  ["a"]` / `]`), and guessing wrong corrupts the
+# config; prepending never can.
+log "inserting imports at the top of ${CONF}"
+# Compose the new content into a sibling tmp file, then `cat` it back over
+# the original inode so mode, owner and SELinux label survive a 0600
+# install (umask would have set 0644 on a fresh file, and `mv` would have
+# replaced a symlink with a regular file).
+tmp="${CONF}.new.$$"
+trap 'rm -f -- "${tmp}"' EXIT
+{
+  emit_imports_block
+  printf '\n'
+  cat -- "${CONF}"
+} > "${tmp}"
+
+# Never install content TOML rejects: a prepended top-level `imports` can
+# collide with a key the on-disk config already carries, and a config that
+# fails to parse puts containerd in a crash-loop that the service's `-`
+# ExecStartPre prefix cannot undo (the write itself succeeded). Leave the
+# live config alone and keep the candidate for an operator to inspect.
+if ! validation=$(validate_toml "${tmp}" 2>&1); then
+  trap - EXIT
+  log "ERROR: migrated content is not valid TOML; ${CONF} left untouched, candidate kept at ${tmp}"
+  if [ -n "${validation}" ]; then
+    log "${validation}"
+  fi
+  exit 1
+fi
+
+# `cat > "${CONF}"` truncates before it writes, so a failure part-way (ENOSPC,
+# a read-only or immutable file) can leave the config truncated. Keep the tmp
+# file — the only complete copy of the migrated content — and name it in the
+# log so an operator can restore it; containerd.service runs this helper with
+# a `-` prefix, so a failure here never blocks the service.
+if ! cat -- "${tmp}" > "${CONF}"; then
+  trap - EXIT
+  log "ERROR: could not write ${CONF}; complete migrated content kept at ${tmp}"
+  exit 1
+fi
+rm -f -- "${tmp}"
+trap - EXIT

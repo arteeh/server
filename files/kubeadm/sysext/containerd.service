@@ -13,6 +13,13 @@ RequiresMountsFor=/var/lib/containerd
 # Seed a writable /etc/containerd/config.toml (and /etc/crictl.yaml) from
 # /usr/share/bluefin only if absent; a cluster DaemonSet may edit it in place.
 ExecStartPre=/usr/bin/systemd-tmpfiles --create kubeadm.conf
+# Idempotent: prepends the imports glob at the top of the file (the only
+# always-valid top level placement) when the on-disk config lacks it (an
+# installed node from before `imports` existed keeps its seeded copy until
+# this runs; docs/skills/kubeadm-sysext.md, review backlog issue #351).
+# Best effort (`-`): a config the helper cannot write (immutable, read-only
+# /etc) must not stop containerd from starting with its existing config.
+ExecStartPre=-/usr/libexec/bluefin-kubeadm-containerd-migrate
 ExecStartPre=/usr/bin/modprobe overlay
 ExecStartPre=/usr/bin/modprobe br_netfilter
 ExecStartPre=/usr/lib/systemd/systemd-sysctl 90-kubeadm.conf

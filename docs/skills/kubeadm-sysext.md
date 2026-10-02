@@ -4,7 +4,7 @@ description: Build, ship and operate the opt-in kubeadm systemd-sysext (kubelet,
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-10-01"
+  last_updated: "2026-10-02"
 ---
 # kubeadm sysext
 
@@ -38,6 +38,7 @@ Versions live in `include/kubeadm.yml`; every download is pinned by sha256 in
 | `/usr/bin/runc` | runc static build |
 | `/usr/libexec/cni/*` | containernetworking/plugins (whole tarball) |
 | `containerd.service`, `kubelet.service`, `kubelet.service.d/10-kubeadm.conf` | `files/kubeadm/sysext/` |
+| `/usr/libexec/bluefin-kubeadm-containerd-migrate` | `containerd.service` `ExecStartPre` ([Migration](#migration)) |
 | `/usr/share/bluefin/containerd/config.toml`, `/usr/share/bluefin/kubeadm/crictl.yaml` | defaults copied to `/etc` if absent |
 | `kubeadm-init.service`, `kubeadm-init-config.service`, `/usr/libexec/bluefin-kubeadm-init`, `/usr/share/bluefin/kubeadm/{init.yaml,init-tmpfiles.conf}` | opt-in control plane ([Single-node control plane](#single-node-control-plane)) |
 
@@ -82,6 +83,9 @@ but never newer. Patch releases change neither constraint.
   sysctl, so `containerd.service` re-applies them in `ExecStartPre`:
   `systemd-tmpfiles --create kubeadm.conf` (seeds a writable
   `/etc/containerd/config.toml` and `/etc/crictl.yaml` only when absent),
+  `/usr/libexec/bluefin-kubeadm-containerd-migrate` (backfills the
+  `imports` glob on a config that pre-dates drop-in glob support, see
+  [Migration](#migration)),
   `modprobe overlay br_netfilter`, then `systemd-sysctl 90-kubeadm.conf`
   (`ip_forward`, `bridge-nf-call-ip{,6}tables`). kubeadm needs containerd
   running, so these hold before any preflight.
@@ -95,8 +99,8 @@ but never newer. Patch releases change neither constraint.
   plugin sections, so a drop-in adds a runtime without restating the rest;
   a glob that matches nothing imports nothing. `/etc/containerd/config.toml`
   is seeded only when absent, so an installed node from before the imports
-  existed keeps its old copy until it is deleted (or given the `imports`
-  line) and containerd restarted; diskless nodes reseed every boot.
+  existed keeps its old copy; the [migration](#migration) adds the line on
+  its next containerd start. Diskless nodes reseed every boot.
 - kubelet restarts every 10 s until `kubeadm join` writes
   `/var/lib/kubelet/config.yaml` (standard kubeadm behaviour);
   `--volume-plugin-dir=/var/lib/kubelet/volumeplugins` because `/usr` is read-only.
@@ -106,6 +110,44 @@ but never newer. Patch releases change neither constraint.
   and the boot-deadline rollback reboot stand down and reboots belong to kured
   (the deadline flags `/run/reboot-required`); see "Updates" in
   [ddi-installer.md](ddi-installer.md).
+
+## Migration
+
+`/usr/libexec/bluefin-kubeadm-containerd-migrate` backfills the `imports`
+line into an `/etc/containerd/config.toml` seeded before the shipped config
+declared it. It runs on every `containerd.service` start, after the tmpfiles
+seed and before `modprobe overlay`, so containerd loads its result:
+
+- A config that already declares a **top-level** `imports` key (anywhere
+  ahead of the first `[table]` header, leading whitespace allowed) is left
+  alone: no write and no mtime change, so DaemonSets and kured see nothing.
+  Every config seeded from the current default has one, so fresh installs and
+  diskless boots (worker or `kubeadm-init.service` control plane) are
+  untouched. A missing file is a no-op too. An `imports =` written *after* a
+  table header is nested in that table, which containerd ignores, so such a
+  node is still migrated.
+- Otherwise it prepends the shipped `imports` line, under a comment naming
+  the helper, at line 1. Top-level placement is load-bearing: containerd only
+  consults a top-level `imports`, and a key appended after a `[table]` header
+  (the old config ends inside `[plugins.'io.containerd.cri.v1.runtime'.cni]`)
+  belongs to that table and is silently ignored. Line 1 is the only insertion
+  point that is always valid TOML; scanning for the first header cannot tell
+  one from the last element of a multi-line top-level array of arrays.
+- It writes the new content to a sibling `config.toml.new.<pid>`, checks it
+  parses as TOML (`python3`'s `tomllib`, else `containerd config dump`) and
+  only then copies it back over the original inode, so mode, owner and
+  SELinux label survive. Installing content containerd cannot parse would
+  crash-loop it, and the `-` prefix cannot undo a write that succeeded. If
+  validation or that copy fails (ENOSPC, read-only or immutable `/etc`), the
+  sibling keeps the complete migrated content and the log names it. The
+  `ExecStartPre` is `-`-prefixed, so containerd still starts with the old
+  config.
+
+An installed node picks it up on its first containerd start after updating
+to a kubeadm sysext that ships the helper. The NVIDIA Container Toolkit's
+activate unit restarts containerd after merging
+([nvidia-sysext.md](nvidia-sysext.md)), so the `nvidia` runtime handler
+reaches the GPU Operator on the boot that activates the toolkit sysext.
 
 ## Single-node control plane
 
