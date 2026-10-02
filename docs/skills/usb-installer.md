@@ -4,7 +4,7 @@ description: The offline USB installer bluefin-server-installer_<ver>.raw. Load 
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-30"
+  last_updated: "2026-10-01"
   context7-sources:
     - /systemd/systemd
 ---
@@ -54,9 +54,13 @@ never offers it there.
 ## Using the installer
 
 This is stock `systemd-sysinstall` (systemd-sysinstall(8)); Bluefin adds no
-installer UI of its own.
+installer UI of its own, apart from the Homelab entries' one prompt
+([Homelab entries](#homelab-entries)).
 
-1. Boot the stick. The installer UKI sets the `firstboot.keymap` credential
+1. Boot the stick. systemd-boot offers **Bluefin Server <ver>** (the
+   default, booted after 3 seconds), **Bluefin Server <ver> (Homelab:
+   control plane)** and **(Homelab: node)**; the steps below are the
+   default's. The installer UKI sets the `firstboot.keymap` credential
    (`us`), so `systemd-firstboot` asks nothing, and the screen goes straight to
    **Operating System Installer**.
 2. **Target disk.** sysinstall lists every disk it can install to as a
@@ -110,6 +114,50 @@ Power-cycle and boot the stick again to retry.
 The installed disk is identical to one a diskless node installs: stock
 `systemd-sysinstall` with the layout from `files/os/repart.d/` (see
 [ddi-installer.md](ddi-installer.md), "Installing to disk").
+
+## Homelab entries
+
+The two Homelab entries install the same OS onto the chosen disk, with the
+same prompts, and make it a homelab control plane or node
+([homelab-profile.md](homelab-profile.md)) without a network during the
+install:
+
+- They are profiles of the one signed installer UKI. Each adds
+  `systemd.set_credential=bluefin.install-homelab:control-plane` (or `:node`)
+  to the default entry's kernel command line, and nothing else; no secret is
+  on a command line or in a UKI.
+- `bluefin-homelab-install.service` (pulled in by the sysinstall drop-in,
+  `ConditionCredential=bluefin.install-homelab`, so the default entry skips
+  it) writes `BLUEFIN_INSTALL_ARGS` into
+  `/run/bluefin-homelab-install/sysinstall.env`, which the drop-in's
+  `ExecStart=` appends (the drop-in's default is empty, and an empty
+  `$BLUEFIN_INSTALL_ARGS` is no argument at all):
+  - `--definitions=/run/bluefin/installer/bluefin/homelab/repart.d`, whose
+    `10-esp.conf.d/50-bluefin-homelab.conf` adds a `CopyFiles=` of the
+    stick's `bluefin/homelab/extensions/` (the kubeadm and homelab sysexts of
+    this version and their `SHA256SUMS`) to the installed ESP's
+    `/bluefin/extensions/`. On the first boot `bluefin-sysext-fetch.service`
+    installs them from there and deletes the copy.
+  - `--load-credential=ignition.config:/run/bluefin/installer/bluefin/homelab/homelab-<role>.bu`:
+    the role's template, stored with the installed UKI like the other
+    sysinstall credentials. To customise the install (SSH key, MetalLB pool,
+    ...), edit `bluefin/homelab/homelab-<role>.bu` on the stick's
+    `bluefin-installer` partition before booting it.
+  - Node only: `--load-credential=bluefin-cluster.passphrase:...`. Before
+    sysinstall starts, the node entry asks on the monitor for the join
+    passphrase the control plane shows on its console; Enter alone leaves it
+    to the stick's template. A `bluefin-cluster.passphrase` credential
+    (SMBIOS) answers it unattended.
+- systemd-sysinstall encrypts the credentials it stores with the TPM2 when
+  there is one (else the null key), so the initrd carries libtss2 to unseal
+  `ignition.config`. They stay with the installed UKI until the first OS
+  update installs a new one; Ignition applies the template on every boot
+  until then.
+
+k0s is not offered here; use its templates ([homelab-profile.md](homelab-profile.md)).
+`scripts/dogfood-homelab-installer.sh` (`just dogfood-homelab-installer`)
+installs a control plane (with a TPM2) and then a node from the stick, with
+the network off, and checks that they form a cluster.
 
 ## Unattended installs
 

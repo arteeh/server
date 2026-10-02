@@ -1,0 +1,21 @@
+# Homelab components, applied in this order by bluefin-homelab-apply.
+# HOMELAB_<ID>=yes|no in /etc/bluefin/homelab.conf overrides the default; <ID>
+# is the directory name without its NN- prefix, upper-cased, "-" as "_"
+# (HOMELAB_LOCAL_PATH_PROVISIONER, HOMELAB_GPU_OPERATOR, ...).
+#
+# directory                  default  runtimes
+10-cilium                    on       kubeadm
+20-local-path-provisioner    on       kubeadm,k0s
+21-nfs                       off      kubeadm,k0s
+22-democratic-csi            off      kubeadm,k0s
+30-metallb                   on       kubeadm,k0s
+40-envoy-gateway             on       kubeadm,k0s
+45-cert-manager              on       kubeadm,k0s
+50-argocd                    on       kubeadm,k0s
+60-metrics-server            on       kubeadm
+61-reloader                  on       kubeadm,k0s
+62-kured                     on       kubeadm,k0s
+70-kube-prometheus-stack     off      kubeadm,k0s
+71-loki                      off      kubeadm,k0s
+72-alloy                     off      kubeadm,k0s
+80-gpu-operator              off      kubeadm,k0s

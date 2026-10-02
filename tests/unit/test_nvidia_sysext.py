@@ -283,7 +283,7 @@ def test_every_flavour_is_in_the_signed_release_set(flavour: str) -> None:
     image = (ELEMENTS / "oci" / "bluefin-server-image.bst").read_text(encoding="utf-8")
     assert f"filename: oci/{flavour}-sysext.bst" in image
     assert f"/sysext/{flavour}/{flavour}_%{{image-version}}.raw.zst" in image
-    assert "sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json > SHA256SUMS" in image
+    assert "sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json *.bu *.ign > SHA256SUMS" in image
     publish = (ROOT / "scripts" / "publish-release.sh").read_text(encoding="utf-8")
     assert f'"{flavour}_${{v}}\\\\.raw\\\\.zst"' in publish
 

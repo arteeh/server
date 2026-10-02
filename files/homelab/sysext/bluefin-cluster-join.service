@@ -1,0 +1,27 @@
+# Multi-node homelab, node (HOMELAB_ROLE=node in homelab.conf): find the
+# control plane over mDNS (or HOMELAB_CONTROL_PLANE), get a join token with
+# the join passphrase (HOMELAB_JOIN_PASSPHRASE or the
+# bluefin-cluster.passphrase credential) and join it, once: retries with
+# backoff until joined, then writes /var/lib/bluefin-cluster/joined and
+# removes the passphrase from homelab.conf. Wanted by multi-user.target
+# from this sysext; exits at once for any other role.
+[Unit]
+Description=Join this node to the homelab control plane (bluefin-cluster join)
+Documentation=https://github.com/projectbluefin/server/blob/main/files/homelab/cluster/README.md
+ConditionPathExists=/etc/bluefin/homelab.conf
+ConditionPathExists=!/var/lib/bluefin-cluster/joined
+Wants=network-online.target bluefin-cluster-mdns.service
+After=network-online.target bluefin-cluster-mdns.service systemd-resolved.service systemd-sysext.service
+
+[Service]
+# simple, not oneshot: joining waits for the control plane, and boot must
+# not wait for it.
+Type=simple
+RemainAfterExit=yes
+ExecStart=/usr/bin/bluefin-cluster join
+ImportCredential=bluefin-cluster.passphrase
+StateDirectory=bluefin-cluster
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=1min
+

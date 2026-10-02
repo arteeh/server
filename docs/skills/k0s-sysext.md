@@ -4,7 +4,7 @@ description: Build and ship the k0s systemd-sysext for Bluefin Server. KubeStell
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-28"
+  last_updated: "2026-10-01"
   context7-sources:
     - /systemd/systemd
 ---
@@ -53,7 +53,9 @@ Design choices:
   respectively, so only one is active.
 - **Overridable controller args.** The controller unit defaults to
   `--enable-worker --single --disable-components=helm,autopilot` (single-node,
-  no Helm). Set `K0S_CONTROLLER_ARGS` in `/etc/sysconfig/k0s` to override.
+  no Helm). Set `K0S_CONTROLLER_ARGS` in `/etc/sysconfig/k0s` to override;
+  the homelab k0s control-plane template drops `--single` so nodes can join
+  ([homelab-profile.md](homelab-profile.md)).
 - **Identity.** The extension uses `ID=_any` in its release metadata so it
   merges on any host image.
 - **Opt-in activation.** `k0s-first-boot.service` is explicitly disabled in

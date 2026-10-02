@@ -1,0 +1,15 @@
+# Multi-node homelab: pin the control plane's mDNS name (<cp>.local) to its
+# current address in /etc/hosts. kubelet, kubectl and kubeadm are statically
+# linked Go programs whose resolver skips nss-resolve, so without the pin
+# they would ask unicast DNS for a .local name. Run by
+# bluefin-cluster-hosts.timer, so a DHCP address change is followed.
+[Unit]
+Description=Pin the homelab control plane's mDNS name in /etc/hosts
+Documentation=https://github.com/projectbluefin/server/blob/main/files/homelab/cluster/README.md
+ConditionPathExists=/etc/bluefin/homelab.conf
+Wants=bluefin-cluster-mdns.service
+After=bluefin-cluster-mdns.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bluefin-cluster hosts

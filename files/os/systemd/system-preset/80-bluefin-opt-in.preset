@@ -4,3 +4,4 @@ disable k0s-first-boot.service
 disable k0s-first-boot-fetch.service
 disable nvidia-container-toolkit-activate.service
 disable nvidia-container-toolkit-fetch.service
+disable bluefin-sysext-fetch.service

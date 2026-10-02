@@ -8,6 +8,8 @@ export oras_image := env("ORAS_IMAGE", "ghcr.io/oras-project/oras:v1.3.4")
 export bst2_image := env("BST2_IMAGE", "registry.gitlab.com/freedesktop-sdk/infrastructure/freedesktop-sdk-docker-images/bst2:64eb0b4930d57a92710822898fb73af6cc1ae35d")
 # bats for `just test-unit` when none is installed -- pinned by digest.
 export bats_image := env("BATS_IMAGE", "docker.io/bats/bats:1.14.0@sha256:5322b877351fda0cc435de8c6116de7d0a2ec79d7c680132a0ef329a633bc66f")
+# butane (v2.27.0, built from the Ignition tree) for `just homelab-templates` -- pinned by digest.
+export butane_image := env("BUTANE_IMAGE", "quay.io/coreos/butane:release@sha256:d264fba5a02ec7a5525b7cd4ab04090e8c70d0ee42a74a90a0e2f89633ae720c")
 
 # Prefix for podman calls: empty when rootless podman works, "sudo" otherwise.
 sudo_cmd := if `podman info >/dev/null 2>&1 && echo 1 || echo 0` == "1" { "" } else { "sudo" }
@@ -68,7 +70,7 @@ validate: gen-dev-keys
     python3 .github/scripts/check-release-version.py
     python3 .github/scripts/check-k0s-version.py
     python3 .github/scripts/check-renovate-series.py
-    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/kubestellar-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst oci/nvidia-open-595-sysext.bst oci/nvidia-container-toolkit-sysext.bst
+    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/kubestellar-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst oci/homelab-sysext.bst oci/nvidia-open-595-sysext.bst oci/nvidia-container-toolkit-sysext.bst
 
 # Run the unit test suite (pytest + bats; bats from a container if not installed).
 [group('dev')]
@@ -202,6 +204,46 @@ export-zfs-sysext: build-zfs-sysext
     rm -rf dist/zfs-checkout
     @echo "==> wrote zfs sysext:" && ls -lh dist/sysext/
 
+# Build the homelab sysext (component manifests + bluefin-homelab-apply).
+[group('sysext')]
+build-homelab-sysext:
+    just bst build oci/homelab-sysext.bst
+
+# Export the homelab sysext + SHA256SUMS to dist/sysext/.
+[group('sysext')]
+export-homelab-sysext: build-homelab-sysext
+    rm -rf dist/homelab-checkout
+    mkdir -p dist/sysext
+    just bst artifact checkout oci/homelab-sysext.bst --directory /src/dist/homelab-checkout
+    cp dist/homelab-checkout/homelab_*.raw.zst dist/sysext/
+    grep 'raw.zst$' dist/homelab-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
+    rm -rf dist/homelab-checkout
+    @echo "==> wrote homelab sysext:" && ls -lh dist/sysext/
+
+# Re-render files/homelab/manifests/ from the pins in the render script (network, podman).
+[group('sysext')]
+render-homelab-manifests:
+    python3 scripts/render-homelab-manifests.py
+
+# Compile the homelab Butane templates (files/homelab/templates/*.bu) to the
+# Ignition .ign next to each; CHECK=1 only fails if a committed .ign differs.
+[group('sysext')]
+homelab-templates CHECK="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rc=0
+    for bu in files/homelab/templates/*.bu; do
+        ign="${bu%.bu}.ign"
+        out="$({{sudo_cmd}} podman run --rm -i --network=none "${butane_image}" --strict --pretty < "${bu}")"
+        if [ -n "{{CHECK}}" ]; then
+            [ "${out}" = "$(cat "${ign}")" ] || { echo "ERROR: ${ign} is not the compiled ${bu}; run just homelab-templates" >&2; rc=1; }
+        else
+            printf '%s\n' "${out}" > "${ign}"
+            echo "==> ${ign}"
+        fi
+    done
+    exit "${rc}"
+
 # Build an NVIDIA driver sysext (open kernel modules; locked to one image version).
 [group('sysext')]
 build-nvidia-sysext FLAVOUR="nvidia-open-595": gen-dev-keys
@@ -222,6 +264,30 @@ export-nvidia-sysext FLAVOUR="nvidia-open-595": (build-nvidia-sysext FLAVOUR)
 [group('sysext')]
 dogfood-nvidia FLAVOUR="nvidia-open-595":
     bash scripts/dogfood-nvidia.sh dist/diskless "dist/diskless/{{FLAVOUR}}_$(sed -n 's/^  image-version: "\(.*\)"$/\1/p' include/image.yml).raw.zst"
+
+# Boot dist/diskless/ in QEMU as a single-node kubeadm control plane (needs helm
+# and guest internet for the control-plane and Cilium images).
+[group('sysext')]
+dogfood-kubeadm:
+    bash scripts/dogfood-kubeadm.sh dist/diskless
+
+# Boot dist/diskless/ in QEMU as a two-node homelab (control plane + a node that
+# joins with the passphrase over mDNS) plus a wrong-passphrase node (guest internet).
+[group('sysext')]
+dogfood-homelab-cluster:
+    bash scripts/dogfood-homelab-cluster.sh dist/diskless
+
+# QEMU: a diskless control plane and node from the homelab templates as
+# published (needs guest internet).
+[group('sysext')]
+dogfood-homelab-templates:
+    bash scripts/dogfood-homelab-templates.sh dist/diskless
+
+# QEMU: offline installs of a control plane and a node from the USB
+# installer's Homelab entries, then the cluster (needs guest internet).
+[group('sysext')]
+dogfood-homelab-installer:
+    bash scripts/dogfood-homelab-installer.sh dist/diskless
 
 # Build the NVIDIA Container Toolkit (CDI) systemd-sysext (own version axis).
 [group('sysext')]

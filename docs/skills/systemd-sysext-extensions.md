@@ -4,7 +4,7 @@ description: Extensibility via systemd-sysext and systemd-confext for Bluefin Se
 metadata:
   type: reference
   status: stable
-  last_updated: "2026-09-30"
+  last_updated: "2026-10-01"
   context7-sources:
     - /systemd/systemd
 ---
@@ -74,6 +74,33 @@ The first-party extensions make opposite choices:
   Ignition, which writes `/etc/extensions/<name>_<ver>.raw` with a sha256
   verification hash.
 
+Enabling a feature only makes later updates bring its sysext; nothing
+fetches it for the version already running. The opt-in
+`bluefin-sysext-fetch.service` does (disabled by `80-bluefin-opt-in.preset`;
+the homelab templates enable it, [homelab-profile.md](homelab-profile.md)).
+Once per image version (a stamp in `/var/lib/bluefin-sysext-fetch/<ver>`)
+`/usr/libexec/bluefin-sysext-fetch` takes the features enabled by drop-ins
+under `/etc/sysupdate.d/<feature>.feature.d/`, and installs each of their
+transfers' files for the booted version that is missing, from the first of:
+
+1. `<ESP>/bluefin/extensions/`, the USB installer's copy (its Homelab
+   entries), deleted once used; checked against its `SHA256SUMS`, which is
+   not signed (`Verify=no`): it is as trustworthy as the disk it is on;
+2. on a diskless node, the directory it booted from (`bluefin-boot-origin`),
+   which serves the whole release set, signature checked (`Verify=yes`);
+3. on an installed node, plain `systemd-sysupdate update`: with the feature
+   enabled the booted version counts as incomplete and is repaired; if the
+   release is newer, sysupdate installs that version instead and the node
+   reboots into it.
+
+1 and 2 run `systemd-sysupdate --definitions=` against copies of the feature
+transfers in `/run/bluefin-sysext-fetch/` whose source `Path=` is that
+directory and whose `Features=` line is dropped. Then it runs
+`systemd-sysext refresh` and starts `bluefin-sysext-activate.service`, which
+it is ordered before (and before `kubeadm-init.service` and
+`k0s-first-boot.service`), so units the new sysexts or the provisioning
+config enable start in the same boot. A failed fetch retries every 30 s.
+
 The NVIDIA driver sysexts (`nvidia-open-<branch>_<image-version>.raw`, open
 kernel modules only; flavours and pins in `include/nvidia.yml`) are
 version-locked the same way and ship in the signed release set; installed
@@ -84,6 +111,27 @@ QEMU, and `DOGFOOD_SYSEXT=nvidia scripts/dogfood-install.sh` (or
 update and a rollback. Their units skip themselves on a node without an
 NVIDIA GPU, and `nvidia-flavour-guard.service` fails when two flavours are
 merged.
+
+The **homelab** sysext (`oci/homelab-sysext.bst`, `homelab_<image-version>.raw`,
+sysupdate feature `homelab`) is version-locked the same way and carries no
+binaries: the default homelab component set as plain YAML under
+`/usr/share/bluefin/homelab/<NN-component>/`, rendered offline by
+`scripts/render-homelab-manifests.py` (`just render-homelab-manifests`) from
+upstream charts and manifests pinned by version and sha256, with every image
+pinned by digest; the build only stages the committed files. Its
+`bluefin-homelab-apply.service` is wanted by `kubelet.service` and
+`k0scontroller.service` and runs only when `/etc/bluefin/homelab.conf` exists
+(`homelab.conf.example` next to the manifests lists every key). It waits for
+the API server of the node's kubeadm or k0s control plane, then server-side
+applies the enabled components in the order of the `components` index (Cilium
+only on kubeadm, metrics-server only on kubeadm because k0s ships its own),
+waiting for CRDs and rollouts in between, fills `${HOMELAB_*}` placeholders
+from `homelab.conf`, skips files whose inputs are unset, and never deletes.
+A failed run is retried by the unit. It also carries `bluefin-cluster` (a Go
+binary, so the image has `ARCHITECTURE=`) for multi-node homelabs
+(`HOMELAB_ROLE`), and a `20-wired.network` drop-in enabling mDNS; see
+[`files/homelab/cluster/README.md`](../../files/homelab/cluster/README.md).
+The applier does nothing on `HOMELAB_ROLE=node`.
 
 The toolkit is delivered like k0s: the sysupdate component
 `nvidia-container-toolkit` (`/usr/lib/sysupdate.nvidia-container-toolkit.d/`)

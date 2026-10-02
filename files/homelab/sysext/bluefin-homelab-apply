@@ -1,0 +1,351 @@
+#!/usr/bin/bash
+# bluefin-homelab-apply — apply the homelab sysext's manifests to this node's
+# cluster (bluefin-homelab-apply.service).
+#
+# Finds the control plane's admin kubeconfig (kubeadm /etc/kubernetes/admin.conf
+# or k0s /var/lib/k0s/pki/admin.conf), waits for the API server, then applies
+# every enabled component in /usr/share/bluefin/homelab in the order of its
+# "components" index with server-side apply. Within a component the files
+# apply in name order: CRDs (waits until Established), Namespaces, generated
+# Secrets, then the rest; after each file it waits for the Deployments,
+# DaemonSets and StatefulSets in it to roll out.
+#
+# /etc/bluefin/homelab.conf (the unit's EnvironmentFile) selects components
+# (HOMELAB_<ID>=yes|no) and holds the site inputs that replace the
+# ${HOMELAB_*} placeholders. A file whose inputs are missing is skipped and
+# logged; a component whose operator files are missing is skipped. Nothing is
+# ever deleted, so every run is a no-op on a converged cluster.
+#
+# Exits 1 when a component failed to apply or roll out in time (the unit
+# retries); 0 otherwise, including on nodes that are not a control plane
+# (HOMELAB_ROLE=node, or no admin kubeconfig).
+set -uo pipefail
+
+MANIFESTS=${HOMELAB_MANIFESTS:-/usr/share/bluefin/homelab}
+# Test hook: prefix for the host paths below.
+ROOT=${HOMELAB_ROOT:-}
+WAIT_TIMEOUT=${HOMELAB_WAIT_TIMEOUT:-600}
+API_TIMEOUT=${HOMELAB_API_TIMEOUT:-1800}
+POLL=${HOMELAB_POLL_INTERVAL:-5}
+FIELD_MANAGER=bluefin-homelab
+
+notice() { echo "<5>$*"; }
+warn() { echo "<4>$*"; }
+err() { echo "<3>$*"; }
+
+# Placeholder inputs: the validation pattern of each, then its default.
+declare -A PATTERN=(
+	[K8S_SERVICE_HOST]='^[A-Za-z0-9.:-]+$'
+	[K8S_SERVICE_PORT]='^[0-9]{1,5}$'
+	[METALLB_ADDRESSES]='^[0-9A-Fa-f.:/, -]+$'
+	[ACME_EMAIL]='^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$'
+	[ACME_SERVER]='^https://[A-Za-z0-9./_-]+$'
+	[ARGOCD_ROOT_REPO]='^(https://|http://|ssh://|git@)[A-Za-z0-9._~:/@+-]+$'
+	[ARGOCD_ROOT_REVISION]='^[A-Za-z0-9._/-]+$'
+	[ARGOCD_ROOT_PATH]='^[A-Za-z0-9._/-]+$'
+	[NFS_SERVER]='^[A-Za-z0-9.:-]+$'
+	[NFS_PATH]='^/[A-Za-z0-9._/-]*$'
+	[KURED_TIME_ZONE]='^[A-Za-z0-9_+/-]+$'
+	[KURED_START_TIME]='^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$'
+	[KURED_END_TIME]='^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$'
+	[KURED_REBOOT_DAYS]='^[a-z]{2}(,[a-z]{2})*$'
+)
+declare -A DEFAULT=(
+	[ACME_SERVER]=https://acme-v02.api.letsencrypt.org/directory
+	[ARGOCD_ROOT_REVISION]=HEAD
+	[ARGOCD_ROOT_PATH]=.
+	[KURED_TIME_ZONE]=UTC
+	[KURED_START_TIME]=0:00
+	[KURED_END_TIME]=23:59:59
+	[KURED_REBOOT_DAYS]='su,mo,tu,we,th,fr,sa'
+)
+
+# A control plane is coming up on this node, so its kubeconfig is worth
+# waiting for. Workers and plain hosts have nothing to apply.
+controller_expected() {
+	[ -e "${ROOT}/etc/kubernetes/bluefin/init.yaml" ] && return 0
+	systemctl -q is-enabled k0scontroller.service 2>/dev/null && return 0
+	systemctl -q is-enabled kubeadm-init.service 2>/dev/null && return 0
+	return 1
+}
+
+# Sets RUNTIME (kubeadm|k0s) and KUBECONFIG_FILE.
+find_kubeconfig() {
+	local deadline=$((SECONDS + API_TIMEOUT))
+	while :; do
+		if [ -s "${ROOT}/var/lib/k0s/pki/admin.conf" ]; then
+			RUNTIME=k0s KUBECONFIG_FILE=${ROOT}/var/lib/k0s/pki/admin.conf
+			return 0
+		fi
+		if [ -s "${ROOT}/etc/kubernetes/admin.conf" ]; then
+			RUNTIME=kubeadm KUBECONFIG_FILE=${ROOT}/etc/kubernetes/admin.conf
+			return 0
+		fi
+		controller_expected || return 1
+		[ "${SECONDS}" -lt "${deadline}" ] || return 2
+		sleep "${POLL}"
+	done
+}
+
+# kubectl from the kubeadm sysext, else the one built into k0s.
+find_kubectl() {
+	if command -v kubectl >/dev/null; then
+		KUBECTL=(kubectl)
+	elif command -v k0s >/dev/null; then
+		KUBECTL=(k0s kubectl)
+	else
+		return 1
+	fi
+	KUBECTL+=(--kubeconfig "${KUBECONFIG_FILE}")
+}
+
+k() { "${KUBECTL[@]}" "$@"; }
+
+wait_for_api() {
+	local deadline=$((SECONDS + API_TIMEOUT))
+	until k get --raw /readyz >/dev/null 2>&1; do
+		[ "${SECONDS}" -lt "${deadline}" ] || return 1
+		sleep "${POLL}"
+	done
+}
+
+# The API server address Cilium uses in place of the kubernetes Service
+# (there is no kube-proxy): the kubeconfig's server URL.
+api_server_inputs() {
+	local server hostport
+	server=$(sed -n 's/^[[:space:]]*server:[[:space:]]*//p' "${KUBECONFIG_FILE}" | head -n1)
+	hostport=${server#https://}
+	hostport=${hostport%%/*}
+	: "${HOMELAB_K8S_SERVICE_HOST:=$(service_host "$(host_of "${hostport}")")}"
+	: "${HOMELAB_K8S_SERVICE_PORT:=$(port_of "${hostport}")}"
+}
+# A multi-node control plane's endpoint is its mDNS name (<host>.local),
+# which Cilium's agent cannot resolve before CoreDNS runs: hand it the
+# address the host resolves the name to.
+# (resolvectl prints "<name>: <address> -- link: <link>"; no awk in the image.)
+service_host() {
+	local name addr=
+	case $1 in
+	*.local)
+		read -r name addr _ < <(resolvectl query -4 --legend=no "$1" 2>/dev/null) || true
+		[[ ${addr} =~ ^[0-9.]+$ ]] || addr=
+		echo "${addr:-$1}"
+		;;
+	*) echo "$1" ;;
+	esac
+}
+host_of() {
+	case $1 in
+	\[*\]:*) local h=${1%%]*}; echo "${h#[}" ;;
+	*:*) echo "${1%:*}" ;;
+	*) echo "$1" ;;
+	esac
+}
+port_of() {
+	case $1 in
+	\[*\]:* | [!\[]*:*) echo "${1##*:}" ;;
+	*) echo 443 ;;
+	esac
+}
+
+# Writes the sed script that fills in every valid input to $1.
+substitutions() {
+	local name value
+	: >"$1"
+	for name in "${!PATTERN[@]}"; do
+		value=$(input "${name}") || continue
+		printf 's|\\${HOMELAB_%s}|%s|g\n' "${name}" "${value}" >>"$1"
+	done
+}
+input() {
+	local var=HOMELAB_$1 value
+	value=${!var:-${DEFAULT[$1]:-}}
+	[ -n "${value}" ] || return 1
+	if ! [[ ${value} =~ ${PATTERN[$1]} ]]; then
+		warn "ignoring ${var}=${value}: does not match ${PATTERN[$1]}" >&2
+		return 1
+	fi
+	if [ "$1" = METALLB_ADDRESSES ]; then
+		# One or more ranges/CIDRs, comma or space separated -> a YAML list.
+		local -a ranges
+		read -r -a ranges <<<"${value//,/ }"
+		value=$(printf '"%s", ' "${ranges[@]}")
+		value="[${value%, }]"
+	fi
+	echo "${value}"
+}
+
+enabled() {
+	local var=$1 default=$2 value
+	value=${!var:-${default}}
+	case ${value,,} in
+	yes | on | true | 1) return 0 ;;
+	no | off | false | 0) return 1 ;;
+	*)
+		warn "ignoring ${var}=${value}: expected yes or no"
+		[ "${default}" = on ]
+		;;
+	esac
+}
+
+# Missing operator files a component's "secrets" list refers to.
+missing_files() {
+	local list=$1/secrets ns name kv
+	[ -f "${list}" ] || return 0
+	while read -r ns name kv; do
+		case ${ns} in '' | \#*) continue ;; esac
+		for kv in ${kv}; do
+			case ${kv#*=} in
+			@file:*) [ -r "${ROOT}${kv#*=@file:}" ] || echo "${kv#*=@file:}" ;;
+			esac
+		done
+	done <"${list}"
+}
+
+# Creates the Secrets a component's "secrets" list declares: @random values
+# once (never rotated), operator files on every run.
+apply_secrets() {
+	local list=$1/secrets ns name kvs kv key value from_file
+	local -a args
+	[ -f "${list}" ] || return 0
+	while read -r ns name kvs; do
+		case ${ns} in '' | \#*) continue ;; esac
+		args=() from_file=
+		for kv in ${kvs}; do
+			key=${kv%%=*} value=${kv#*=}
+			case ${value} in
+			@file:*) from_file=1 args+=("--from-file=${key}=${ROOT}${value#@file:}") ;;
+			@random) args+=("--from-literal=${key}=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')") ;;
+			*) args+=("--from-literal=${key}=${value}") ;;
+			esac
+		done
+		if [ -z "${from_file}" ] && k -n "${ns}" get secret "${name}" >/dev/null 2>&1; then
+			continue
+		fi
+		k -n "${ns}" create secret generic "${name}" "${args[@]}" --dry-run=client -o yaml |
+			k apply --server-side --force-conflicts --field-manager="${FIELD_MANAGER}" -f - >/dev/null ||
+			return 1
+		notice "${COMPONENT}: Secret ${ns}/${name} applied"
+	done <"${list}"
+}
+
+# Applies one manifest file and waits for what it creates. Returns 1 on
+# failure; a file with missing inputs is skipped.
+apply_file() {
+	local file=$1 rendered missing deadline kind ns name
+	rendered=${WORK}/$(basename "${file}")
+	sed -f "${WORK}/inputs.sed" "${file}" >"${rendered}"
+	missing=$(grep -o '\${HOMELAB_[A-Z0-9_]*}' "${rendered}" | sort -u | tr -d '${}' | tr '\n' ' ')
+	if [ -n "${missing}" ]; then
+		notice "${COMPONENT}: skipping $(basename "${file}"): ${missing% } not set in /etc/bluefin/homelab.conf"
+		return 0
+	fi
+	deadline=$((SECONDS + WAIT_TIMEOUT))
+	# Webhooks of the component just rolled out may need a moment for
+	# their endpoints; retry until the deadline.
+	until k apply --server-side --force-conflicts --field-manager="${FIELD_MANAGER}" -f "${rendered}" >"${WORK}/apply.log" 2>&1; do
+		if [ "${SECONDS}" -ge "${deadline}" ]; then
+			err "${COMPONENT}: applying $(basename "${file}") failed: $(tail -n3 "${WORK}/apply.log")"
+			return 1
+		fi
+		sleep "${POLL}"
+	done
+	# Until the API server has filled in a new CRD's .status, kubectl wait
+	# fails at once (".status.conditions accessor error") instead of
+	# waiting; retry until the deadline.
+	if grep -q '^kind: CustomResourceDefinition$' "${rendered}"; then
+		until k wait --for=condition=Established --timeout="$((deadline > SECONDS ? deadline - SECONDS : 1))s" -f "${rendered}" >"${WORK}/wait.log" 2>&1; do
+			if [ "${SECONDS}" -ge "${deadline}" ]; then
+				err "${COMPONENT}: CRDs in $(basename "${file}") not Established: $(tail -n1 "${WORK}/wait.log")"
+				return 1
+			fi
+			sleep "${POLL}"
+		done
+	fi
+	while read -r kind ns name; do
+		case ${kind} in Deployment | DaemonSet | StatefulSet) ;; *) continue ;; esac
+		if ! k -n "${ns}" rollout status "${kind,,}/${name}" --timeout="$((deadline > SECONDS ? deadline - SECONDS : 1))s" >/dev/null; then
+			err "${COMPONENT}: ${kind} ${ns}/${name} did not roll out in ${WAIT_TIMEOUT}s"
+			return 1
+		fi
+	done < <(k get -f "${rendered}" --no-headers -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name 2>/dev/null)
+}
+
+apply_component() {
+	local dir=$1 file missing secrets_done=
+	missing=$(missing_files "${dir}")
+	if [ -n "${missing}" ]; then
+		notice "${COMPONENT}: skipped, missing ${missing//$'\n'/ }"
+		return 0
+	fi
+	for file in "${dir}"/*.yaml; do
+		if [ -z "${secrets_done}" ] && [[ $(basename "${file}") != 0* ]]; then
+			apply_secrets "${dir}" || return 1
+			secrets_done=1
+		fi
+		apply_file "${file}" || return 1
+	done
+	[ -n "${secrets_done}" ] || apply_secrets "${dir}"
+}
+
+main() {
+	local status dir default runtimes id var
+	local -a failed=()
+	if [ "${HOMELAB_ROLE:-}" = node ]; then
+		notice "HOMELAB_ROLE=node: the control plane applies the components; nothing to do"
+		return 0
+	fi
+	find_kubeconfig
+	status=$?
+	case ${status} in
+	1) notice "no control plane on this node (no admin kubeconfig); nothing to apply"; return 0 ;;
+	2) err "no admin kubeconfig after ${API_TIMEOUT}s"; return 1 ;;
+	esac
+	if ! find_kubectl; then
+		err "neither kubectl (kubeadm sysext) nor k0s is available"
+		return 1
+	fi
+	notice "runtime ${RUNTIME}, kubeconfig ${KUBECONFIG_FILE}"
+	if ! wait_for_api; then
+		err "API server not ready after ${API_TIMEOUT}s"
+		return 1
+	fi
+	api_server_inputs
+	WORK=$(mktemp -d)
+	trap 'rm -rf "${WORK}"' EXIT
+	substitutions "${WORK}/inputs.sed"
+
+	while read -r dir default runtimes; do
+		case ${dir} in '' | \#*) continue ;; esac
+		id=${dir#*-}
+		var=HOMELAB_${id^^}
+		var=${var//-/_}
+		COMPONENT=${id}
+		if ! enabled "${var}" "${default}"; then
+			notice "${id}: disabled (${var})"
+			continue
+		fi
+		if [[ ,${runtimes}, != *,${RUNTIME},* ]]; then
+			notice "${id}: not used with ${RUNTIME}"
+			continue
+		fi
+		if [ "${id}" = argocd ] && [ "${RUNTIME}" = k0s ] && [ -e "${ROOT}/var/lib/k0s/manifests/argocd" ]; then
+			notice "${id}: managed by the kubestellar sysext's k0s manifests"
+			continue
+		fi
+		notice "${id}: applying"
+		if apply_component "${MANIFESTS}/${dir}"; then
+			notice "${id}: ready"
+		else
+			failed+=("${id}")
+		fi
+	done <"${MANIFESTS}/components"
+
+	if [ "${#failed[@]}" -gt 0 ]; then
+		err "failed: ${failed[*]}"
+		return 1
+	fi
+	notice "all enabled components applied"
+}
+
+main "$@"

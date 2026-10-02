@@ -1,0 +1,18 @@
+# Multi-node homelab, control plane (HOMELAB_ROLE=control-plane in
+# homelab.conf): before the first kubeadm init, give the node a unique
+# hostname if it is still "localhost" and put controlPlaneEndpoint
+# <hostname>.local:6443 plus certSANs into the seeded init config, so nodes
+# reach the API by its mDNS name. Wanted by kubeadm-init.service and
+# k0scontroller.service from this sysext; a no-op for any other role.
+[Unit]
+Description=Prepare this homelab control plane for nodes to join
+Documentation=https://github.com/projectbluefin/server/blob/main/files/homelab/cluster/README.md
+ConditionPathExists=/etc/bluefin/homelab.conf
+Wants=network-online.target bluefin-cluster-mdns.service
+After=network-online.target bluefin-cluster-mdns.service systemd-sysext.service kubeadm-init-config.service
+Before=kubeadm-init.service k0scontroller.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bluefin-cluster prepare

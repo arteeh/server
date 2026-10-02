@@ -1,0 +1,73 @@
+# Bluefin Server: Homelab — kubeadm node.
+#
+# Pass this file as the node's Ignition config (the ignition.config system
+# credential; Ignition reads Butane YAML as is) or compile it first with
+# `butane --strict`; homelab-node.ign is the compiled copy. On the first boot
+# the node pulls in the kubeadm and homelab sysexts
+# (bluefin-sysext-fetch.service, through the kubeadm and homelab sysupdate
+# features), finds the control plane (homelab-control-plane.bu) on the LAN
+# over mDNS and joins it with the join passphrase
+# (bluefin-cluster-join.service). Reference:
+# https://github.com/projectbluefin/server/blob/main/docs/skills/homelab-profile.md
+#
+# Edit before use: your SSH public key below, and the join passphrase in
+# homelab.conf (or pass it as the bluefin-cluster.passphrase credential).
+variant: fcos
+version: 1.7.0
+passwd:
+  users:
+    - name: root
+      ssh_authorized_keys:
+        # Replace this line with your SSH public key (sshd allows root with a
+        # key only). As root: kubectl, crictl, `bluefin-cluster passphrase`.
+        - "# REPLACE with your SSH public key, e.g. ssh-ed25519 AAAA... you@example.com"
+systemd:
+  units:
+    # sshd is off by default (80-bluefin-sshd.preset).
+    - name: sshd.service
+      enabled: true
+    - name: bluefin-sysext-fetch.service
+      enabled: true
+storage:
+  files:
+    - path: /etc/sysupdate.d/kubeadm.feature.d/50-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Feature]
+          Enabled=true
+    - path: /etc/sysupdate.d/homelab.feature.d/50-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Feature]
+          Enabled=true
+    # homelab.conf is created from this copy once (tmpfiles C: only while it
+    # is absent), so on an installed node later edits to
+    # /etc/bluefin/homelab.conf stay; Ignition applies this config on every
+    # boot that carries it.
+    - path: /etc/tmpfiles.d/50-bluefin-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          C /etc/bluefin/homelab.conf - - - - /etc/bluefin/homelab.conf.template
+    - path: /etc/bluefin/homelab.conf.template
+      mode: 0600
+      overwrite: true
+      contents:
+        inline: |
+          # /etc/bluefin/homelab.conf — a homelab node: it finds the control plane on
+          # the LAN over mDNS and joins it with the join passphrase. Components are
+          # applied by the control plane only. Every key, with its default:
+          # /usr/share/bluefin/homelab/homelab.conf.example.
+          HOMELAB_ROLE=node
+          # The passphrase the control plane shows on its console (or prints with
+          # `bluefin-cluster passphrase`). The USB installer's Homelab (node) entry
+          # asks for it and passes it as the bluefin-cluster.passphrase credential
+          # instead; this node deletes the line once joined.
+          #HOMELAB_JOIN_PASSPHRASE=four-words-from-the-console
+          # Node: skip mDNS discovery and use this control plane (host[:port]).
+          #HOMELAB_CONTROL_PLANE=cp1.local

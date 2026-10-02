@@ -1,0 +1,23 @@
+[Unit]
+Description=Apply the Bluefin Server homelab components to this node's cluster
+Documentation=https://github.com/projectbluefin/server/blob/main/docs/skills/systemd-sysext-extensions.md
+# Opt-in twice over: the homelab sysext must be merged (it wants this unit
+# from kubelet.service and k0scontroller.service) and the node must have a
+# homelab.conf. Nothing here is enabled by a preset.
+ConditionPathExists=/etc/bluefin/homelab.conf
+Wants=network-online.target
+After=network-online.target containerd.service kubelet.service kubeadm-init.service k0scontroller.service
+# A run that fails (an apply error or a rollout timeout) is retried; the
+# applier is idempotent and never deletes.
+StartLimitIntervalSec=3h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/bluefin/homelab.conf
+ExecStart=/usr/libexec/bluefin-homelab-apply
+# The applier bounds its own waits (HOMELAB_API_TIMEOUT, HOMELAB_WAIT_TIMEOUT).
+TimeoutStartSec=infinity
+Restart=on-failure
+RestartSec=2min

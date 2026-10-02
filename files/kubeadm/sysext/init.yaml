@@ -1,0 +1,36 @@
+# Bluefin Server default config for a single-node kubeadm control plane
+# (kubeadm-init.service). Read-only in the sysext: kubeadm-init-config.service
+# copies it to /etc/kubernetes/bluefin/init.yaml when that file is absent, so
+# edit the /etc copy (or have Ignition write it) before the first init.
+#
+# Unset on purpose: localAPIEndpoint.advertiseAddress (kubeadm picks the
+# address of the default route's interface) and nodeRegistration.name (the
+# hostname). Set them in the /etc copy to override.
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: bluefin
+# The sysext build substitutes its own kubelet/kubeadm version
+# (kubernetes-version in include/kubeadm.yml).
+kubernetesVersion: v@KUBERNETES_VERSION@
+imageRepository: registry.k8s.io
+networking:
+  dnsDomain: cluster.local
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+# /usr is read-only: kubeadm would mount (and the kubelet fail to create) the
+# default /usr/libexec/kubernetes/kubelet-plugins/volume/exec. Same directory
+# as the kubelet's --volume-plugin-dir (10-kubeadm.conf).
+controllerManager:
+  extraArgs:
+  - name: flex-volume-plugin-dir
+    value: /var/lib/kubelet/volumeplugins
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+containerRuntimeEndpoint: unix:///run/containerd/containerd.sock

@@ -1,0 +1,67 @@
+{
+  "ignition": {
+    "version": "3.6.0"
+  },
+  "passwd": {
+    "users": [
+      {
+        "name": "root",
+        "sshAuthorizedKeys": [
+          "# REPLACE with your SSH public key, e.g. ssh-ed25519 AAAA... you@example.com"
+        ]
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "overwrite": true,
+        "path": "/etc/sysupdate.d/kubeadm.feature.d/50-homelab.conf",
+        "contents": {
+          "compression": "",
+          "source": "data:,%5BFeature%5D%0AEnabled%3Dtrue%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/sysupdate.d/homelab.feature.d/50-homelab.conf",
+        "contents": {
+          "compression": "",
+          "source": "data:,%5BFeature%5D%0AEnabled%3Dtrue%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/tmpfiles.d/50-bluefin-homelab.conf",
+        "contents": {
+          "compression": "",
+          "source": "data:,C%20%2Fetc%2Fbluefin%2Fhomelab.conf%20-%20-%20-%20-%20%2Fetc%2Fbluefin%2Fhomelab.conf.template%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/bluefin/homelab.conf.template",
+        "contents": {
+          "compression": "gzip",
+          "source": "data:;base64,H4sIAAAAAAAC/2ySz47aMBDG736KkXIoSCWoVyoO7BaJVjQg2J6qijX2RHYxHsvjLM2tD9En7JNUdqjEor2Oku/P73MFU0xqenQdttZPDZ3RyWOtyLfw9/cfkHA9gSeNM7AJWus1QzIIinyK5CA46RHIi6qc14sG6AUjnD81e5Bew0+ynvO/F5tM+SZfIEjmYKJkrOGRzoE8+sQgI4oKZAjOooZj/6aX62tYvmDs4YT9+0HYJgaNrexcmokKph3HKRsZ8b7fq541/pLn4LAWq83X5XrxcNht1st57isqeDJ4k/ONKGzowkC+uCvyTA5hRBFCtLlNTiYqeL5GmCjXccJ4I/o8rovNt/0DWM9JOofxHcPqSn6Uo4wBfYp9BsMnhpZi5pnhZiEsdOUwy51TfRNfRdTok5VOVMULpf4IyVgu+4JGhwkHGWcLaDWMhboW1X9AXzafm8N2sd9vV7vFfjlvqYuTC0XNkzbSeZIMTq4oRAVNeTl8smF4EdqyojJdjt8VqpbvsI4Mcfo+CxTTj/GN9eOmedpt1oftetEs5yp8qB0p6cS/AAAA///jLsfLyQIAAA=="
+        },
+        "mode": 384
+      }
+    ]
+  },
+  "systemd": {
+    "units": [
+      {
+        "enabled": true,
+        "name": "sshd.service"
+      },
+      {
+        "enabled": true,
+        "name": "bluefin-sysext-fetch.service"
+      }
+    ]
+  }
+}

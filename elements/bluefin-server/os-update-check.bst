@@ -15,8 +15,15 @@ description: |
   - bluefin-update-pending: `systemd-sysupdate pending`, minus a version whose
     UKI already used up its boot tries; gates the kured flag and the nightly
     reboot so a rolled-back node does not reboot into it again.
-  Runtime tools: bash, coreutils, curl, gpgv, bootctl, systemd-analyze
-  (os-base.bst) and bluefin-boot-origin (boot-origin.bst).
+  - bluefin-sysext-fetch, run by the opt-in bluefin-sysext-fetch.service
+    (disabled by 80-bluefin-opt-in.preset; the homelab Ignition templates
+    link it): once per image version, installs the version-locked sysexts of
+    the sysupdate features the node enabled, from the USB installer's seed
+    on the ESP, the boot server (diskless) or the release
+    (systemd-sysupdate), and merges them.
+  Runtime tools: bash, coreutils, curl, gpgv, bootctl, systemd-analyze,
+  systemd-sysupdate, systemd-sysext (os-base.bst) and bluefin-boot-origin
+  (boot-origin.bst).
 
 sources:
 - kind: local

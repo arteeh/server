@@ -1,0 +1,75 @@
+#!/usr/bin/bash
+# bluefin-homelab-install — turn a USB installer boot from one of its Homelab
+# entries into a Homelab install.
+#
+# The installer's boot menu offers the installer UKI's profiles: "Bluefin
+# Server <ver>" (the default) installs Bluefin Server; "(Homelab: control
+# plane)" and "(Homelab: node)" add the bluefin.install-homelab credential
+# (control-plane | node) to the same kernel command line, and nothing else.
+# For those, this writes BLUEFIN_INSTALL_ARGS, which the image's
+# systemd-sysinstall drop-in appends to its command line:
+#
+#   --definitions=<stick>/bluefin/homelab/repart.d
+#       an ESP drop-in that copies the stick's kubeadm and homelab sysexts
+#       (and their SHA256SUMS) onto the installed disk's ESP, where
+#       bluefin-sysext-fetch.service installs them on the first boot: the
+#       install needs no network
+#   --load-credential=ignition.config:<stick>/bluefin/homelab/homelab-<role>.bu
+#       the role's Homelab template (Butane, which Ignition reads as is),
+#       stored with the installed UKI; edit it on the stick to customise
+#   --load-credential=bluefin-cluster.passphrase:<file>   (node only)
+#       the control plane's join passphrase, from the bluefin-cluster.passphrase
+#       credential or typed at the prompt on the console; never on a kernel
+#       command line or in the template on the stick
+#
+# The Server entry has no bluefin.install-homelab credential, so
+# bluefin-homelab-install.service is skipped and sysinstall runs exactly as
+# without it.
+#
+# Test overrides: BLUEFIN_INSTALLER_HOMELAB (the stick's homelab directory).
+
+set -euo pipefail
+export LC_ALL=C
+
+PROG="${0##*/}"
+die() { printf '%s: %s\n' "${PROG}" "$*" >&2; exit 1; }
+
+creds="${CREDENTIALS_DIRECTORY:?no credentials}"
+src="${BLUEFIN_INSTALLER_HOMELAB:-/run/bluefin/installer/bluefin/homelab}"
+out="${RUNTIME_DIRECTORY:?no runtime directory}"
+
+role="$(<"${creds}/bluefin.install-homelab")"
+case "${role}" in
+  control-plane|node) ;;
+  *) die "bluefin.install-homelab must be control-plane or node, not $(printf '%q' "${role}")" ;;
+esac
+template="${src}/homelab-${role}.bu"
+[ -s "${template}" ] || die "${template} is missing from the installer"
+[ -d "${src}/repart.d" ] || die "${src}/repart.d is missing from the installer"
+
+args=("--definitions=${src}/repart.d" "--load-credential=ignition.config:${template}")
+umask 077
+
+if [ "${role}" = node ]; then
+  pass=""
+  if [ -s "${creds}/bluefin-cluster.passphrase" ]; then
+    pass="$(<"${creds}/bluefin-cluster.passphrase")"
+  else
+    printf '\nBluefin Server: Homelab (node)\n\n'
+    printf 'Type the join passphrase that the control plane shows on its console\n'
+    printf '(or prints with "bluefin-cluster passphrase"), then press Enter.\n'
+    printf 'Press Enter alone if %s on this stick\n' "${template##*/}"
+    printf 'already sets HOMELAB_JOIN_PASSPHRASE.\n\nJoin passphrase: '
+    IFS= read -r pass || pass=""
+  fi
+  if [ -n "${pass}" ]; then
+    printf '%s' "${pass}" > "${out}/passphrase"
+    args+=("--load-credential=bluefin-cluster.passphrase:${out}/passphrase")
+  fi
+fi
+
+printf 'BLUEFIN_INSTALL_ARGS=%s\n' "${args[*]}" > "${out}/sysinstall.env"
+msg="Homelab ${role} install: template ${template##*/}, kubeadm and homelab sysexts from the installer"
+[ "${role}" != node ] || msg+=", join passphrase $([ -s "${out}/passphrase" ] && echo set || echo 'from the template')"
+printf '\n%s\n' "${msg}"
+printf '%s: %s\n' "${PROG}" "${msg}" >&2

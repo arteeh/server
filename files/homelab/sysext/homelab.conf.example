@@ -1,0 +1,65 @@
+# /etc/bluefin/homelab.conf — read by bluefin-homelab-apply.service and
+# bluefin-cluster (systemd EnvironmentFile syntax: KEY=value, no shell
+# expansion).
+#
+# Multi-node: HOMELAB_ROLE=control-plane on one node, HOMELAB_ROLE=node on
+# the others (unset: a single-node homelab). The control plane advertises
+# itself over mDNS and generates a join passphrase at first start (console
+# and `bluefin-cluster passphrase`); a node needs only that passphrase, which
+# it deletes from this file once joined. Components are applied by the
+# control plane only.
+#HOMELAB_ROLE=control-plane
+#HOMELAB_ROLE=node
+#HOMELAB_JOIN_PASSPHRASE=four-words-from-the-console
+# Node: skip mDNS discovery and use this control plane (host[:port]).
+#HOMELAB_CONTROL_PLANE=cp1.local
+# Control plane: name shown in the mDNS advertisement (default: hostname),
+# and the join service port.
+#HOMELAB_CLUSTER_NAME=homelab
+#HOMELAB_JOIN_PORT=6447
+#
+# Components: HOMELAB_<ID>=yes|no overrides the default listed in
+# /usr/share/bluefin/homelab/components. On by default: CILIUM (kubeadm only),
+# LOCAL_PATH_PROVISIONER, METALLB, ENVOY_GATEWAY, CERT_MANAGER, ARGOCD,
+# METRICS_SERVER (kubeadm only), RELOADER, KURED. Off by default: NFS,
+# DEMOCRATIC_CSI, GPU_OPERATOR and monitoring (KUBE_PROMETHEUS_STACK, LOKI,
+# ALLOY; enable all three together).
+
+# MetalLB L2 address pool: free LAN addresses outside your DHCP range (ranges
+# or CIDRs, comma separated). Required for LoadBalancer Services.
+#HOMELAB_METALLB_ADDRESSES=192.0.2.240-192.0.2.250
+
+# cert-manager: an ACME (Let's Encrypt) ClusterIssuer "acme" is added when an
+# email is set; the "selfsigned" ClusterIssuer is always there.
+#HOMELAB_ACME_EMAIL=you@example.com
+#HOMELAB_ACME_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Argo CD: an app-of-apps root Application "homelab-root".
+#HOMELAB_ARGOCD_ROOT_REPO=https://example.com/you/homelab.git
+#HOMELAB_ARGOCD_ROOT_REVISION=HEAD
+#HOMELAB_ARGOCD_ROOT_PATH=apps
+
+# kured reboot window (defaults: any day, all day, UTC).
+#HOMELAB_KURED_TIME_ZONE=UTC
+#HOMELAB_KURED_START_TIME=0:00
+#HOMELAB_KURED_END_TIME=23:59:59
+#HOMELAB_KURED_REBOOT_DAYS=su,mo,tu,we,th,fr,sa
+
+# NFS client provisioner (StorageClass "nfs-client").
+#HOMELAB_NFS=yes
+#HOMELAB_NFS_SERVER=nas.example.com
+#HOMELAB_NFS_PATH=/export/k8s
+
+# democratic-csi iSCSI (StorageClass "democratic-csi-iscsi"): its driver
+# config, including the NAS SSH key, goes in
+# /etc/bluefin/homelab.d/democratic-csi/driver-config-file.yaml (mode 0600).
+#HOMELAB_DEMOCRATIC_CSI=yes
+
+# NVIDIA GPU Operator: needs the nvidia-open-* and nvidia-container-toolkit
+# sysexts on the node.
+#HOMELAB_GPU_OPERATOR=yes
+
+# Monitoring: Prometheus/Alertmanager/Grafana, Loki and Alloy (pod + journal logs).
+#HOMELAB_KUBE_PROMETHEUS_STACK=yes
+#HOMELAB_LOKI=yes
+#HOMELAB_ALLOY=yes

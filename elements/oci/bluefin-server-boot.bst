@@ -11,7 +11,9 @@ description: |
     bluefin-server-installer_<ver>.efi
                                       USB installer: usr from the installer medium's
                                       bluefin-installer-* partitions, tmpfs root,
-                                      boots into system-install.target (systemd-sysinstall)
+                                      boots into system-install.target (systemd-sysinstall);
+                                      profiles 2 and 3 (Homelab: control plane, node)
+                                      add the bluefin.install-homelab credential
     efi-keys/{PK,KEK,db}.auth         Secure Boot enrollment payloads
     repart.d/                         disk layout: ESP, usr A/B + verity, root.
                                       Slot A is copied from the running image
@@ -197,21 +199,39 @@ config:
     uki() {
       printf 'usrhash=%s %s %s' "${usrhash}" "$2" "%{common-cmdline}" > "/tmp/$1.cmdline"
       echo "$1: $(cat "/tmp/$1.cmdline")"
+      name="$1"
+      shift 2
       ukify build \
         --linux=/tmp/vmlinuz \
         --initrd=/tmp/initrd.cpio.zst \
-        --cmdline=@"/tmp/$1.cmdline" \
+        --cmdline=@"/tmp/${name}.cmdline" \
         --os-release=@/osrel/usr/lib/os-release \
         --uname="$(ls /kmods/usr/lib/modules)" \
         --signtool=systemd-sbsign \
         --no-sign-kernel \
         --secureboot-private-key=/boot-keys/DB.key \
         --secureboot-certificate=/boot-keys/DB.crt \
-        --output="%{install-root}/$1.efi"
-      sbverify --cert /boot-keys/DB.crt "%{install-root}/$1.efi"
+        "$@" \
+        --output="%{install-root}/${name}.efi"
+      sbverify --cert /boot-keys/DB.crt "%{install-root}/${name}.efi"
     }
     uki bluefin-server-netboot_%{image-version} "%{netboot-cmdline}"
     uki bluefin-server-%{image-version} "%{disk-cmdline}"
-    uki bluefin-server-installer_%{image-version} "%{installer-cmdline}"
+    # The USB installer's boot menu: the default profile installs Bluefin
+    # Server; two more profiles of the same signed UKI, listed by
+    # systemd-boot as "Bluefin Server <ver> (Homelab: control plane)" and
+    # "(Homelab: node)", add only the bluefin.install-homelab credential (no
+    # secret), which bluefin-homelab-install.service turns into the Homelab
+    # install (docs/skills/usb-installer.md).
+    for role in control-plane node; do
+      printf 'usrhash=%s %s %s systemd.set_credential=bluefin.install-homelab:%s' \
+        "${usrhash}" "%{installer-cmdline}" "%{common-cmdline}" "${role}" > "/tmp/homelab-${role}.cmdline"
+      printf 'ID=homelab-%s\nTITLE=Homelab: %s\n' "${role}" "${role/-/ }" > "/tmp/homelab-${role}.profile"
+      echo "installer profile homelab-${role}: $(cat "/tmp/homelab-${role}.cmdline")"
+      ukify build --profile=@"/tmp/homelab-${role}.profile" \
+        --cmdline=@"/tmp/homelab-${role}.cmdline" --output="/tmp/homelab-${role}.efi"
+    done
+    uki bluefin-server-installer_%{image-version} "%{installer-cmdline}" \
+      --join-profile=/tmp/homelab-control-plane.efi --join-profile=/tmp/homelab-node.efi
     cp /efi-keys/usr/share/bluefin-server/efi-keys/*.auth "%{install-root}/efi-keys/"
     ls -l "%{install-root}"

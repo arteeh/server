@@ -4,7 +4,7 @@ description: Build, export, and dogfood the Bluefin Server image set (OS DDI, si
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-30"
+  last_updated: "2026-10-01"
   context7-sources:
     - /systemd/systemd
     - /apache/buildstream
@@ -144,6 +144,9 @@ Useful environment variables:
 - `DOGFOOD_MEM=<MiB>` — guest RAM (default 4096); below the diskless minimum
   the boot must fail with the RAM message (see `diskless-troubleshooting.md`).
 - `DOGFOOD_EXTRA_PROBE=<file>` — shell snippet appended to the in-guest probe.
+- `DOGFOOD_PROBE_LOG=<file>` — write the probe's output there while it runs,
+  for a caller that reacts to it (`dogfood-homelab-templates.sh` reads the
+  control plane's join passphrase from it).
 - `DOGFOOD_EXPECT=<ERE>` — `--check` also requires the probe output to match,
   e.g. with `tests/fixtures/ignition/apply-marker.ign` and its `.probe`:
   `PROBE ignition marker=applied unit=active enabled=enabled ran=yes`.

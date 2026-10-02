@@ -1,0 +1,20 @@
+# Applied only when HOMELAB_ARGOCD_ROOT_REPO is set: an app-of-apps root that
+# syncs everything under HOMELAB_ARGOCD_ROOT_PATH of that repository.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homelab-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "${HOMELAB_ARGOCD_ROOT_REPO}"
+    targetRevision: "${HOMELAB_ARGOCD_ROOT_REVISION}"
+    path: "${HOMELAB_ARGOCD_ROOT_PATH}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true

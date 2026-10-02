@@ -1,0 +1,30 @@
+#!/bin/sh
+# ExecStart of kubeadm-init.service: a single-node kubeadm control plane
+# from /etc/kubernetes/bluefin/init.yaml, without kube-proxy (Cilium
+# replaces it), schedulable, with root's kubectl pointed at admin.conf.
+set -eu
+
+config=/etc/kubernetes/bluefin/init.yaml
+admin=/etc/kubernetes/admin.conf
+taint=node-role.kubernetes.io/control-plane:NoSchedule
+
+# kubeadm's preflight wants kubelet enabled, and an installed node starts
+# both units from these symlinks on every later boot.
+systemctl enable containerd.service kubelet.service
+
+if ! kubeadm init --config "${config}" --skip-phases=addon/kube-proxy; then
+    # A failed init can leave admin.conf behind, and the unit skips while
+    # it exists: reset so the retry starts from a clean node.
+    kubeadm reset --force --cri-socket unix:///run/containerd/containerd.sock || true
+    exit 1
+fi
+
+# A link, not a copy, so `kubeadm certs renew` needs no follow-up.
+install -d -m 0700 /root/.kube
+ln -sfn "${admin}" /root/.kube/config
+
+# One node runs everything: drop the taint kubeadm put on it.
+export KUBECONFIG="${admin}"
+if kubectl get nodes -o jsonpath='{.items[*].spec.taints[*].key}' | tr ' ' '\n' | grep -qx "${taint%%:*}"; then
+    kubectl taint nodes --all "${taint}-"
+fi

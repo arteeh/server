@@ -38,7 +38,7 @@ GPT partition label with room to spare):
 | `bluefin-server-netboot_<ver>.efi` | Netboot UKI (diskless nodes); the UEFI HTTP boot / PXE target. |
 | `bluefin-server-netboot_<ver>.esp.raw` | Netboot ESP image: signed systemd-boot, the netboot UKI, and Secure Boot key enrollment payloads. Write it to a USB stick to boot diskless without HTTP boot. |
 | `bluefin-server-installer_<ver>.raw` | Offline USB installer; write to a stick to install without a network. See [usb-installer.md](usb-installer.md). |
-| `zfs_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` / `nvidia-open-595_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the `zfs` / `kubestellar` / `kubeadm` / `nvidia-open-595` sysupdate features. |
+| `zfs_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` / `homelab_<ver>.raw.zst` / `nvidia-open-595_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the `zfs` / `kubestellar` / `kubeadm` / `homelab` / `nvidia-open-595` sysupdate features. |
 | `k0s-<k0s-ver>.raw.zst` | Opt-in k0s sysext asset, on its own version axis. |
 | `nvidia-container-toolkit-<ctk-ver>.raw.zst` | Opt-in NVIDIA Container Toolkit (CDI) sysext asset, on its own version axis like k0s. |
 | `efi-keys/` | PK/KEK/db enrollment payloads. |

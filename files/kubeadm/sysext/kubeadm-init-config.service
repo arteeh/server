@@ -1,0 +1,12 @@
+# Pulled in only by kubeadm-init.service (no [Install]): copies the default
+# init config to /etc/kubernetes/bluefin/init.yaml if absent, before
+# kubeadm-init.service checks its conditions.
+[Unit]
+Description=Seed the default kubeadm init config
+ConditionPathExists=!/etc/kubernetes/admin.conf
+Before=kubeadm-init.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemd-tmpfiles --create /usr/share/bluefin/kubeadm/init-tmpfiles.conf

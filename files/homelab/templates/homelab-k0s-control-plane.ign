@@ -1,0 +1,71 @@
+{
+  "ignition": {
+    "version": "3.6.0"
+  },
+  "passwd": {
+    "users": [
+      {
+        "name": "root",
+        "sshAuthorizedKeys": [
+          "# REPLACE with your SSH public key, e.g. ssh-ed25519 AAAA... you@example.com"
+        ]
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "overwrite": true,
+        "path": "/etc/sysupdate.d/homelab.feature.d/50-homelab.conf",
+        "contents": {
+          "compression": "",
+          "source": "data:,%5BFeature%5D%0AEnabled%3Dtrue%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/sysconfig/k0s",
+        "contents": {
+          "compression": "",
+          "source": "data:,K0S_CONTROLLER_ARGS%3D--enable-worker%20--no-taints%20--disable-components%3Dhelm%2Cautopilot%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/tmpfiles.d/50-bluefin-homelab.conf",
+        "contents": {
+          "compression": "",
+          "source": "data:,C%20%2Fetc%2Fbluefin%2Fhomelab.conf%20-%20-%20-%20-%20%2Fetc%2Fbluefin%2Fhomelab.conf.template%0A"
+        },
+        "mode": 420
+      },
+      {
+        "overwrite": true,
+        "path": "/etc/bluefin/homelab.conf.template",
+        "contents": {
+          "compression": "gzip",
+          "source": "data:;base64,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"
+        },
+        "mode": 384
+      }
+    ]
+  },
+  "systemd": {
+    "units": [
+      {
+        "enabled": true,
+        "name": "sshd.service"
+      },
+      {
+        "enabled": true,
+        "name": "bluefin-sysext-fetch.service"
+      },
+      {
+        "enabled": true,
+        "name": "k0s-first-boot.service"
+      }
+    ]
+  }
+}

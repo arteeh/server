@@ -1,0 +1,26 @@
+# Opt-in single-node control plane: `kubeadm init` once, from
+# /etc/kubernetes/bluefin/init.yaml. Disabled by 80-kubeadm.preset; a node
+# enables it (Ignition: a multi-user.target.wants symlink, because the unit
+# only appears once the sysext is merged, after the boot's presets ran).
+# Skipped once /etc/kubernetes/admin.conf exists, i.e. on every later boot
+# of an installed node.
+[Unit]
+Description=Initialise a single-node Kubernetes control plane with kubeadm
+Documentation=https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-init/
+Wants=network-online.target kubeadm-init-config.service
+Requires=containerd.service
+After=network-online.target containerd.service kubeadm-init-config.service systemd-sysext.service
+ConditionPathExists=!/etc/kubernetes/admin.conf
+ConditionPathExists=/etc/kubernetes/bluefin/init.yaml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bluefin-kubeadm-init
+# Pulling the control-plane images needs the network; retry until it is up.
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

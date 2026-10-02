@@ -1,0 +1,20 @@
+# The LAN addresses MetalLB may hand to LoadBalancer Services, announced on
+# layer 2 (ARP/NDP). HOMELAB_METALLB_ADDRESSES in /etc/bluefin/homelab.conf:
+# one or more ranges or CIDRs, e.g. "192.0.2.240-192.0.2.250". Without it
+# this file is skipped and LoadBalancer Services stay Pending.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: default
+  namespace: metallb-system
+spec:
+  addresses: ${HOMELAB_METALLB_ADDRESSES}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: default
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - default

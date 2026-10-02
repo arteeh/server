@@ -1,0 +1,20 @@
+# Multi-node homelab, control plane: advertise _bluefin-cluster._tcp over
+# mDNS (a /run/systemd/dnssd file; no secrets in TXT) and hand a fresh
+# 15-minute join token to nodes that prove the join passphrase. Wanted by
+# kubelet.service and k0scontroller.service from this sysext; exits at once
+# unless HOMELAB_ROLE=control-plane.
+[Unit]
+Description=Homelab join service (bluefin-cluster serve)
+Documentation=https://github.com/projectbluefin/server/blob/main/files/homelab/cluster/README.md
+ConditionPathExists=/etc/bluefin/homelab.conf
+Wants=network-online.target bluefin-cluster-mdns.service
+After=network-online.target bluefin-cluster-mdns.service systemd-resolved.service kubeadm-init.service k0scontroller.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluefin-cluster serve
+StateDirectory=bluefin-cluster
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=10s

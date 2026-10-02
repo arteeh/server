@@ -3,3 +3,4 @@
 # default. Ignition (20-ignition.preset, sorted first) enables them per node.
 disable containerd.service
 disable kubelet.service
+disable kubeadm-init.service

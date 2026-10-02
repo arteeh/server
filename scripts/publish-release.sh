@@ -64,9 +64,16 @@ expected_patterns() {
         "zfs_${v}\\.raw\\.zst" \
         "kubestellar_${v}\\.raw\\.zst" \
         "kubeadm_${v}\\.raw\\.zst" \
+        "homelab_${v}\\.raw\\.zst" \
         "nvidia-open-595_${v}\\.raw\\.zst" \
         "k0s-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst" \
         "nvidia-container-toolkit-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst"
+    # The homelab Ignition templates: unversioned, so that
+    # releases/latest/download/<name> always names the newest.
+    local t
+    for t in homelab-control-plane homelab-node homelab-k0s-control-plane homelab-k0s-node; do
+        printf '%s\\.bu\n%s\\.ign\n' "${t}" "${t}"
+    done
 }
 
 cmd_verify() {

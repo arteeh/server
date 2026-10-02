@@ -24,6 +24,11 @@ description: |
   under /run and loads through `modprobe -d`. Nothing in the base image calls
   it; the extensions' load units do.
 
+  /usr/libexec/bluefin-homelab-install and its unit run on the USB installer
+  only, booted from a Homelab entry (the bluefin.install-homelab credential):
+  they hand systemd-sysinstall the Homelab template, the sysexts on the
+  stick and, for a node, the join passphrase asked on the console.
+
 build-depends:
   - base/base-stack.bst
 
@@ -55,3 +60,5 @@ config:
         "%{install-root}/usr/libexec/bluefin-firstboot-credentials"
       install -Dm0755 libexec-src/bluefin-sysext-modules \
         "%{install-root}/usr/libexec/bluefin-sysext-modules"
+      install -Dm0755 libexec-src/bluefin-homelab-install \
+        "%{install-root}/usr/libexec/bluefin-homelab-install"

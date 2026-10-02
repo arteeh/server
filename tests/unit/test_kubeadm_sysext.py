@@ -40,8 +40,8 @@ def test_versions_stay_on_the_cluster_nodes_series() -> None:
             assert re.fullmatch(r"\d+\.\d+\.\d+", version), name
             series[name] = version.rsplit(".", 1)[0]
     assert series == {
-        "kubernetes-version": "1.34",
-        "crictl-version": "1.34",
+        "kubernetes-version": "1.35",
+        "crictl-version": "1.35",
         "containerd-version": "2.1",
         "runc-version": "1.3",
         "cni-plugins-version": "1.1",
@@ -87,7 +87,7 @@ def test_sysext_is_version_locked_and_in_the_signed_release_set() -> None:
     image = IMAGE.read_text(encoding="utf-8")
     assert "filename: oci/kubeadm-sysext.bst" in image
     assert "/sysext/kubeadm/kubeadm_%{image-version}.raw.zst" in image
-    assert "sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json > SHA256SUMS" in image
+    assert "sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json *.bu *.ign > SHA256SUMS" in image
     assert "oci/kubeadm-sysext.bst" in (ROOT / "Justfile").read_text(encoding="utf-8")
 
 
@@ -97,7 +97,11 @@ def test_no_preset_enables_the_units() -> None:
         for line in (SRC / "80-kubeadm.preset").read_text().splitlines()
         if line and not line.startswith("#")
     ]
-    assert lines == [["disable", "containerd.service"], ["disable", "kubelet.service"]]
+    assert lines == [
+        ["disable", "containerd.service"],
+        ["disable", "kubelet.service"],
+        ["disable", "kubeadm-init.service"],
+    ]
     assert "20-ignition.preset" < "80-kubeadm.preset" < "90-systemd.preset"
     for preset in (ROOT / "files").rglob("*.preset"):
         for line in preset.read_text().splitlines():

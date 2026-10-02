@@ -1,16 +1,17 @@
 ---
 name: kubeadm-sysext
-description: Build, ship and operate the opt-in kubeadm worker systemd-sysext (kubelet, kubeadm, containerd, runc, CNI plugins) and the base-kernel options it and Cilium need.
+description: Build, ship and operate the opt-in kubeadm systemd-sysext (kubelet, kubeadm, containerd, runc, CNI plugins) as a worker or a single-node control plane, and the base-kernel options it and Cilium need.
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-29"
+  last_updated: "2026-10-01"
 ---
-# kubeadm worker sysext
+# kubeadm sysext
 
 ## When to Use
 
 - Joining a Bluefin Server node to an existing kubeadm cluster as a worker.
+- Running a single-node kubeadm control plane (`kubeadm-init.service`).
 - Bumping kubelet/kubeadm/kubectl, crictl, containerd, runc or CNI plugins.
 - Changing `containerd.service`, `kubelet.service`, the containerd config, or
   the kernel options Kubernetes networking needs.
@@ -38,6 +39,7 @@ Versions live in `include/kubeadm.yml`; every download is pinned by sha256 in
 | `/usr/libexec/cni/*` | containernetworking/plugins (whole tarball) |
 | `containerd.service`, `kubelet.service`, `kubelet.service.d/10-kubeadm.conf` | `files/kubeadm/sysext/` |
 | `/usr/share/bluefin/containerd/config.toml`, `/usr/share/bluefin/kubeadm/crictl.yaml` | defaults copied to `/etc` if absent |
+| `kubeadm-init.service`, `kubeadm-init-config.service`, `/usr/libexec/bluefin-kubeadm-init`, `/usr/share/bluefin/kubeadm/{init.yaml,init-tmpfiles.conf}` | opt-in control plane ([Single-node control plane](#single-node-control-plane)) |
 
 Nothing ships under `/opt`: `/opt/cni/bin` stays a writable host directory for
 the cluster CNI (Cilium's `cilium-cni`). containerd searches
@@ -72,9 +74,10 @@ but never newer. Patch releases change neither constraint.
 
 ## Runtime contract
 
-- No preset enables anything; `80-kubeadm.preset` disables both units against
-  FSDK's implicit default. Ignition enables the sysext, `containerd.service`
-  and `kubelet.service` per node, and runs `kubeadm join`.
+- No preset enables anything; `80-kubeadm.preset` disables `containerd.service`,
+  `kubelet.service` and `kubeadm-init.service` against FSDK's implicit default.
+  A worker's Ignition enables the sysext, `containerd.service` and
+  `kubelet.service`, and runs `kubeadm join`.
 - `systemd-sysext.service` is not ordered against tmpfiles, modules-load or
   sysctl, so `containerd.service` re-applies them in `ExecStartPre`:
   `systemd-tmpfiles --create kubeadm.conf` (seeds a writable
@@ -95,9 +98,77 @@ but never newer. Patch releases change neither constraint.
   (the deadline flags `/run/reboot-required`); see "Updates" in
   [ddi-installer.md](ddi-installer.md).
 
+## Single-node control plane
+
+`kubeadm-init.service` turns the node into a one-node cluster that also runs
+workloads. Opt-in: nothing enables it, and a worker never sees its config.
+
+- **Enable it** by linking it into `multi-user.target.wants`. Its unit exists
+  only once `systemd-sysext.service` has merged the image, after PID 1
+  applied the boot's presets, so Ignition's `enabled: true` (a preset line)
+  does not reach it. Ignition writes `/etc/extensions/kubeadm_<ver>.raw`
+  (with a sha256 `verification`) and the link
+  `/etc/systemd/system/multi-user.target.wants/kubeadm-init.service ->
+  /usr/lib/systemd/system/kubeadm-init.service`; after the merge,
+  `bluefin-sysext-activate.service` starts it. On an installed node,
+  `systemctl enable kubeadm-init.service` once the sysext is merged.
+- **Config.** `kubeadm-init-config.service` (static, pulled in only by
+  `kubeadm-init.service`) applies `/usr/share/bluefin/kubeadm/init-tmpfiles.conf`
+  by absolute path: a tmpfiles `C` that copies the read-only default
+  `/usr/share/bluefin/kubeadm/init.yaml` to `/etc/kubernetes/bluefin/init.yaml`
+  only if absent. The rule is outside `tmpfiles.d`, so boot-time tmpfiles runs
+  never apply it. The default is kubeadm `v1beta4` `InitConfiguration` +
+  `ClusterConfiguration` + `KubeletConfiguration`: containerd's CRI socket,
+  `cgroupDriver: systemd`, cluster name `bluefin`, pods `10.244.0.0/16`,
+  services `10.96.0.0/12`, `imageRepository: registry.k8s.io`, and
+  `kubernetesVersion` set by the build from `include/kubeadm.yml`. The build
+  fails if the sysext's own `kubeadm config validate` rejects it. The advertise
+  address (default route's interface) and Node name (hostname) are left to
+  kubeadm. To override them or anything else, write the `/etc` copy (Ignition
+  or by hand) before the first init.
+- **Run.** After `containerd.service` (`Requires=`), `network-online.target`
+  and the seed, if `/etc/kubernetes/admin.conf` is absent and
+  `/etc/kubernetes/bluefin/init.yaml` exists, `/usr/libexec/bluefin-kubeadm-init`:
+  1. enables `containerd.service` and `kubelet.service`
+  2. runs `kubeadm init --config /etc/kubernetes/bluefin/init.yaml --skip-phases=addon/kube-proxy`
+     (Cilium replaces kube-proxy, and kubeadm records `proxy.disabled`)
+  3. links `/root/.kube/config` to `admin.conf`
+  4. removes the `node-role.kubernetes.io/control-plane:NoSchedule` taint
+
+  A failed `kubeadm init` runs `kubeadm reset --force` because a leftover
+  `admin.conf` would skip every retry. The unit then retries
+  (`Restart=on-failure`, 30 s).
+- **Idempotency.** An installed node keeps `admin.conf` and the enable
+  symlinks, so later boots skip the unit and start containerd and kubelet
+  directly. A diskless node loses `/etc` and `/var` on reboot and initialises
+  a fresh cluster on every boot.
+- **No CNI ships.** Until one is applied (Cilium with
+  `kubeProxyReplacement=true` and `k8sServiceHost` set to the node address),
+  the node stays NotReady and CoreDNS Pending.
+- **Images are pulled at init** (network required). Offline install will need
+  `kubeadm config images list --config /etc/kubernetes/bluefin/init.yaml`
+  (kube-apiserver, kube-controller-manager, kube-scheduler, coredns, pause,
+  etcd; kube-proxy is listed but not used), which is not solved yet.
+
+**Multi-node homelab.** With the homelab sysext and `HOMELAB_ROLE=control-plane`
+in `/etc/bluefin/homelab.conf`, `bluefin-cluster-prepare.service` runs between
+the seed and the init: it renames a `localhost` node to
+`bluefin-<machine-id[:8]>` and adds `controlPlaneEndpoint: <host>.local:6443`
+plus `apiServer.certSANs` to the `/etc` copy (unless it already sets an
+endpoint), so nodes reach the API by mDNS name. Nodes (`HOMELAB_ROLE=node`)
+join with a passphrase-authenticated bootstrap token; protocol, files and
+threat model: [`files/homelab/cluster/README.md`](../../files/homelab/cluster/README.md).
+`just dogfood-homelab-cluster` checks it in QEMU. The homelab Ignition
+templates set all of this up from one file
+([homelab-profile.md](homelab-profile.md)).
+
+`just dogfood-kubeadm` checks the whole path in QEMU: a diskless boot whose
+Ignition does only the above, then a test-only pinned Cilium. It needs `helm`
+on the host and internet access from the guest.
+
 ## Host tools
 
-kubeadm v1.34 preflight requires only `losetup`, `mount` and `cp` in `PATH`
+kubeadm v1.35 preflight requires only `losetup`, `mount` and `cp` in `PATH`
 (base image); `conntrack` stopped being required in v1.32. `iptables`,
 `ethtool`, `socat` and `conntrack` are not shipped: Cilium carries its own
 iptables, kube-proxy is replaced, and containerd 2 port-forwards in-process.
@@ -155,6 +226,8 @@ rebooted diskless client held locks. NFSv4 id mapping uses the kernel
 
 ## Verify
 
-`just export-image`, then boot diskless with `DOGFOOD_EXTRA_PROBE` activating
-`kubeadm_<ver>.raw` (copy to `/run/extensions`, `systemd-sysext refresh`) and
-check `crictl info`, `kubeadm init phase preflight`.
+`just export-image`, then `just dogfood-kubeadm` (single-node control plane:
+node Ready, CoreDNS Ready). For a worker, boot diskless with
+`DOGFOOD_EXTRA_PROBE` activating `kubeadm_<ver>.raw` (copy to
+`/run/extensions`, `systemd-sysext refresh`) and check `crictl info`,
+`kubeadm init phase preflight`.

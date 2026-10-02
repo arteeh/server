@@ -1,0 +1,32 @@
+[Unit]
+Description=Fetch and merge the sysexts of the enabled sysupdate features
+Documentation=file:/usr/libexec/bluefin-sysext-fetch
+# Opt-in: 80-bluefin-opt-in.preset disables it, and a provisioning config
+# that enables sysupdate features (the homelab Ignition templates) links it
+# into multi-user.target.wants. Runs once per image version: the stamp is
+# written after a successful run.
+ConditionPathExists=!/var/lib/bluefin-sysext-fetch/%A
+Wants=network-online.target
+After=network-online.target systemd-sysext.service
+# What it merges must be there before the units that use it start:
+# bluefin-sysext-activate.service starts what the merged sysexts enable.
+Before=bluefin-sysext-activate.service kubeadm-init.service k0s-first-boot.service
+RequiresMountsFor=/var/lib/extensions
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=bluefin-sysext-fetch
+RuntimeDirectory=bluefin-sysext-fetch
+# The pull source of a diskless node booted with the import.pull credential,
+# read by bluefin-boot-origin.
+ImportCredential=import.pull
+ExecStart=/usr/libexec/bluefin-sysext-fetch
+ExecStartPost=/usr/bin/touch /var/lib/bluefin-sysext-fetch/%A
+# The network or the release server may not be there yet; retry.
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

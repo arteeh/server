@@ -1,12 +1,13 @@
 kind: manual
 description: |
   Opt-in systemd-sysext that turns a Bluefin Server node into a kubeadm
-  worker: kubelet, kubeadm, kubectl, crictl, containerd, runc and the CNI
-  plugins from kubeadm/kubeadm-bin.bst, plus containerd.service,
-  kubelet.service with kubeadm's 10-kubeadm.conf drop-in, and the default
-  containerd config, crictl config, module and sysctl drop-ins. No preset
-  enables anything; Ignition enables containerd.service and kubelet.service
-  per node.
+  worker or a single-node control plane: kubelet, kubeadm, kubectl, crictl,
+  containerd, runc and the CNI plugins from kubeadm/kubeadm-bin.bst, plus
+  containerd.service, kubelet.service with kubeadm's 10-kubeadm.conf
+  drop-in, kubeadm-init.service with its default init config, and the
+  default containerd config, crictl config, module and sysctl drop-ins. No
+  preset enables anything; Ignition enables containerd.service and
+  kubelet.service (worker) or kubeadm-init.service (control plane) per node.
 
   Output: kubeadm_<image-version>.raw, .raw.zst and SHA256SUMS. Locked to
   one image version like the ZFS sysext (extension-release.kubeadm_<ver>,
@@ -51,14 +52,29 @@ config:
     mkdir -p sysext
     cp -a /kubeadm%{prefix} sysext%{prefix}
 
-    install -D -m 0644 -t "${unitdir}" "${src}/containerd.service" "${src}/kubelet.service"
+    install -D -m 0644 -t "${unitdir}" "${src}/containerd.service" "${src}/kubelet.service" \
+      "${src}/kubeadm-init.service" "${src}/kubeadm-init-config.service"
     install -D -m 0644 "${src}/10-kubeadm.conf" "${unitdir}/kubelet.service.d/10-kubeadm.conf"
+    install -D -m 0755 "${src}/bluefin-kubeadm-init" "sysext%{libexecdir}/bluefin-kubeadm-init"
     install -D -m 0644 "${src}/80-kubeadm.preset" "${lib}/systemd/system-preset/80-kubeadm.preset"
     install -D -m 0644 "${src}/tmpfiles-kubeadm.conf" "${lib}/tmpfiles.d/kubeadm.conf"
     install -D -m 0644 "${src}/modules-load-kubeadm.conf" "${lib}/modules-load.d/kubeadm.conf"
     install -D -m 0644 "${src}/sysctl-90-kubeadm.conf" "${lib}/sysctl.d/90-kubeadm.conf"
     install -D -m 0644 "${src}/config.toml" "sysext%{datadir}/bluefin/containerd/config.toml"
     install -D -m 0644 "${src}/crictl.yaml" "sysext%{datadir}/bluefin/kubeadm/crictl.yaml"
+    install -D -m 0644 "${src}/init-tmpfiles.conf" "sysext%{datadir}/bluefin/kubeadm/init-tmpfiles.conf"
+
+    # The init config names the Kubernetes version these binaries are; the
+    # sysext's own kubeadm checks it strictly (unknown fields fail).
+    init="sysext%{datadir}/bluefin/kubeadm/init.yaml"
+    template="$(cat "${src}/init.yaml")"
+    printf '%s\n' "${template//@KUBERNETES_VERSION@/%{kubernetes-version}}" > "${init}"
+    chmod 0644 "${init}"
+    case "$(cat "${init}")" in
+      *$'\n''kubernetesVersion: v%{kubernetes-version}'$'\n'*) ;;
+      *) echo "ERROR: init.yaml kubernetesVersion is not v%{kubernetes-version}" >&2; exit 1 ;;
+    esac
+    /kubeadm%{bindir}/kubeadm config validate --config "${init}"
 
     case "$(cat "sysext%{datadir}/bluefin/containerd/config.toml")" in
       *'sandbox = "%{pause-image}"'*) ;;

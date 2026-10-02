@@ -29,19 +29,19 @@ variables:
 sources:
 - kind: remote
   url: k8s_dl:release/v%{kubernetes-version}/bin/linux/amd64/kubelet
-  ref: 0e759f40bbc717c05227ae3994b77786f58f59ffa0137a34958c6b26fa5bcbbd
+  ref: 80f983da61642110456a95e13de3483895d65df6e18dcccfcee994d8947db026
   directory: k8s
 - kind: remote
   url: k8s_dl:release/v%{kubernetes-version}/bin/linux/amd64/kubeadm
-  ref: f9ce265434d306e59d800b26f3049b8430ba71f815947f4bacdcdc33359417fb
+  ref: b77649f3f9d4fc9cff73f9d2cc70c39ad2ca3ffddf5b43d33b2f3493a77aab9a
   directory: k8s
 - kind: remote
   url: k8s_dl:release/v%{kubernetes-version}/bin/linux/amd64/kubectl
-  ref: ab60ca5f0fd60c1eb81b52909e67060e3ba0bd27e55a8ac147cbc2172ff14212
+  ref: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
   directory: k8s
 - kind: tar
   url: github:kubernetes-sigs/cri-tools/releases/download/v%{crictl-version}/crictl-v%{crictl-version}-linux-amd64.tar.gz
-  ref: a8ff2a3edb37a98daf3aba7c3b284fe0aa5bff24166d896ab9ef64c8913c9f51
+  ref: 2e141e5b22cb189c40365a11807d69b76b9b3caced89fac2f4ec879408ce2177
   base-dir: ''
   directory: crictl
 - kind: tar
@@ -64,19 +64,19 @@ sources:
     sources:
     - kind: remote
       url: k8s_dl:release/v%{kubernetes-version}/bin/linux/arm64/kubelet
-      ref: 765b740e3ad9c590852652a2623424ec60e2dddce2c6280d7f042f56c8c98619
+      ref: 0d9b53143030a4e6655aa7540bb5e8a67a3afe5c011ef0cdf21aa8ef5906733d
       directory: k8s
     - kind: remote
       url: k8s_dl:release/v%{kubernetes-version}/bin/linux/arm64/kubeadm
-      ref: 697cf3aa54f1a5740b883a3b18a5d051b4032fd68ba89af626781a43ec9bccc3
+      ref: 441e789c6c431869d63e597ca2c7357fc218822c65d8e127cb4f66f74181eb7f
       directory: k8s
     - kind: remote
       url: k8s_dl:release/v%{kubernetes-version}/bin/linux/arm64/kubectl
-      ref: 46913a7aa0327f6cc2e1cc2775d53c4a2af5e52f7fd8dacbfbfd098e757f19e9
+      ref: 39c98bca82875d9a9ddfb6f3c5ab17c3f78ea0801230683e538a67d5c053308d
       directory: k8s
     - kind: tar
       url: github:kubernetes-sigs/cri-tools/releases/download/v%{crictl-version}/crictl-v%{crictl-version}-linux-arm64.tar.gz
-      ref: c31d252e203df5f4cf37f314bd3092eb79087e791631c1e607087c74b6d0423f
+      ref: 519071de89b64c43e2a1661bb5489c6c3fd5e9e5fcef75e50e542b0c891f1118
       base-dir: ''
       directory: crictl
     - kind: tar

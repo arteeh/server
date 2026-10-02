@@ -23,5 +23,10 @@ depends:
 - bluefin-server/os-sysupdate-keys.bst
 - bluefin-server/os-release.bst
 - bluefin-server/initrd/initrd-config.bst
+# libtss2 for systemd's credential decryption: systemd-sysinstall seals the
+# credentials it stores with the installed UKI (the USB installer's Homelab
+# template, ignition.config) to the TPM2 when the machine has one, and the
+# initrd imports ignition.config.
+- freedesktop-sdk.bst:components/tpm2-tss.bst
 # Opt-in: runs only when an ignition.config / ignition.config.url credential is passed
 - bluefin-server/initrd/initrd-ignition-stack.bst

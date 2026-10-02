@@ -21,9 +21,17 @@ description: |
                                            (bluefin-installer-* labels) and an ESP with
                                            signed systemd-boot, the installer UKI, key
                                            enrollment, and the disk UKI + repart.d that
-                                           systemd-sysinstall lays onto the target disk
+                                           systemd-sysinstall lays onto the target disk;
+                                           bluefin/homelab/ holds what its Homelab
+                                           entries add (templates, kubeadm + homelab
+                                           sysexts, a repart.d drop-in)
+    homelab-control-plane.bu/.ign, homelab-node.bu/.ign,
+    homelab-k0s-control-plane.bu/.ign, homelab-k0s-node.bu/.ign
+                                           homelab Ignition templates: Butane source
+                                           and compiled Ignition (homelab/homelab-templates.bst)
     efi-keys/                              Secure Boot enrollment payloads
     zfs_<ver>.raw.zst, kubestellar_<ver>.raw.zst, kubeadm_<ver>.raw.zst,
+    homelab_<ver>.raw.zst,
     nvidia-open-595_<ver>.raw.zst          opt-in sysexts locked to this image version
     k0s-<k0s-ver>.raw.zst                  opt-in k0s sysext (own version axis)
     nvidia-container-toolkit-<ctk-ver>.raw.zst
@@ -72,6 +80,9 @@ build-depends:
 - filename: oci/kubeadm-sysext.bst
   config:
     location: /sysext/kubeadm
+- filename: oci/homelab-sysext.bst
+  config:
+    location: /sysext/homelab
 - filename: oci/nvidia-open-595-sysext.bst
   config:
     location: /sysext/nvidia-open-595
@@ -81,6 +92,9 @@ build-depends:
 - filename: oci/bluefin-server-sbom.bst
   config:
     location: /sbom
+- filename: homelab/homelab-templates.bst
+  config:
+    location: /homelab-templates
 
 variables:
   image-name: bluefin-server_%{image-version}
@@ -169,11 +183,26 @@ config:
     printf 'CopyFiles=/run/bluefin/installer/loader/credentials:/loader/credentials\n' >> "${esp}/bluefin/repart.d/10-esp.conf"
     install -Dm644 -t "${esp}/loader/keys/auto" /boot-out/efi-keys/*.auth
     printf 'timeout 3\nconsole-mode keep\nsecure-boot-enroll if-safe\n' > "${esp}/loader/loader.conf"
+    # The Homelab entries (installer UKI profiles; bluefin-homelab-install)
+    # install the template for the chosen role, and copy the kubeadm and
+    # homelab sysexts onto the installed disk's ESP through an extra repart.d
+    # drop-in. bluefin-sysext-fetch.service installs them from there on the
+    # first boot, checked against this manifest, without a network. It is not
+    # signed (a signature would make the stick differ on every build): the
+    # copy is exactly as trustworthy as the disk it lands on.
+    hl="${esp}/bluefin/homelab"
+    install -Dm644 -t "${hl}" /homelab-templates/homelab-control-plane.bu /homelab-templates/homelab-node.bu
+    install -Dm644 -t "${hl}/extensions" /sysext/kubeadm/kubeadm_%{image-version}.raw.zst \
+      /sysext/homelab/homelab_%{image-version}.raw.zst
+    (cd "${hl}/extensions" && sha256sum --binary *.raw.zst > SHA256SUMS)
+    mkdir -p "${hl}/repart.d/10-esp.conf.d"
+    printf '[Partition]\nCopyFiles=/run/bluefin/installer/bluefin/homelab/extensions:/bluefin/extensions\n' \
+      > "${hl}/repart.d/10-esp.conf.d/50-bluefin-homelab.conf"
     d=/tmp/installer.repart.d
     mkdir -p "${d}"
     printf '[Partition]\nType=usr\nLabel=bluefin-installer-usr\nCopyBlocks=/usr-image/%{image-name}.usr.raw\n' > "${d}/10-usr.conf"
     printf '[Partition]\nType=usr-verity\nLabel=bluefin-installer-usr-verity\nCopyBlocks=/usr-image/%{image-name}.usr-verity.raw\n' > "${d}/20-usr-verity.conf"
-    printf '[Partition]\nType=esp\nLabel=bluefin-installer\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=256M\n' "${esp}" > "${d}/30-esp.conf"
+    printf '[Partition]\nType=esp\nLabel=bluefin-installer\nFormat=vfat\nCopyFiles=%s:/\nSizeMinBytes=512M\n' "${esp}" > "${d}/30-esp.conf"
     find "${esp}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
     systemd-repart --empty=create --size=auto --offline=yes --dry-run=no \
       --seed=6f1b0fe2-3c2a-4f2e-9f0a-b1e5e7a5e004 \
@@ -184,8 +213,10 @@ config:
     cp /sysext/k0s/k0s-*.raw.zst /sysext/kubestellar/kubestellar_%{image-version}.raw.zst \
        /sysext/zfs/zfs_%{image-version}.raw.zst \
        /sysext/kubeadm/kubeadm_%{image-version}.raw.zst \
+       /sysext/homelab/homelab_%{image-version}.raw.zst \
        /sysext/nvidia-open-595/nvidia-open-595_%{image-version}.raw.zst \
        /sysext/nvidia-container-toolkit/nvidia-container-toolkit-*.raw.zst "%{install-root}/"
+    install -m644 -t "%{install-root}" /homelab-templates/*.bu /homelab-templates/*.ign
 
   - |
     set -eu
@@ -205,7 +236,7 @@ config:
   - |
     set -eu
     cd "%{install-root}"
-    sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json > SHA256SUMS
+    sha256sum --binary *.raw *.efi *.raw.zst *.spdx.json *.bu *.ign > SHA256SUMS
     cat SHA256SUMS
     export GNUPGHOME=/tmp/gnupg
     mkdir -m 0700 -p "${GNUPGHOME}"

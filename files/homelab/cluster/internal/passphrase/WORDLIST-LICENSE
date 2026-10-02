@@ -1,0 +1,6 @@
+eff_large_wordlist.txt: the EFF Large Wordlist for Passphrases
+(https://www.eff.org/dice), by the Electronic Frontier Foundation, licensed
+under the Creative Commons Attribution 3.0 United States license
+(https://creativecommons.org/licenses/by/3.0/us/). Vendored unmodified
+(sha256 addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e);
+bluefin-cluster drops its four hyphenated entries when generating.

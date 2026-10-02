@@ -1,0 +1,29 @@
+[Unit]
+Description=Prepare a Homelab install (USB installer)
+Documentation=file:/usr/libexec/bluefin-homelab-install
+Documentation=https://github.com/projectbluefin/server/blob/main/docs/skills/usb-installer.md
+# Pulled in by the image's systemd-sysinstall drop-in. Only the Homelab
+# entries of the installer's boot menu (installer UKI profiles) set this
+# credential; booted from the default entry, the unit is skipped and
+# sysinstall installs Bluefin Server as before.
+ConditionCredential=bluefin.install-homelab
+RequiresMountsFor=/run/bluefin/installer
+After=systemd-vconsole-setup.service systemd-firstboot.service
+Before=systemd-sysinstall.service
+
+[Service]
+Type=oneshot
+# Active until the machine reboots, so its runtime directory, which holds
+# what systemd-sysinstall reads, stays.
+RemainAfterExit=yes
+RuntimeDirectory=bluefin-homelab-install
+RuntimeDirectoryMode=0700
+ImportCredential=bluefin.install-homelab
+ImportCredential=bluefin-cluster.passphrase
+ExecStart=/usr/libexec/bluefin-homelab-install
+# A node asks for the join passphrase on the monitor, like sysinstall
+# (the installer UKI puts console=tty0 last).
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/console

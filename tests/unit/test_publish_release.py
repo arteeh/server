@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -40,10 +41,20 @@ def release_files(version: str) -> list[str]:
         f"zfs_{version}.raw.zst",
         f"kubestellar_{version}.raw.zst",
         f"kubeadm_{version}.raw.zst",
+        f"homelab_{version}.raw.zst",
         f"nvidia-open-595_{version}.raw.zst",
         "k0s-1.36.4-k0s.0.raw.zst",
         "nvidia-container-toolkit-1.20.1.raw.zst",
+        *(f"{t}.{ext}" for t in HOMELAB_TEMPLATES for ext in ("bu", "ign")),
     ]
+
+
+HOMELAB_TEMPLATES = (
+    "homelab-control-plane",
+    "homelab-node",
+    "homelab-k0s-control-plane",
+    "homelab-k0s-node",
+)
 
 
 class Signer:
@@ -114,7 +125,7 @@ def verify(release: Path, keyring: Path, version: str = VERSION) -> subprocess.C
 def test_complete_release_set_verifies(release: Path, signers) -> None:
     result = verify(release, signers[0].keyring)
     assert result.returncode == 0, result.stderr
-    assert f"release set {VERSION}: 14 files match SHA256SUMS, signature verified" in result.stdout
+    assert f"release set {VERSION}: 23 files match SHA256SUMS, signature verified" in result.stdout
     subjects = release.parent / f"release-subjects-{VERSION}.sha256"
     assert f"subjects={subjects}" in result.stdout
     names = sorted(line.split("  ", 1)[1] for line in subjects.read_text().splitlines())
@@ -275,3 +286,26 @@ def test_unreadable_default_branch_workflow_fails_instead_of_skipping(checkout, 
     result, out = taggable(checkout, blob, tmp_path)
     assert result.returncode != 0
     assert "publish=" not in out["output"]
+
+
+def test_a_missing_homelab_template_is_refused(release: Path, signers) -> None:
+    # The templates are release assets like the images: a set without one
+    # must not publish, or releases/latest/download/<template> breaks.
+    names = [n for n in release_files(VERSION) if n != "homelab-node.ign"]
+    (release / "homelab-node.ign").unlink()
+    write_sums(release, names)
+    signers[0].sign(release / "SHA256SUMS")
+    result = verify(release, signers[0].keyring)
+    assert result.returncode != 0
+    assert "homelab-node\\.ign" in result.stderr
+
+
+def test_the_image_stages_and_signs_every_homelab_template() -> None:
+    image = (ROOT / "elements" / "oci" / "bluefin-server-image.bst").read_text(encoding="utf-8")
+    assert "location: /homelab-templates" in image
+    assert 'install -m644 -t "%{install-root}" /homelab-templates/*.bu /homelab-templates/*.ign' in image
+    assert re.search(r"sha256sum --binary .*\*\.bu \*\.ign > SHA256SUMS", image)
+    templates = sorted(p.stem for p in (ROOT / "files" / "homelab" / "templates").glob("*.bu"))
+    assert templates == sorted(HOMELAB_TEMPLATES)
+    listed = re.search(r"for t in ([a-z0-9 -]+); do", SCRIPT.read_text(encoding="utf-8"))
+    assert listed is not None and sorted(listed[1].split()) == templates

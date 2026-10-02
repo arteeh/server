@@ -1,0 +1,8 @@
+# Wanted by multi-user.target from the homelab sysext.
+[Unit]
+Description=Keep the homelab control plane's mDNS name pinned in /etc/hosts
+ConditionPathExists=/etc/bluefin/homelab.conf
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=5min

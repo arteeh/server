@@ -1,0 +1,294 @@
+#!/usr/bin/env bats
+#
+# Unit tests for files/homelab/sysext/bluefin-homelab-apply.
+#
+# The applier runs against a fake host root (HOMELAB_ROOT) with stub kubectl,
+# k0s and systemctl on PATH. The kubectl stub logs every call, keeps a copy of
+# each file it is asked to apply (in apply order) and answers the readiness
+# queries; most tests use the real vendored manifests.
+
+setup() {
+    REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+    SCRIPT="${REPO_ROOT}/files/homelab/sysext/bluefin-homelab-apply"
+    STUBS="${BATS_TEST_TMPDIR}/bin"
+    FAKE_ROOT="${BATS_TEST_TMPDIR}/root"
+    LOG="${BATS_TEST_TMPDIR}/kubectl.log"
+    APPLIED="${BATS_TEST_TMPDIR}/applied"
+    mkdir -p "${STUBS}" "${FAKE_ROOT}" "${APPLIED}"
+    # Only the tools the applier uses, never the host's own kubectl or k0s
+    # (CI runners ship a real kubectl in /usr/local/bin).
+    TOOLS="${BATS_TEST_TMPDIR}/tools"
+    mkdir -p "${TOOLS}"
+    for t in awk basename bash cat chmod cp env grep head id ln mkdir mktemp mv od printf rm sed sleep sort tail timeout touch tr; do
+        p=$(command -v "$t") && ln -sf "$p" "${TOOLS}/$t"
+    done
+    : >"${LOG}"
+
+    cat >"${STUBS}/kubectl" <<EOF
+#!/usr/bin/env bash
+echo "kubectl \$*" >>"${LOG}"
+args=" \$* "
+last=\${@: -1}
+case \${args} in
+*" get --raw /readyz "*) exit \${READYZ_RC:-0} ;;
+*" apply "*" -f - "*) cat >>"${APPLIED}/stdin.yaml"; exit 0 ;;
+*" apply "*)
+    n=\$(ls "${APPLIED}" | wc -l)
+    cp "\${last}" "${APPLIED}/\$(printf %03d "\${n}")-\$(basename "\${last}")"
+    exit \${APPLY_RC:-0} ;;
+*" wait "*)
+    c=\$(cat "${BATS_TEST_TMPDIR}/waits" 2>/dev/null || echo 0)
+    echo \$((c + 1)) >"${BATS_TEST_TMPDIR}/waits"
+    [ "\${c}" -ge "\${WAIT_FAILS:-0}" ]; exit \$? ;;
+*" get secret "*) exit \${SECRET_RC:-1} ;;
+*" create secret "*) printf 'kind: Secret\n' ; exit 0 ;;
+*" get -f "*)
+    f=\$(sed -n 's/.* -f \([^ ]*\) .*/\1/p' <<<"\${args}")
+    if grep -q '^kind: Deployment' "\${f}"; then echo "Deployment demo web"; fi
+    exit 0 ;;
+*" rollout status "*) exit \${ROLLOUT_RC:-0} ;;
+esac
+exit 0
+EOF
+    cat >"${STUBS}/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "systemctl \$*" >>"${LOG}"
+case " \$* " in *" is-enabled "*) [ -n "\${ENABLED_UNIT:-}" ] && [[ " \$* " == *" \${ENABLED_UNIT} "* ]] ;; esac
+EOF
+    chmod +x "${STUBS}/kubectl" "${STUBS}/systemctl"
+}
+
+kubeadm_node() {
+    mkdir -p "${FAKE_ROOT}/etc/kubernetes"
+    printf 'apiVersion: v1\nclusters:\n- cluster:\n    server: https://192.0.2.10:6443\n  name: kubernetes\n' \
+        >"${FAKE_ROOT}/etc/kubernetes/admin.conf"
+}
+
+k0s_node() {
+    mkdir -p "${FAKE_ROOT}/var/lib/k0s/pki"
+    printf 'clusters:\n- cluster:\n    server: https://localhost:6443\n' >"${FAKE_ROOT}/var/lib/k0s/pki/admin.conf"
+}
+
+run_applier() {
+    run env -i PATH="${STUBS}:${TOOLS}" HOMELAB_ROOT="${FAKE_ROOT}" \
+        HOMELAB_MANIFESTS="${MANIFESTS:-${REPO_ROOT}/files/homelab/manifests}" \
+        HOMELAB_API_TIMEOUT=1 HOMELAB_WAIT_TIMEOUT=1 HOMELAB_POLL_INTERVAL=0 "$@" \
+        bash "${SCRIPT}"
+}
+
+# Component directories in the order their first file was applied.
+applied_components() {
+    grep -o '^<5>[a-z0-9-]*: applying$' <<<"${output}" | sed 's/^<5>//; s/: applying$//' | paste -sd' '
+}
+
+@test "a node without a control plane has nothing to apply" {
+    run_applier
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no control plane on this node"* ]]
+    ! grep -q '^kubectl' "${LOG}"
+}
+
+@test "a control plane that never writes its kubeconfig fails the run" {
+    mkdir -p "${FAKE_ROOT}/etc/kubernetes/bluefin"
+    : >"${FAKE_ROOT}/etc/kubernetes/bluefin/init.yaml"
+    run_applier
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no admin kubeconfig after 1s"* ]]
+}
+
+@test "k0scontroller.service being enabled means a kubeconfig is coming" {
+    run_applier ENABLED_UNIT=k0scontroller.service
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no admin kubeconfig"* ]]
+}
+
+@test "an API server that never gets ready fails the run" {
+    kubeadm_node
+    run_applier READYZ_RC=1
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"API server not ready"* ]]
+}
+
+@test "kubeadm: the default set applies in index order, Cilium first" {
+    kubeadm_node
+    run_applier
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"runtime kubeadm, kubeconfig ${FAKE_ROOT}/etc/kubernetes/admin.conf"* ]]
+    [ "$(applied_components)" = "cilium local-path-provisioner metallb envoy-gateway cert-manager argocd metrics-server reloader kured" ]
+    [[ "$output" == *"nfs: disabled (HOMELAB_NFS)"* ]]
+    [[ "$output" == *"kube-prometheus-stack: disabled (HOMELAB_KUBE_PROMETHEUS_STACK)"* ]]
+    [[ "$output" == *"gpu-operator: disabled (HOMELAB_GPU_OPERATOR)"* ]]
+    grep -q -- '--kubeconfig .*/etc/kubernetes/admin.conf apply --server-side --force-conflicts --field-manager=bluefin-homelab' "${LOG}"
+    ! grep -qw delete "${LOG}"
+}
+
+@test "kubeadm: Cilium gets the API server address from the kubeconfig" {
+    kubeadm_node
+    run_applier
+    cilium=$(ls "${APPLIED}"/*-10-cilium.yaml)
+    grep -q 'value: "192.0.2.10"' "${cilium}"
+    grep -q 'value: "6443"' "${cilium}"
+    ! grep -q 'HOMELAB_' "${cilium}"
+}
+
+@test "HOMELAB_ROLE=node: the control plane applies, never a node" {
+    kubeadm_node
+    run_applier HOMELAB_ROLE=node
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"HOMELAB_ROLE=node"* ]]
+    ! grep -q '^kubectl' "${LOG}"
+}
+
+@test "multi-node: Cilium gets the address of the control plane's mDNS name" {
+    kubeadm_node
+    sed -i 's|https://192.0.2.10:6443|https://cp1.local:6443|' "${FAKE_ROOT}/etc/kubernetes/admin.conf"
+    cat >"${STUBS}/resolvectl" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "query -4 --legend=no cp1.local" ] && printf 'cp1.local: 192.0.2.20                        -- link: enp0s2\n'
+EOF
+    chmod +x "${STUBS}/resolvectl"
+    run_applier HOMELAB_ROLE=control-plane
+    [ "$status" -eq 0 ]
+    cilium=$(ls "${APPLIED}"/*-10-cilium.yaml)
+    grep -q 'value: "192.0.2.20"' "${cilium}"
+    ! grep -q 'cp1.local' "${cilium}"
+}
+
+@test "k0s: no Cilium, no metrics-server, and k0s kubectl without kubectl" {
+    k0s_node
+    mv "${STUBS}/kubectl" "${BATS_TEST_TMPDIR}/kubectl-real"
+    printf '#!/usr/bin/env bash\n[ "$1" = kubectl ] || exit 64\nshift\nexec %s "$@"\n' "${BATS_TEST_TMPDIR}/kubectl-real" >"${STUBS}/k0s"
+    chmod +x "${STUBS}/k0s"
+    run_applier
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"runtime k0s"* ]]
+    [[ "$output" == *"cilium: not used with k0s"* ]]
+    [[ "$output" == *"metrics-server: not used with k0s"* ]]
+    [ "$(applied_components)" = "local-path-provisioner metallb envoy-gateway cert-manager argocd reloader kured" ]
+    grep -q -- "--kubeconfig ${FAKE_ROOT}/var/lib/k0s/pki/admin.conf" "${LOG}"
+}
+
+@test "k0s: Argo CD is left to the kubestellar sysext when it seeded it" {
+    k0s_node
+    mkdir -p "${FAKE_ROOT}/var/lib/k0s/manifests/argocd"
+    run_applier
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"argocd: managed by the kubestellar sysext"* ]]
+    [[ "$(applied_components)" != *argocd* ]]
+}
+
+@test "homelab.conf switches components on and off" {
+    kubeadm_node
+    run_applier HOMELAB_GPU_OPERATOR=yes HOMELAB_KUBE_PROMETHEUS_STACK=yes HOMELAB_LOKI=no HOMELAB_ALLOY=off HOMELAB_KURED=maybe
+    [ "$status" -eq 0 ]
+    [ "$(applied_components)" = "cilium local-path-provisioner metallb envoy-gateway cert-manager argocd metrics-server reloader kured kube-prometheus-stack gpu-operator" ]
+    [[ "$output" == *"ignoring HOMELAB_KURED=maybe: expected yes or no"* ]]
+    [[ "$output" == *"loki: disabled (HOMELAB_LOKI)"* ]]
+}
+
+@test "the MetalLB pool is skipped until addresses are configured" {
+    kubeadm_node
+    run_applier
+    [[ "$output" == *"metallb: skipping 20-pool.yaml: HOMELAB_METALLB_ADDRESSES not set"* ]]
+    ! ls "${APPLIED}"/*-20-pool.yaml
+    [[ "$output" == *"cert-manager: skipping 21-acme-issuer.yaml: HOMELAB_ACME_EMAIL not set"* ]]
+    [[ "$output" == *"argocd: skipping 20-root-app.yaml: HOMELAB_ARGOCD_ROOT_REPO not set"* ]]
+}
+
+@test "configured inputs are validated and substituted" {
+    kubeadm_node
+    run_applier HOMELAB_METALLB_ADDRESSES="192.0.2.240-192.0.2.250, 198.51.100.0/28" \
+        HOMELAB_ACME_EMAIL='bad"email' HOMELAB_ARGOCD_ROOT_REPO=https://example.com/me/homelab.git
+    [ "$status" -eq 0 ]
+    grep -q 'addresses: \["192.0.2.240-192.0.2.250", "198.51.100.0/28"\]' "${APPLIED}"/*-20-pool.yaml
+    [[ "$output" == *'ignoring HOMELAB_ACME_EMAIL=bad"email'* ]]
+    ! ls "${APPLIED}"/*-21-acme-issuer.yaml
+    grep -q 'repoURL: "https://example.com/me/homelab.git"' "${APPLIED}"/*-20-root-app.yaml
+    grep -q 'targetRevision: "HEAD"' "${APPLIED}"/*-20-root-app.yaml
+    grep -q -- '--time-zone=UTC"' "${APPLIED}"/*-10-kured.yaml
+}
+
+@test "Grafana's admin Secret is generated once, never rotated, never logged" {
+    kubeadm_node
+    run_applier HOMELAB_KUBE_PROMETHEUS_STACK=yes
+    line=$(grep 'create secret generic grafana-admin' "${LOG}")
+    [[ "${line}" == *"--from-literal=admin-user=admin"* ]]
+    [[ "${line}" =~ --from-literal=admin-password=[0-9a-f]{48} ]]
+    password=$(sed 's/.*admin-password=\([0-9a-f]*\).*/\1/' <<<"${line}")
+    [[ "$output" != *"${password}"* ]]
+    : >"${LOG}"
+    run_applier SECRET_RC=0 HOMELAB_KUBE_PROMETHEUS_STACK=yes
+    ! grep -q 'create secret generic grafana-admin' "${LOG}"
+}
+
+@test "democratic-csi is skipped until its driver config exists, then applied every run" {
+    kubeadm_node
+    run_applier HOMELAB_DEMOCRATIC_CSI=yes
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"democratic-csi: skipped, missing /etc/bluefin/homelab.d/democratic-csi/driver-config-file.yaml"* ]]
+    ! ls "${APPLIED}"/*-10-democratic-csi.yaml
+    mkdir -p "${FAKE_ROOT}/etc/bluefin/homelab.d/democratic-csi"
+    echo 'driver: zfs-generic-iscsi' >"${FAKE_ROOT}/etc/bluefin/homelab.d/democratic-csi/driver-config-file.yaml"
+    run_applier HOMELAB_DEMOCRATIC_CSI=yes SECRET_RC=0
+    grep -q -- "create secret generic democratic-csi-driver-config --from-file=driver-config-file.yaml=${FAKE_ROOT}/etc/bluefin/homelab.d/democratic-csi/driver-config-file.yaml" "${LOG}"
+    ls "${APPLIED}"/*-10-democratic-csi.yaml
+}
+
+@test "within a component: CRDs, namespace, Secrets, workloads, then config" {
+    MANIFESTS="${BATS_TEST_TMPDIR}/manifests"
+    mkdir -p "${MANIFESTS}/10-demo"
+    echo '10-demo on kubeadm,k0s' >"${MANIFESTS}/components"
+    printf 'apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: x\n' >"${MANIFESTS}/10-demo/00-crds.yaml"
+    printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: demo\n' >"${MANIFESTS}/10-demo/01-namespace.yaml"
+    printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n' >"${MANIFESTS}/10-demo/10-demo.yaml"
+    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\n' >"${MANIFESTS}/10-demo/20-config.yaml"
+    echo 'demo s key=@random' >"${MANIFESTS}/10-demo/secrets"
+    kubeadm_node
+    run_applier
+    [ "$status" -eq 0 ]
+    sequence=$(grep -oE 'wait --for=condition=Established|apply .* -f [^ ]*/[0-9]+-[a-z-]+\.yaml|create secret generic s|rollout status deployment/web' "${LOG}" |
+        sed -E 's#apply .* -f [^ ]*/##' | paste -sd' ')
+    [ "${sequence}" = "00-crds.yaml wait --for=condition=Established 01-namespace.yaml create secret generic s 10-demo.yaml rollout status deployment/web 20-config.yaml" ]
+}
+
+@test "a CRD wait that fails before the API server fills in its status is retried" {
+    MANIFESTS="${BATS_TEST_TMPDIR}/manifests"
+    mkdir -p "${MANIFESTS}/10-demo"
+    echo '10-demo on kubeadm,k0s' >"${MANIFESTS}/components"
+    printf 'apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: x\n' >"${MANIFESTS}/10-demo/00-crds.yaml"
+    kubeadm_node
+    run_applier HOMELAB_WAIT_TIMEOUT=30 WAIT_FAILS=2
+    [ "$status" -eq 0 ]
+    [ "$(grep -c 'wait --for=condition=Established' "${LOG}")" -eq 3 ]
+}
+
+@test "CRDs that never become Established fail the run" {
+    MANIFESTS="${BATS_TEST_TMPDIR}/manifests"
+    mkdir -p "${MANIFESTS}/10-demo"
+    echo '10-demo on kubeadm,k0s' >"${MANIFESTS}/components"
+    printf 'apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: x\n' >"${MANIFESTS}/10-demo/00-crds.yaml"
+    kubeadm_node
+    run_applier WAIT_FAILS=1000000
+    [ "$status" -ne 0 ]
+    [[ "${output}" == *"CRDs in 00-crds.yaml not Established"* ]]
+}
+
+@test "a component that does not roll out fails the run, later ones still apply" {
+    kubeadm_node
+    run_applier ROLLOUT_RC=1
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not roll out"* ]]
+    [[ "$output" == *"<3>failed: "* ]]
+    [[ "$(applied_components)" == *"kured"* ]]
+}
+
+@test "a second run applies the same files again (idempotent, no deletes)" {
+    kubeadm_node
+    run_applier
+    first=$(ls "${APPLIED}" | grep -v stdin.yaml | sed 's/^[0-9]*-//' | paste -sd' ')
+    rm -f "${APPLIED}"/*
+    run_applier SECRET_RC=0
+    second=$(ls "${APPLIED}" | grep -v stdin.yaml | sed 's/^[0-9]*-//' | paste -sd' ')
+    [ "${first}" = "${second}" ]
+    ! grep -qw delete "${LOG}"
+}
