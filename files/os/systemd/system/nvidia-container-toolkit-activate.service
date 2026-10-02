@@ -2,6 +2,14 @@
 Description=Activate the NVIDIA Container Toolkit sysext on boot
 Wants=nvidia-container-toolkit-fetch.service
 After=nvidia-container-toolkit-fetch.service
+# Ordering only (no Wants=): try-restart below collapses to a no-op unless
+# containerd is already active, and a containerd still `activating` (Type=notify,
+# CRI init) would be skipped, leaving the node without the nvidia handler until
+# someone restarts it by hand. When the .raw is already seeded the fetch unit is
+# skipped and this merge runs early, so wait for containerd to finish starting
+# whenever it is part of the same transaction. A node without containerd.service
+# is unaffected.
+After=containerd.service
 RequiresMountsFor=/var/lib/nvidia-container-toolkit
 
 [Service]
@@ -16,6 +24,14 @@ ExecStartPre=/usr/bin/test -e /var/lib/nvidia-container-toolkit/nvidia-container
 ExecStart=/usr/bin/install -D -m 0644 /var/lib/nvidia-container-toolkit/nvidia-container-toolkit.raw /run/extensions/nvidia-container-toolkit.raw
 ExecStart=/usr/bin/systemd-sysext refresh
 ExecStart=/usr/bin/systemctl daemon-reload
+# containerd resolves `imports` once at load, and on an installed node it has
+# already started (it is only ordered After=systemd-sysext.service, while this
+# merge happens later, after the network fetch). Without a restart the kubeadm
+# config's /usr/share/bluefin/containerd/conf.d/*.toml glob matched nothing and
+# RuntimeClass nvidia fails with "no runtime for nvidia is configured".
+# try-restart is a no-op when containerd is not running (diskless nodes, k0s),
+# and `-` keeps the unit green where containerd.service does not exist at all.
+ExecStart=-/usr/bin/systemctl try-restart containerd.service
 # Merged after PID 1 built the boot transaction, so start the sysext's units
 # by name (like k0s-first-boot.service); re-requesting multi-user.target
 # would pull this unit and bluefin-sysext-activate.service in again.

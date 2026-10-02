@@ -1,0 +1,21 @@
+# containerd runtime handler "nvidia" for the kubeadm sysext, shipped by the
+# nvidia-container-toolkit sysext as
+# /usr/share/bluefin/containerd/conf.d/nvidia-container-runtime.toml and
+# pulled in by the `imports` glob of the kubeadm containerd config
+# (files/kubeadm/sysext/config.toml): a node without this sysext has no
+# "nvidia" handler, a node with it serves RuntimeClass nvidia, which the GPU
+# Operator's operands (device plugin, GFD, DCGM exporter, validator) run
+# under. Plain pods keep runc and containerd's own CDI injection: this file
+# sets no default_runtime_name.
+#
+# /usr/bin/nvidia-container-runtime is nvidia-container-runtime.cdi: mode
+# "cdi" fixed in code, CDI specs from /etc/cdi and /var/run/cdi, runc from
+# PATH; none of the legacy stack is involved.
+version = 3
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]
+  runtime_type = "io.containerd.runc.v2"
+
+  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]
+    BinaryName = "/usr/bin/nvidia-container-runtime"
+    SystemdCgroup = true

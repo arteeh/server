@@ -18,8 +18,12 @@ TOOLKIT = ROOT / "elements" / "nvidia" / "nvidia-container-toolkit.bst"
 SYSEXT = ROOT / "elements" / "oci" / "nvidia-container-toolkit-sysext.bst"
 VERSIONS = ROOT / "include" / "nvidia-container-toolkit.yml"
 CONTAINERD_CONFIG = ROOT / "files" / "kubeadm" / "sysext" / "config.toml"
+CONTAINERD_DROPIN = SRC / "containerd-nvidia-container-runtime.toml"
+CONTAINERD_DROPIN_PATH = "/usr/share/bluefin/containerd/conf.d/nvidia-container-runtime.toml"
 
-FORBIDDEN = ("nvidia-container-runtime", "libnvidia-container", "runtime-hook", "oci-hook", "hooks.d")
+# The legacy stack: the plain runtime (mode "auto" resolves to it), the OCI
+# prestart hook and libnvidia-container.
+FORBIDDEN = ("nvidia-container-runtime.legacy", "libnvidia-container", "runtime-hook", "oci-hook", "hooks.d")
 
 
 def element(path: Path) -> dict:
@@ -57,14 +61,45 @@ def test_builds_offline_from_the_vendored_modules() -> None:
 
 def test_only_the_cdi_binaries_are_built_and_shipped() -> None:
     build = commands(TOOLKIT)
-    assert re.search(r"for cmd in nvidia-ctk nvidia-cdi-hook; do", build)
+    assert re.search(r"for cmd in nvidia-ctk nvidia-cdi-hook nvidia-container-runtime\.cdi; do", build)
     assert 'go build -o "${cmd}"' in build and '"./cmd/${cmd}"' in build
-    assert 'install -D -m 0755 -t "%{install-root}%{bindir}" nvidia-ctk nvidia-cdi-hook' in build
+    assert 'install -D -m 0755 -t "%{install-root}%{bindir}" nvidia-ctk nvidia-cdi-hook nvidia-container-runtime.cdi' in build
+    assert "./cmd/nvidia-container-runtime\n" not in build and '"./cmd/nvidia-container-runtime"' not in build, (
+        "the plain runtime takes its mode from /etc and defaults to the legacy stack"
+    )
     shipped = build + commands(SYSEXT) + "".join(p.read_text() for p in SRC.iterdir())
     for name in FORBIDDEN:
         assert name not in shipped, name
-    for spec in ("nvidia.yaml", "/var/run/cdi", "/etc/cdi"):
+    for spec in ("nvidia.yaml",):
         assert spec not in shipped, f"no CDI spec is baked in ({spec})"
+    assert "/etc/nvidia-container-runtime" not in shipped, "no runtime config: the .cdi binary needs none"
+
+
+def test_the_runtime_is_the_cdi_variant_under_the_expected_name() -> None:
+    build = commands(TOOLKIT)
+    assert 'ln -s nvidia-container-runtime.cdi "%{install-root}%{bindir}/nvidia-container-runtime"' in build
+    sysext = commands(SYSEXT)
+    assert "for bin in nvidia-ctk nvidia-cdi-hook nvidia-container-runtime.cdi; do" in sysext
+    assert '[ "$(readlink "sysext%{bindir}/nvidia-container-runtime")" = nvidia-container-runtime.cdi ]' in sysext
+
+
+def test_containerd_gets_the_nvidia_handler_only_with_the_sysext() -> None:
+    sysext = commands(SYSEXT)
+    assert f'"sysext{CONTAINERD_DROPIN_PATH.replace("/usr/share", "%{datadir}")}"' in sysext
+    assert "install -D -m 0644 sysext-src/containerd-nvidia-container-runtime.toml" in sysext
+    dropin = tomllib.loads(CONTAINERD_DROPIN.read_text(encoding="utf-8"))
+    assert dropin["version"] == 3
+    runtime = dropin["plugins"]["io.containerd.cri.v1.runtime"]
+    assert set(runtime) == {"containerd"} and set(runtime["containerd"]) == {"runtimes"}, "no default_runtime_name"
+    nvidia = runtime["containerd"]["runtimes"]
+    assert set(nvidia) == {"nvidia"}
+    assert nvidia["nvidia"]["runtime_type"] == "io.containerd.runc.v2"
+    assert nvidia["nvidia"]["options"] == {"BinaryName": "/usr/bin/nvidia-container-runtime", "SystemdCgroup": True}
+    # The kubeadm sysext's containerd imports the sysext's conf.d by glob, so a
+    # node without the toolkit has no "nvidia" handler and nothing to import.
+    config = tomllib.loads(CONTAINERD_CONFIG.read_text(encoding="utf-8"))
+    assert str(Path(CONTAINERD_DROPIN_PATH).parent / "*.toml") in config["imports"]
+    assert "/etc/containerd/conf.d/*.toml" in config["imports"]
 
 
 def test_upstream_cdi_units_are_wired_into_multi_user() -> None:
@@ -163,12 +198,13 @@ def test_no_preset_enables_the_toolkit_units() -> None:
             assert not (verb == "enable" and "nvidia" in pattern), preset
 
 
-def test_kubeadm_containerd_keeps_cdi_on_without_an_nvidia_runtime() -> None:
+def test_kubeadm_containerd_keeps_cdi_on_and_runc_as_the_default() -> None:
     # containerd 2.1 defaults: enable_cdi = true, cdi_spec_dirs = ["/etc/cdi", "/var/run/cdi"].
     runtime = tomllib.loads(CONTAINERD_CONFIG.read_text(encoding="utf-8"))["plugins"]["io.containerd.cri.v1.runtime"]
     assert runtime.get("enable_cdi", True) is True
     assert "/var/run/cdi" in runtime.get("cdi_spec_dirs", ["/etc/cdi", "/var/run/cdi"])
-    assert "nvidia" not in runtime["containerd"]["runtimes"]
+    assert runtime["containerd"]["default_runtime_name"] == "runc"
+    assert "nvidia" not in runtime["containerd"]["runtimes"], "the handler comes from the toolkit sysext's drop-in"
 
 
 def test_justfile_validates_builds_and_exports_the_sysext() -> None:

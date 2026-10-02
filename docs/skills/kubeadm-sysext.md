@@ -88,6 +88,15 @@ but never newer. Patch releases change neither constraint.
 - containerd root is `/var/lib/containerd` (`RequiresMountsFor=` orders it after
   a per-node mount), `SystemdCgroup = true`, sandbox `registry.k8s.io/pause:3.10.1`,
   registry `config_path = /etc/containerd/certs.d`.
+- The config `imports` two globs, `/usr/share/bluefin/containerd/conf.d/*.toml`
+  (drop-ins other sysexts ship: the NVIDIA Container Toolkit's `nvidia`
+  runtime handler, [nvidia-sysext.md](nvidia-sysext.md)) and
+  `/etc/containerd/conf.d/*.toml` (the node's own). containerd deep-merges
+  plugin sections, so a drop-in adds a runtime without restating the rest;
+  a glob that matches nothing imports nothing. `/etc/containerd/config.toml`
+  is seeded only when absent, so an installed node from before the imports
+  existed keeps its old copy until it is deleted (or given the `imports`
+  line) and containerd restarted; diskless nodes reseed every boot.
 - kubelet restarts every 10 s until `kubeadm join` writes
   `/var/lib/kubelet/config.yaml` (standard kubeadm behaviour);
   `--volume-plugin-dir=/var/lib/kubelet/volumeplugins` because `/usr` is read-only.

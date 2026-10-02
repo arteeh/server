@@ -1,8 +1,9 @@
 # Single source of truth for the NVIDIA Container Toolkit version axis.
 #
-# The toolkit sysext (oci/nvidia-container-toolkit-sysext.bst) ships only
-# nvidia-ctk and nvidia-cdi-hook, which carry no kernel or driver ABI, so like
-# k0s it is versioned on its own axis rather than on `image-version`.
+# The toolkit sysext (oci/nvidia-container-toolkit-sysext.bst) ships
+# nvidia-ctk, nvidia-cdi-hook and nvidia-container-runtime.cdi, which carry
+# no kernel or driver ABI, so like k0s it is versioned on its own axis rather
+# than on `image-version`.
 # elements/nvidia/nvidia-container-toolkit.bst fetches the release tag with
 # git and its `ref:` reads both atoms; .github/scripts/track-binaries.py moves
 # them together.

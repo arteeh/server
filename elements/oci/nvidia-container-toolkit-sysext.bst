@@ -1,11 +1,15 @@
 kind: manual
 description: |
   Opt-in systemd-sysext with the NVIDIA Container Toolkit for CDI: nvidia-ctk,
-  nvidia-cdi-hook and upstream's nvidia-cdi-refresh.{service,path} from
-  nvidia/nvidia-container-toolkit.bst. No nvidia-container-runtime, OCI hook
-  or libnvidia-container, and no CDI spec: nvidia-cdi-refresh.service writes
+  nvidia-cdi-hook, nvidia-container-runtime.cdi (with the
+  nvidia-container-runtime symlink) and upstream's
+  nvidia-cdi-refresh.{service,path} from nvidia/nvidia-container-toolkit.bst,
+  plus a containerd drop-in that registers the `nvidia` runtime handler
+  (files/nvidia-container-toolkit/sysext/containerd-nvidia-container-runtime.toml,
+  imported by the kubeadm sysext's containerd config). No OCI hook or
+  libnvidia-container, and no CDI spec: nvidia-cdi-refresh.service writes
   /var/run/cdi/nvidia.yaml at boot, where containerd's CRI plugin (CDI on by
-  default in containerd 2.x) picks it up.
+  default in containerd 2.x) and the runtime pick it up.
 
   Output: nvidia-container-toolkit-<version>.raw, .raw.zst and SHA256SUMS.
   Like k0s it has its own version axis (include/nvidia-container-toolkit.yml):
@@ -54,6 +58,14 @@ config:
 
     install -D -m 0644 sysext-src/nvidia-cdi-refresh-bluefin.conf \
       "${unitdir}/nvidia-cdi-refresh.service.d/50-bluefin.conf"
+    install -D -m 0644 sysext-src/containerd-nvidia-container-runtime.toml \
+      "sysext%{datadir}/bluefin/containerd/conf.d/nvidia-container-runtime.toml"
+
+    for bin in nvidia-ctk nvidia-cdi-hook nvidia-container-runtime.cdi; do
+      [ -x "sysext%{bindir}/${bin}" ] || { echo "ERROR: ${bin} missing from the toolkit build" >&2; exit 1; }
+    done
+    [ "$(readlink "sysext%{bindir}/nvidia-container-runtime")" = nvidia-container-runtime.cdi ] ||
+      { echo "ERROR: nvidia-container-runtime must be a symlink to nvidia-container-runtime.cdi" >&2; exit 1; }
 
     mkdir -p "${unitdir}/multi-user.target.wants"
     for u in nvidia-cdi-refresh.service nvidia-cdi-refresh.path; do

@@ -1,11 +1,20 @@
 kind: manual
 description: |
-  NVIDIA Container Toolkit, CDI only: nvidia-ctk and nvidia-cdi-hook built
-  from the release source with FSDK Go, plus upstream's
-  nvidia-cdi-refresh.{service,path} and its 10-container-engines.conf
-  drop-in, and the license and third-party notices.
+  NVIDIA Container Toolkit, CDI only: nvidia-ctk, nvidia-cdi-hook and
+  nvidia-container-runtime.cdi built from the release source with FSDK Go,
+  plus upstream's nvidia-cdi-refresh.{service,path} and its
+  10-container-engines.conf drop-in, and the license and third-party
+  notices.
 
-  Not built: nvidia-container-runtime (and its .cdi/.legacy variants),
+  nvidia-container-runtime.cdi is upstream's runtime wrapper with the mode
+  fixed to "cdi" in code (cmd/nvidia-container-runtime.cdi): it injects the
+  CDI devices a container asks for and execs runc, and never needs the
+  legacy stack. /usr/bin/nvidia-container-runtime is a symlink to it, the
+  name container engines and the GPU Operator's RuntimeClass expect.
+
+  Not built: the plain nvidia-container-runtime (mode from
+  /etc/nvidia-container-runtime/config.toml, "auto" by default, which
+  resolves to the legacy stack), nvidia-container-runtime.legacy,
   nvidia-container-runtime-hook (the OCI prestart hook) and
   libnvidia-container. containerd reads the CDI spec that
   nvidia-cdi-refresh.service generates at /var/run/cdi/nvidia.yaml.
@@ -49,7 +58,7 @@ config:
     set -eu
     export GOPATH="${PWD}/.gopath" GOCACHE="${PWD}/.gocache"
     pkg=github.com/NVIDIA/nvidia-container-toolkit/internal/info
-    for cmd in nvidia-ctk nvidia-cdi-hook; do
+    for cmd in nvidia-ctk nvidia-cdi-hook nvidia-container-runtime.cdi; do
       go build -o "${cmd}" -ldflags "-s -w \
         '-extldflags=-Wl,--export-dynamic -Wl,--unresolved-symbols=ignore-in-object-files -Wl,-z,lazy' \
         -X ${pkg}.version=%{nvidia-container-toolkit-version}" "./cmd/${cmd}"
@@ -58,7 +67,8 @@ config:
   install-commands:
   - |
     set -eu
-    install -D -m 0755 -t "%{install-root}%{bindir}" nvidia-ctk nvidia-cdi-hook
+    install -D -m 0755 -t "%{install-root}%{bindir}" nvidia-ctk nvidia-cdi-hook nvidia-container-runtime.cdi
+    ln -s nvidia-container-runtime.cdi "%{install-root}%{bindir}/nvidia-container-runtime"
     unitdir="%{install-root}%{indep-libdir}/systemd/system"
     install -D -m 0644 -t "${unitdir}" \
       deployments/systemd/nvidia-cdi-refresh.service \

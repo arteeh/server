@@ -118,6 +118,7 @@ def test_containerd_config_keys() -> None:
     images = cfg["plugins"]["io.containerd.cri.v1.images"]
     assert images["pinned_images"]["sandbox"] == versions()["pause-image"]
     assert images["registry"]["config_path"] == "/etc/containerd/certs.d"
+    assert cfg["imports"] == ["/usr/share/bluefin/containerd/conf.d/*.toml", "/etc/containerd/conf.d/*.toml"]
     runtime = cfg["plugins"]["io.containerd.cri.v1.runtime"]
     assert runtime["ignore_image_defined_volumes"] is True
     assert runtime["containerd"]["default_runtime_name"] == "runc"
@@ -130,6 +131,7 @@ def test_containerd_config_keys() -> None:
 def test_etc_config_is_seeded_writable_before_containerd_starts() -> None:
     tmpfiles = (SRC / "tmpfiles-kubeadm.conf").read_text(encoding="utf-8")
     assert "C /etc/containerd/config.toml - - - - /usr/share/bluefin/containerd/config.toml" in tmpfiles
+    assert "d /etc/containerd/conf.d 0755 root root -" in tmpfiles
     assert "C /etc/crictl.yaml - - - - /usr/share/bluefin/kubeadm/crictl.yaml" in tmpfiles
     service = (SRC / "containerd.service").read_text(encoding="utf-8")
     pre = [line.split("=", 1)[1] for line in service.splitlines() if line.startswith("ExecStartPre=")]

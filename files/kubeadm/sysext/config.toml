@@ -4,6 +4,12 @@
 version = 3
 root = "/var/lib/containerd"
 state = "/run/containerd"
+# Drop-ins merge into this file (containerd deep-merges plugin sections):
+# other sysexts register runtime handlers under /usr/share/bluefin (the
+# nvidia-container-toolkit sysext's `nvidia` handler), and the node's own
+# overrides live in /etc/containerd/conf.d. A glob that matches nothing
+# imports nothing.
+imports = ["/usr/share/bluefin/containerd/conf.d/*.toml", "/etc/containerd/conf.d/*.toml"]
 
 [grpc]
   address = "/run/containerd/containerd.sock"

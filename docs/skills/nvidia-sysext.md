@@ -41,7 +41,7 @@ what is specific to NVIDIA: flavours, bumps, and container runtimes.
 | Sysext | Release asset | Version | Contents |
 | --- | --- | --- | --- |
 | Driver flavour | `nvidia-open-<branch>_<image-version>.raw.zst` | Locked to the image (`ID=bluefin-server`, `VERSION_ID=<image-version>`) | The open kernel modules (signed, zstd-compressed), the headless userspace, GSP firmware, NVIDIA's license, and the units and modprobe / sysusers / tmpfiles drop-ins every flavour shares. |
-| Container Toolkit | `nvidia-container-toolkit-<ctk-ver>.raw.zst` | Own axis (`ID=_any`), like k0s | `nvidia-ctk`, `nvidia-cdi-hook` and upstream's `nvidia-cdi-refresh.{service,path}`, with upstream's drop-in and a Bluefin one. CDI only: no `nvidia-container-runtime`, OCI hook or `libnvidia-container`. |
+| Container Toolkit | `nvidia-container-toolkit-<ctk-ver>.raw.zst` | Own axis (`ID=_any`), like k0s | `nvidia-ctk`, `nvidia-cdi-hook`, `nvidia-container-runtime` (upstream's `.cdi` variant) and upstream's `nvidia-cdi-refresh.{service,path}`, with upstream's drop-in and a Bluefin one, plus a containerd drop-in for the `nvidia` runtime handler. CDI only: no OCI hook or `libnvidia-container`. |
 
 Both are opt-in: nothing in the base image ships or enables them.
 
@@ -211,9 +211,59 @@ against a fake `/sys` and `/proc/driver/nvidia/gpus`.
 Once the toolkit is merged, and after `nvidia-ldconfig.service` and
 `nvidia-device-nodes.service`, `nvidia-cdi-refresh.service` runs
 `nvidia-ctk cdi generate`, which writes `/var/run/cdi/nvidia.yaml`.
-containerd 2.x has CDI on by default and reads that directory; the kubeadm
-sysext's containerd defines only the `runc` runtime, and there is no `nvidia`
-runtime class or OCI hook.
+containerd 2.x has CDI on by default and reads that directory, so a plain
+pod that asks for a CDI device gets it from `runc`: the default runtime
+stays `runc` and there is no OCI hook.
+
+### The `nvidia` runtime handler
+
+The toolkit also ships `/usr/bin/nvidia-container-runtime`, a symlink to
+upstream's `nvidia-container-runtime.cdi` (`cmd/nvidia-container-runtime.cdi`:
+the runtime wrapper with its mode fixed to `cdi` in code). It reads the
+container's device requests (`NVIDIA_VISIBLE_DEVICES=all`, a fully qualified
+`nvidia.com/gpu=...`, or CDI annotations), injects the matching devices from
+`/etc/cdi` and `/var/run/cdi` into the OCI spec and execs `runc` from
+`PATH`. Upstream's defaults already are `default-kind = "nvidia.com/gpu"`
+and those spec directories, so no `/etc/nvidia-container-runtime/config.toml`
+ships or is needed (one is honoured for `log-level`, `debug` and the like;
+its `mode` is ignored). The plain `nvidia-container-runtime`, whose default
+`mode = "auto"` resolves to the legacy stack (`nvidia-container-runtime-hook`
+and `libnvidia-container`, neither of which ships), is not built.
+
+For the kubeadm sysext the toolkit ships
+`/usr/share/bluefin/containerd/conf.d/nvidia-container-runtime.toml`
+(`files/nvidia-container-toolkit/sysext/containerd-nvidia-container-runtime.toml`),
+which the kubeadm containerd config imports by glob
+([kubeadm-sysext.md](kubeadm-sysext.md)): a `runtimes.nvidia` entry of type
+`io.containerd.runc.v2` with `BinaryName = "/usr/bin/nvidia-container-runtime"`
+and `SystemdCgroup = true`, and no `default_runtime_name`. A node without
+the toolkit has no `nvidia` handler; a node with it serves
+`RuntimeClass nvidia`. k0s's containerd reads `/etc/k0s/containerd.d/`
+instead and is not wired up here.
+
+containerd resolves `imports` once, at config load. A diskless node merges
+the toolkit before containerd starts, but an installed node merges it later
+(the activate unit waits for the network fetch) while containerd is already
+up, so the glob would match nothing. `nvidia-container-toolkit-activate`
+therefore runs `systemctl try-restart containerd.service` after the refresh;
+containers survive it (`KillMode=process`). `try-restart` only acts on an
+*active* unit — systemd turns it into a no-op for a unit that is inactive or
+still `activating` — so the activate unit is ordered `After=containerd.service`
+(ordering only, no `Wants=`: a node without the kubeadm sysext has no such
+unit). Otherwise, on a node whose `.raw` is already seeded the fetch unit is
+skipped, the merge runs while containerd is still `activating` (`Type=notify`),
+the restart is skipped, and `RuntimeClass nvidia` keeps failing until someone
+restarts containerd by hand. A node that rewrites
+`/etc/containerd/config.toml` afterwards still restarts containerd itself.
+
+`nvidia-container-runtime.cdi` honours `NVIDIA_VISIBLE_DEVICES` even for
+unprivileged containers (upstream defaults
+`accept-nvidia-visible-devices-envvar-when-unprivileged = true`), so with a
+cluster-wide `RuntimeClass nvidia` any pod asking for that class and
+`NVIDIA_VISIBLE_DEVICES=all` claims every GPU, bypassing device-plugin
+accounting. The operands rely on it, so nothing here changes it; a cluster
+can tighten it in `/etc/nvidia-container-runtime/config.toml` (plus policy on
+the RuntimeClass) at the cost of operands that ask for devices by env var.
 
 ### GPU Operator
 
@@ -233,13 +283,17 @@ That is `--set driver.enabled=false --set toolkit.enabled=false --set
 cdi.enabled=true`. Time-slicing and MIG are GPU Operator settings
 (`devicePlugin.config`, `mig.strategy`), not changes to the sysexts.
 
-Not verified yet: with `cdi.enabled=true` and its NRI plugin off (the
-default), the operator still runs its own pods (device plugin, GPU feature
+The operator schedules its own operands (device plugin, GPU feature
 discovery, DCGM exporter, validator) with `runtimeClassName: nvidia`
-(`operator.runtimeClass`), and no `nvidia` runtime handler is configured.
-How those pods start is settled on real hardware in the GPU rollout, with the
-rest of the GPU-present path that QEMU cannot exercise
-(systemd-sysext-extensions.md).
+(`operator.runtimeClass`) and `NVIDIA_VISIBLE_DEVICES=all`, and creates the
+`RuntimeClass` cluster-wide. Verified on a kubeadm node with the toolkit
+sysext but no `nvidia` handler: every operand stays in `ContainerCreating`
+with `FailedCreatePodSandBox ... unable to get OCI runtime for sandbox`, so
+there is no device plugin, no `nvidia.com/gpu` resource and no CDI injection
+for workloads, which then fail with `CUDA driver version is insufficient`.
+The `nvidia` handler above is what lets those operands start: the runtime
+injects the whole GPU set into them through CDI, and workloads keep getting
+their GPUs from the device plugin's CDI requests under `runc`.
 
 ## Build and test
 
@@ -273,7 +327,7 @@ rest of the GPU-present path that QEMU cannot exercise
 | `elements/oci/nvidia-container-toolkit-sysext.bst` | The `ID=_any` toolkit sysext. |
 | `elements/bluefin-server/os-nvidia-container-toolkit-sysupdate.bst` | Installs the toolkit's sysupdate component, `/usr/lib/sysupdate.nvidia-container-toolkit.d/`. |
 | `files/nvidia/sysext/` | Driver units (`nvidia-flavour-guard`, `nvidia-load`, `nvidia-device-nodes`, `nvidia-ldconfig`, `nvidia-persistenced`), the `nvidia-load` helper (`/usr/libexec/nvidia-load`), modprobe / sysusers / tmpfiles drop-ins, `extension-release.nvidia` template. |
-| `files/nvidia-container-toolkit/sysext/` | Toolkit extension-release and the `nvidia-cdi-refresh.service` drop-in. |
+| `files/nvidia-container-toolkit/sysext/` | Toolkit extension-release, the `nvidia-cdi-refresh.service` drop-in, and the containerd drop-in for the `nvidia` runtime handler. |
 | `files/os/systemd/system/nvidia-container-toolkit-{activate,fetch}.service` | Opt-in toolkit activation on installed nodes, disabled by `80-bluefin-opt-in.preset`. |
 | `files/os/sysupdate.d/<flavour>.feature`, `<NN>-<flavour>.transfer` | The driver's opt-in sysupdate feature and its image-locked transfer. |
 | `files/os/sysupdate.nvidia-container-toolkit.d/` | The toolkit's sysupdate transfer (own version axis). |
