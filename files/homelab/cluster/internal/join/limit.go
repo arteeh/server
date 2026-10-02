@@ -81,15 +81,14 @@ func (l *Limiter) prune(now time.Time) {
 
 // Begin charges one guess for source, atomically with the limit check. It
 // returns ok=false with a retry delay when a limit is reached or the
-// source already has a connection in progress.
+// source already has a connection in progress. Limits are checked first:
+// a source over its budget is told so even while its previous connection
+// is still being torn down.
 func (l *Limiter) Begin(source string) (a *Attempt, retryAfter time.Duration, busy, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	l.prune(now)
-	if l.active[source] {
-		return nil, time.Second, true, false
-	}
 	var global, mine int
 	var oldestGlobal, oldestMine time.Time
 	for _, f := range l.failed {
@@ -111,6 +110,9 @@ func (l *Limiter) Begin(source string) (a *Attempt, retryAfter time.Duration, bu
 		return nil, oldestMine.Add(l.limits.PerSourceWindow).Sub(now), false, false
 	case global >= l.limits.Global:
 		return nil, oldestGlobal.Add(l.limits.GlobalWindow).Sub(now), false, false
+	}
+	if l.active[source] {
+		return nil, time.Second, true, false
 	}
 	l.seq++
 	l.failed = append(l.failed, failure{Source: source, At: now, id: l.seq})

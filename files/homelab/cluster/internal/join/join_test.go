@@ -508,3 +508,18 @@ func TestNetworkFailureBeforeThePAKEReplyCostsNoGuess(t *testing.T) {
 		}
 	}
 }
+
+func TestLimiterReportsRateLimitBeforeBusy(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := NewLimiter(Limits{PerSource: 1, PerSourceWindow: time.Hour, Global: 10, GlobalWindow: time.Hour},
+		filepath.Join(t.TempDir(), "failures.json"), func() time.Time { return now })
+	if _, _, _, ok := l.Begin("10.0.0.1"); !ok {
+		t.Fatal("first attempt refused")
+	}
+	// The first connection is still in progress (no Done yet) and has used
+	// the source's only guess: the answer is rate-limited, not busy.
+	_, retry, busy, ok := l.Begin("10.0.0.1")
+	if ok || busy || retry <= 0 {
+		t.Fatalf("want rate-limited with a delay, got ok=%v busy=%v retry=%v", ok, busy, retry)
+	}
+}
