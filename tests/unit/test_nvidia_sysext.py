@@ -175,10 +175,13 @@ def test_every_unit_is_installed_and_wanted_by_multi_user_target() -> None:
         "nvidia-persistenced.service",
     ]
     assert 'ln -s "../${u}" "${unitdir}/multi-user.target.wants/${u}"' in stage
-    for name in ("modprobe-nvidia.conf", "sysusers-nvidia.conf", "tmpfiles-nvidia.conf"):
+    for name in ("modprobe-nvidia.conf", "sysusers-nvidia.conf", "tmpfiles-nvidia.conf", "nvidia-load"):
         assert f'"${{src}}/{name}"' in stage
+    assert 'install -D -m 0755 "${src}/nvidia-load" "sysext%{libexecdir}/nvidia-load"' in stage
+    assert (SRC / "nvidia-load").stat().st_mode & 0o111
     assert sorted(p.name for p in SRC.iterdir()) == sorted(
-        units() + ["extension-release.nvidia", "modprobe-nvidia.conf", "sysusers-nvidia.conf", "tmpfiles-nvidia.conf"]
+        units()
+        + ["extension-release.nvidia", "modprobe-nvidia.conf", "nvidia-load", "sysusers-nvidia.conf", "tmpfiles-nvidia.conf"]
     )
 
 
@@ -186,9 +189,7 @@ def test_units_skip_themselves_without_an_nvidia_gpu() -> None:
     load_unit = SystemdFile(SRC / "nvidia-load.service")
     assert load_unit.words("Unit", "Requires") == ["nvidia-flavour-guard.service"]
     assert {"nvidia-flavour-guard.service", "systemd-sysext.service"} <= set(load_unit.words("Unit", "After"))
-    assert load_unit.commands() == [
-        ["/usr/libexec/bluefin-sysext-modules", "nvidia", "nvidia-uvm", "nvidia-modeset", "nvidia-drm"]
-    ]
+    assert load_unit.commands() == [["/usr/libexec/nvidia-load"]]
     nodes = SystemdFile(SRC / "nvidia-device-nodes.service")
     assert nodes.words("Unit", "After") == ["nvidia-load.service"]
     assert nodes.value("Unit", "ConditionPathIsDirectory") == "/sys/module/nvidia"
@@ -252,6 +253,18 @@ def test_flavour_guard(tmp_path: Path, merged: list[str], ok: bool) -> None:
 def test_nouveau_stays_off_the_gpu() -> None:
     lines = [line for line in (SRC / "modprobe-nvidia.conf").read_text().splitlines() if line and line[0] != "#"]
     assert "blacklist nouveau" in lines and "options nouveau modeset=0" in lines
+    assert 'install -D -m 0644 "${src}/modprobe-nvidia.conf" "${lib}/modprobe.d/nvidia.conf"' in recipe()["nvidia-sysext-stage"]
+    # The blacklist only covers loads after the merge; udev binds nouveau to
+    # the GPUs before that, so the load helper evicts it first
+    # (tests/unit/nvidia-load_test.bats covers the behaviour).
+    helper = (SRC / "nvidia-load").read_text(encoding="utf-8")
+    assert "modprobe -r nouveau" in helper
+    assert '"${sysfs}/bus/pci/drivers/nouveau/unbind"' in helper
+    assert 'gpus_dir="${NVIDIA_LOAD_GPUS:-/proc/driver/nvidia/gpus}"' in helper
+
+
+def test_the_load_helper_is_shellcheck_clean(shellcheck: str) -> None:
+    subprocess.run([shellcheck, "-S", "style", str(SRC / "nvidia-load")], check=True)
 
 
 def test_nothing_in_the_base_image_enables_or_ships_the_driver() -> None:

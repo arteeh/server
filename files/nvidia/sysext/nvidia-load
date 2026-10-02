@@ -1,0 +1,94 @@
+#!/usr/bin/bash
+# nvidia-load — evict nouveau from the NVIDIA GPUs, load the open kernel
+# modules through bluefin-sysext-modules, and succeed when at least one GPU
+# is driven by nvidia. ExecStart= of nvidia-load.service.
+#
+# nouveau ships in the base image, and udev binds it to every NVIDIA GPU at
+# boot, before systemd-sysext merges this extension: the sysext's
+# /usr/lib/modprobe.d blacklist only covers loads after the merge, and a
+# shared UKI cannot blacklist it on the command line for GPU nodes alone.
+# nvidia refuses a GPU another driver holds ("NVRM: GPU 0000:01:00.0 is
+# already bound to nouveau"), so nouveau goes first: `modprobe -r nouveau`
+# (a base-image module, so the base index resolves it; nothing has opened
+# /dev/dri this early) and, when the module is in use anyway, each GPU is
+# unbound from it through sysfs.
+#
+# The open modules drive Turing and newer GPUs only. On a mixed host nvidia
+# binds the GPUs it supports and leaves the others: the unit succeeds when
+# /proc/driver/nvidia/gpus lists at least one GPU and warns about the rest.
+# It fails only when no GPU came up.
+#
+# Test overrides: NVIDIA_LOAD_SYSFS (/sys), NVIDIA_LOAD_GPUS
+# (/proc/driver/nvidia/gpus), NVIDIA_LOAD_HELPER
+# (/usr/libexec/bluefin-sysext-modules).
+
+set -euo pipefail
+export LC_ALL=C
+
+sysfs="${NVIDIA_LOAD_SYSFS:-/sys}"
+gpus_dir="${NVIDIA_LOAD_GPUS:-/proc/driver/nvidia/gpus}"
+helper="${NVIDIA_LOAD_HELPER:-/usr/libexec/bluefin-sysext-modules}"
+modules="nvidia nvidia-uvm nvidia-modeset nvidia-drm"
+
+me="${0##*/}"
+log() { echo "${me}: $*" >&2; }
+
+# PCI addresses of the NVIDIA display controllers (vendor 0x10de, class 0x03).
+gpus() {
+  local d
+  for d in "${sysfs}"/bus/pci/devices/*; do
+    [ -e "${d}/vendor" ] || continue
+    [ "$(cat "${d}/vendor")" = 0x10de ] || continue
+    case "$(cat "${d}/class")" in 0x03*) echo "${d##*/}" ;; esac
+  done
+}
+
+# The driver bound to a PCI device, or "-".
+driver() {
+  local link
+  link="$(readlink "${sysfs}/bus/pci/devices/$1/driver" 2>/dev/null)" || { echo -; return; }
+  echo "${link##*/}"
+}
+
+all="$(gpus)"
+if [ -z "${all}" ]; then
+  log "no NVIDIA display controller on the PCI bus"
+  exit 1
+fi
+
+held=""
+for gpu in ${all}; do
+  [ "$(driver "${gpu}")" = nouveau ] && held="${held} ${gpu}"
+done
+if [ -n "${held}" ]; then
+  log "nouveau holds${held}: removing it before loading nvidia"
+  if ! modprobe -r nouveau; then
+    for gpu in ${held}; do
+      log "nouveau is in use: unbinding ${gpu} from it"
+      echo "${gpu}" > "${sysfs}/bus/pci/drivers/nouveau/unbind"
+    done
+  fi
+fi
+
+status=0
+# shellcheck disable=SC2086 # modules is a word list
+"${helper}" ${modules} || status=$?
+
+bound=""
+for gpu in ${all}; do
+  if [ -d "${gpus_dir}/${gpu}" ]; then
+    bound="${bound} ${gpu}"
+  else
+    log "warning: ${gpu} is not driven by nvidia (driver: $(driver "${gpu}")); the open kernel modules support Turing and newer GPUs only"
+  fi
+done
+
+if [ "${status}" -ne 0 ]; then
+  log "bluefin-sysext-modules failed (exit ${status})"
+  exit "${status}"
+fi
+if [ -z "${bound}" ]; then
+  log "no NVIDIA GPU is driven by nvidia"
+  exit 1
+fi
+log "nvidia drives${bound}"

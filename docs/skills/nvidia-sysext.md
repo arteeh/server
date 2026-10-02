@@ -4,7 +4,7 @@ description: Build and ship the NVIDIA driver (open kernel modules) and NVIDIA C
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-30"
+  last_updated: "2026-10-01"
 ---
 # NVIDIA sysexts
 
@@ -181,6 +181,31 @@ from vendor `0x10de`), `nvidia-device-nodes.service` and
 toolkit's drop-in skips `nvidia-cdi-refresh.service` on the same PCI check.
 `nvidia-ldconfig.service` and the flavour guard run on every node.
 
+### nouveau and mixed-generation hosts
+
+nouveau ships in the base image (not in the initrd), and udev binds it to
+every NVIDIA GPU before systemd-sysext merges the driver sysext. The
+sysext's `/usr/lib/modprobe.d/nvidia.conf` (`blacklist nouveau`, `options
+nouveau modeset=0`) only covers loads after the merge, and the UKI is shared
+by every node, so its command line cannot blacklist nouveau for GPU nodes
+alone. nvidia refuses a GPU another driver holds (`NVRM: GPU 0000:01:00.0
+is already bound to nouveau`, then `could not insert 'nvidia': No such
+device`), and while nouveau holds the card a container's `ffmpeg` picks up
+its userspace (`nouveau_drv_video.so`).
+
+`nvidia-load.service` runs `/usr/libexec/nvidia-load`
+(`files/nvidia/sysext/nvidia-load`), which: lists the NVIDIA display
+controllers and, when nouveau holds any, runs `modprobe -r nouveau` (a
+base-image module; nothing has opened `/dev/dri` this early), writing each
+held address to `/sys/bus/pci/drivers/nouveau/unbind` when the module is in
+use; loads `nvidia nvidia-uvm nvidia-modeset nvidia-drm` through
+`bluefin-sysext-modules`; succeeds when `/proc/driver/nvidia/gpus/` lists at
+least one GPU, warning about every NVIDIA GPU nvidia does not drive (the
+open modules are Turing and newer only, so a Pascal card in a mixed box
+stays unused while the supported one comes up); fails only when the loader
+failed or no GPU came up. `tests/unit/nvidia-load_test.bats` runs it
+against a fake `/sys` and `/proc/driver/nvidia/gpus`.
+
 ### Containers (CDI)
 
 Once the toolkit is merged, and after `nvidia-ldconfig.service` and
@@ -228,6 +253,8 @@ rest of the GPU-present path that QEMU cannot exercise
 - Both release assets are in the signed release set
   ([ddi-installer.md](ddi-installer.md)).
 - Contracts: `tests/unit/test_nvidia_sysext.py` (driver),
+  `tests/unit/nvidia-load_test.bats` (the load helper's nouveau eviction and
+  mixed-host outcome),
   `tests/unit/test_nvidia_container_toolkit_sysext.py` (toolkit),
   `tests/unit/test_nvidia_container_toolkit_delivery.py` (toolkit activation
   and sysupdate), `tests/unit/test_track_binaries.py` (driver and toolkit tracking).
@@ -245,7 +272,7 @@ rest of the GPU-present path that QEMU cannot exercise
 | `elements/nvidia/nvidia-container-toolkit.bst` | Toolkit build: the release tag via git, Go with its vendored modules, no network. |
 | `elements/oci/nvidia-container-toolkit-sysext.bst` | The `ID=_any` toolkit sysext. |
 | `elements/bluefin-server/os-nvidia-container-toolkit-sysupdate.bst` | Installs the toolkit's sysupdate component, `/usr/lib/sysupdate.nvidia-container-toolkit.d/`. |
-| `files/nvidia/sysext/` | Driver units (`nvidia-flavour-guard`, `nvidia-load`, `nvidia-device-nodes`, `nvidia-ldconfig`, `nvidia-persistenced`), modprobe / sysusers / tmpfiles drop-ins, `extension-release.nvidia` template. |
+| `files/nvidia/sysext/` | Driver units (`nvidia-flavour-guard`, `nvidia-load`, `nvidia-device-nodes`, `nvidia-ldconfig`, `nvidia-persistenced`), the `nvidia-load` helper (`/usr/libexec/nvidia-load`), modprobe / sysusers / tmpfiles drop-ins, `extension-release.nvidia` template. |
 | `files/nvidia-container-toolkit/sysext/` | Toolkit extension-release and the `nvidia-cdi-refresh.service` drop-in. |
 | `files/os/systemd/system/nvidia-container-toolkit-{activate,fetch}.service` | Opt-in toolkit activation on installed nodes, disabled by `80-bluefin-opt-in.preset`. |
 | `files/os/sysupdate.d/<flavour>.feature`, `<NN>-<flavour>.transfer` | The driver's opt-in sysupdate feature and its image-locked transfer. |

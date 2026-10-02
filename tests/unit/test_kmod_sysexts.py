@@ -85,8 +85,13 @@ def test_load_units_go_through_the_helper() -> None:
     assert zfs.commands() == [[HELPER_PATH, "zfs"]]
     assert "systemd-sysext.service" in zfs.words("Unit", "After")
     nvidia = SystemdFile(NVIDIA_SRC / "nvidia-load.service")
-    assert nvidia.commands() == [[HELPER_PATH, "nvidia", "nvidia-uvm", "nvidia-modeset", "nvidia-drm"]]
+    assert nvidia.commands() == [["/usr/libexec/nvidia-load"]]
     assert "systemd-sysext.service" in nvidia.words("Unit", "After")
+    # nvidia-load evicts nouveau, then loads the four modules through the helper.
+    text = (NVIDIA_SRC / "nvidia-load").read_text(encoding="utf-8")
+    assert f'helper="${{NVIDIA_LOAD_HELPER:-{HELPER_PATH}}}"' in text
+    assert 'modules="nvidia nvidia-uvm nvidia-modeset nvidia-drm"' in text
+    assert '"${helper}" ${modules}' in text
 
 
 @pytest.mark.parametrize("unit", sorted([*ZFS_SRC.glob("*.service"), *NVIDIA_SRC.glob("*.service")]), ids=lambda p: p.name)
