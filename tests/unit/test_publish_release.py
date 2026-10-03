@@ -223,6 +223,41 @@ def test_dry_run_renders_gh_release_for_top_level_files_only(release: Path) -> N
     assert "efi-keys" not in command
 
 
+def test_release_notes_use_the_release_version_and_source(release: Path, tmp_path: Path, monkeypatch) -> None:
+    # Capture the actual gh arguments without publishing anything. Run outside
+    # the checkout to ensure the release text has no working-directory dependency.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    capture = tmp_path / "gh-args.json"
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['GH_CAPTURE'], 'w') as out: json.dump(sys.argv[1:], out)\n"
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("GH_CAPTURE", str(capture))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/server")
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    result = run("release", str(release), VERSION, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    args = json.loads(capture.read_text())
+    notes = args[args.index("--notes") + 1]
+    assert f"https://github.com/example/server/releases/download/v{VERSION}/bluefin-server-installer_{VERSION}.raw" in notes
+    assert f"sudo dd if=bluefin-server-installer_{VERSION}.raw of=/dev/<usb>" in notes
+    assert "sha256sum --check --ignore-missing SHA256SUMS" in notes
+    assert "erases the entire USB stick" in notes
+    assert "target disk is erased too" in notes
+    assert f"https://github.com/example/server/blob/{'0' * 40}/docs/skills/usb-installer.md" in notes
+    assert "```bash\n" in notes
+    assert "${" not in notes
+    assert args[args.index("--notes") + 2:] == [
+        str(release / name)
+        for name in sorted([*release_files(VERSION), "SHA256SUMS", "SHA256SUMS.gpg"])
+    ]
+
+
 WORKFLOW_REF = "projectbluefin/server/.github/workflows/build.yml@refs/heads/main"
 FAKE_GH = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GH_CALLS"

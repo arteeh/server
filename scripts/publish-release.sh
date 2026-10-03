@@ -193,11 +193,77 @@ cmd_release() {
     mapfile -t files < <(published_files "${dir}" | sed "s|^|${dir%/}/|")
     [ "${#files[@]}" -gt 0 ] || die "nothing to publish in ${dir}"
 
+    local repo="${GITHUB_REPOSITORY:-projectbluefin/server}"
+    local source="${GITHUB_SERVER_URL:-https://github.com}/${repo}"
+    local docs="${source}/blob/${sha}/docs/skills"
+    local notes
+    notes="$(cat <<EOF
+Image ${ver} built from [${sha}](${source}/commit/${sha}).
+
+## Install from a USB stick
+
+Download **bluefin-server-installer_${ver}.raw** from the assets below for an
+offline installation. On Linux, with curl and GNU coreutils installed:
+
+\`\`\`bash
+mkdir -p bluefin-server-${ver}
+cd bluefin-server-${ver}
+curl -fLO '${source}/releases/download/v${ver}/bluefin-server-installer_${ver}.raw'
+curl -fLO '${source}/releases/download/v${ver}/SHA256SUMS'
+sha256sum --check --ignore-missing SHA256SUMS
+lsblk -o NAME,SIZE,MODEL,TRAN,MOUNTPOINTS
+\`\`\`
+
+Continue only if the installer checksum says **OK**. Checksums detect download
+corruption; see [signature verification](${docs}/systemd-sysupdate-verification.md)
+for the signed manifest and trusted keyring.
+
+**Writing the image erases the entire USB stick.** Identify it by size and model
+in \`lsblk\`, unmount its mounted partitions, and replace \`/dev/<usb>\` below with
+its whole-disk device (not a partition):
+
+\`\`\`bash
+sudo dd if=bluefin-server-installer_${ver}.raw of=/dev/<usb> bs=4M conv=fsync status=progress
+\`\`\`
+
+Boot the stick in UEFI mode and follow the on-screen installer. **The selected
+target disk is erased too.** Remove the stick when the machine reboots, then set
+a non-empty root password at first boot. For Secure Boot setup, disk selection,
+Homelab boot entries and provisioning, read the [USB installer guide](${docs}/usb-installer.md).
+
+## Which asset do I need?
+
+In the names below, \`<ver>\` is \`${ver}\` and \`<uuid>\` identifies a partition.
+
+| Asset | Purpose |
+| --- | --- |
+| \`bluefin-server-installer_<ver>.raw\` | Offline USB installer; write this to your stick. |
+| \`bluefin-server_<ver>.raw\` | OS discoverable disk image (DDI); pulled into RAM for diskless boot and used as its installation payload. |
+| \`bluefin-server-netboot_<ver>.efi\` | Signed netboot unified kernel image (UKI) for UEFI HTTP/PXE boot; downloads the OS DDI. |
+| \`bluefin-server-netboot_<ver>.esp.raw\` | Netboot EFI System Partition image with systemd-boot and Secure Boot enrollment payloads; requires network access to the OS DDI. |
+| \`bluefin-server-<ver>.efi\` | Signed disk UKI for installed nodes and OS updates. |
+| \`bluefin-server_<ver>_<uuid>.usr.raw\`, \`*.usr-verity.raw\` | The /usr partition and its verification data, consumed by systemd-sysupdate for A/B updates. |
+| \`kubeadm_<ver>.raw.zst\`, \`k0s-<k0s-version>.raw.zst\` | Optional Kubernetes systemd-sysext images (kubeadm or k0s). |
+| \`homelab_<ver>.raw.zst\` | Optional homelab cluster tooling extension. |
+| \`argo-workflows_<ver>.raw.zst\`, \`mcp_<ver>.raw.zst\`, \`kubestellar_<ver>.raw.zst\` | Optional homelab extensions: Argo Workflows, MCP server and KubeStellar Console. |
+| \`zfs_<ver>.raw.zst\` | Optional OpenZFS extension. |
+| \`nvidia-open-595_<ver>.raw.zst\`, \`nvidia-container-toolkit-<toolkit-version>.raw.zst\` | Optional NVIDIA open kernel modules and Container Toolkit extensions. |
+| \`homelab-*.bu\`, \`homelab-*.ign\` | Editable Butane YAML and rendered Ignition JSON provisioning templates for control-plane/node roles, with kubeadm or k0s. Customise before use. |
+| \`bluefin-server_<ver>.spdx.json\` | SPDX software bill of materials (SBOM), listing the image's components. |
+| \`SHA256SUMS\`, \`SHA256SUMS.gpg\` | Release asset checksums and their detached signature. |
+| GitHub's \`Source code\` archives | Repository source for developers; not bootable images. |
+
+See the [boot and install guide](${docs}/ddi-installer.md),
+[extension guide](${docs}/systemd-sysext-extensions.md) and
+[homelab guide](${docs}/homelab-profile.md) for other deployment options.
+EOF
+)"
+
     # A version is published exactly once: gh refuses an existing tag, so
     # assets nodes may already trust are never overwritten.
     local cmd=(gh release create "v${ver}" --target "${sha}"
         --title "Bluefin Server ${ver}"
-        --notes "Image ${ver} built from ${sha}."
+        --notes "${notes}"
         "${files[@]}")
     if [ "${dry}" = 1 ]; then
         echo "dry run, would run:"
