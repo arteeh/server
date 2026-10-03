@@ -39,11 +39,8 @@ FILES_DIR = ROOT / "files"
 # Paths under files/ that are host-side tooling, executed from a repository
 # checkout and deliberately absent from every image.
 HOST_TOOLING = {
-    # Host developer CLI: Justfile `install-vm` and
-    # scripts/lima-e2e-kubestellar-test.sh run it from the checkout.
+    # Host developer CLI: Justfile `setup-kubestellar` runs it from the checkout.
     "files/bin/bluefin-kubestellar",
-    # limactl VM template consumed by Justfile `test-e2e-lima`.
-    "files/lima",
     # Release public key; CI copies it to files/boot-keys/import-pubring.pgp,
     # from where bluefin-server/os-sysupdate-keys.bst installs it.
     "files/os/sysupdate-keys/import-pubring.gpg",

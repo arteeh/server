@@ -7,14 +7,16 @@
 # the k0s sysupdate component) and the homelab sysext
 # (bluefin-sysext-fetch.service, through the homelab sysupdate feature), starts
 # a k0s controller that also runs workloads and applies the default homelab
-# components (k0s brings its own CNI, so no Cilium). Nodes join with
+# components (k0s brings its own CNI, so no Cilium) and the add-ons
+# (argo-workflows, mcp and kubestellar features). Nodes join with
 # homelab-k0s-node.bu and the join passphrase this node shows on its console.
 # Reference:
 # https://github.com/projectbluefin/server/blob/main/docs/skills/homelab-profile.md
 #
 # Edit before use: your SSH public key below, and the optional settings in
 # homelab.conf (MetalLB address pool, ACME email, Argo CD root repository,
-# NFS, democratic-csi, GPU, monitoring).
+# NFS, democratic-csi, GPU, monitoring, add-ons: domain, MCP read-write,
+# KubeStellar Console OAuth app).
 variant: fcos
 version: 1.7.0
 passwd:
@@ -36,6 +38,30 @@ systemd:
 storage:
   files:
     - path: /etc/sysupdate.d/homelab.feature.d/50-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Feature]
+          Enabled=true
+    # The homelab add-ons, applied after the default components: Argo
+    # Workflows, the Kubernetes MCP server and the KubeStellar Console
+    # (deployed once its GitHub OAuth app is configured).
+    - path: /etc/sysupdate.d/argo-workflows.feature.d/50-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Feature]
+          Enabled=true
+    - path: /etc/sysupdate.d/mcp.feature.d/50-homelab.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Feature]
+          Enabled=true
+    - path: /etc/sysupdate.d/kubestellar.feature.d/50-homelab.conf
       mode: 0644
       overwrite: true
       contents:
@@ -91,6 +117,12 @@ storage:
           # METRICS_SERVER (kubeadm only), RELOADER, KURED. Off by default: NFS,
           # DEMOCRATIC_CSI, GPU_OPERATOR and monitoring (KUBE_PROMETHEUS_STACK, LOKI,
           # ALLOY; enable all three together).
+          #
+          # Add-ons (their own sysexts, applied after the components when merged):
+          # HOMELAB_<ID>=yes|no overrides the default in
+          # /usr/share/bluefin/homelab/addons.d/<NN-id>/addon. On by default:
+          # ARGO_WORKFLOWS, MCP, KUBESTELLAR_CONSOLE (deployed once its OAuth app is
+          # configured, below). Off by default: KUBESTELLAR_FULL.
 
           # MetalLB L2 address pool: free LAN addresses outside your DHCP range (ranges
           # or CIDRs, comma separated). Required for LoadBalancer Services.
@@ -130,3 +162,26 @@ storage:
           #HOMELAB_KUBE_PROMETHEUS_STACK=yes
           #HOMELAB_LOKI=yes
           #HOMELAB_ALLOY=yes
+
+          # Add-ons are exposed on the homelab Gateway (port 80 of its LoadBalancer
+          # address) by host name: argo.<domain>, mcp.<domain>, kubestellar.<domain>.
+          # Point those names (or a wildcard) at the Gateway's address.
+          #HOMELAB_DOMAIN=home.arpa
+
+          # Argo Workflows (argo sysext): the server takes a Kubernetes token
+          # (--auth-mode=client), e.g. `kubectl -n argo create token argo-server`.
+          #HOMELAB_ARGO_WORKFLOWS=no
+
+          # Kubernetes MCP server (mcp sysext): read-only; clients authenticate with
+          # the mcp-client token (`kubectl -n mcp get secret mcp-client-token -o
+          # jsonpath='{.data.token}' | base64 -d`). yes: write tools too, and
+          # mcp-client gets the "edit" ClusterRole.
+          #HOMELAB_MCP_READ_WRITE=yes
+
+          # KubeStellar Console (kubestellar sysext): deployed once a GitHub OAuth app
+          # (callback http://kubestellar.<domain>/auth/github/callback) is configured:
+          # its client id and secret, each without a trailing newline, in
+          # /etc/bluefin/homelab.d/kubestellar-console/github-client-id and
+          # /etc/bluefin/homelab.d/kubestellar-console/github-client-secret (mode 0600).
+          # Full KubeStellar (KubeFlex, Postgres, the KubeStellar controllers):
+          #HOMELAB_KUBESTELLAR_FULL=yes

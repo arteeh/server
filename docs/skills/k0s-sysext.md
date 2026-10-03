@@ -1,10 +1,10 @@
 ---
 name: k0s-sysext
-description: Build and ship the k0s systemd-sysext for Bluefin Server. KubeStellar / Argo CD / kiosk live in the separate oci/kubestellar-sysext.bst.
+description: Build and ship the k0s systemd-sysext for Bluefin Server. KubeStellar is a homelab add-on (homelab-profile.md), not part of k0s.
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-10-01"
+  last_updated: "2026-10-02"
   context7-sources:
     - /systemd/systemd
 ---
@@ -24,8 +24,9 @@ optional overlay for Bluefin Server.
 
 ## When NOT to Use
 
-- Building or shipping the KubeStellar / Argo CD appliance; that is the separate
-  `oci/kubestellar-sysext.bst` (see `k0s-sysext-ops.md` for the split).
+- KubeStellar, Argo CD and the other cluster add-ons: the homelab sysext and
+  its add-ons apply them to a k0s (or kubeadm) control plane
+  ([homelab-profile.md](homelab-profile.md)).
 - General OS image composition questions (use `ddi-installer.md` or `avoid-over-engineering.md`).
 - systemd-sysupdate signature verification (use `systemd-sysupdate-verification.md`).
 
@@ -86,7 +87,6 @@ Design choices:
 | `include/k0s.yml` | **Single source of truth for the k0s version axis** (`%{k0s-upstream-tag}`, `%{k0s-version}`). |
 | `elements/k0s/k0s-bin.bst` | Pins the upstream `k0s` binary SHA256; the release URL is derived from `include/k0s.yml`. |
 | `elements/oci/k0s-sysext.bst` | Builds the EROFS sysext image (`k0s-<k0s-version>.raw`). |
-| `elements/oci/kubestellar-sysext.bst` | Separate opt-in sysext with Argo CD, KubeStellar, kiosk, and kubeflex secret generators. |
 | `files/k0s/sysext/k0scontroller.service` | systemd unit for the k0s controller. Not enabled by default. |
 | `files/k0s/sysext/k0sworker.service` | systemd unit for the k0s worker; selected by `/etc/k0s/token`. |
 | `files/k0s/sysext/extension-release.k0s` | Static sysext identity (`ID=_any`); `VERSION_ID=`/`ARCHITECTURE=` are appended at build time. |
@@ -111,8 +111,8 @@ Design choices:
 
 ```bash
 just validate              # resolve the element graph
-just build-sysext          # build oci/k0s-sysext.bst + oci/kubestellar-sysext.bst
-just export-sysext         # export both sysext artifacts to dist/sysext/
+just build-sysext          # build oci/k0s-sysext.bst
+just export-sysext         # export it to dist/sysext/
 ```
 
 ## Operations and runtime testing

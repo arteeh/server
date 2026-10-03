@@ -65,6 +65,8 @@ expected_patterns() {
         "kubestellar_${v}\\.raw\\.zst" \
         "kubeadm_${v}\\.raw\\.zst" \
         "homelab_${v}\\.raw\\.zst" \
+        "argo-workflows_${v}\\.raw\\.zst" \
+        "mcp_${v}\\.raw\\.zst" \
         "nvidia-open-595_${v}\\.raw\\.zst" \
         "k0s-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst" \
         "nvidia-container-toolkit-[0-9][0-9A-Za-z.+-]*\\.raw\\.zst"

@@ -1,0 +1,34 @@
+# The MCP server forwards each request's bearer token to the API server
+# (cluster_auth_mode passthrough), so what a client may do is what its token
+# may do. mcp-client is the account for that token: the Secret below is
+# filled in by Kubernetes (kubectl -n mcp get secret mcp-client-token -o
+# jsonpath='{.data.token}' | base64 -d), and it may read, not write, through
+# the "view" ClusterRole (no Secrets). 21-client-read-write.yaml adds "edit"
+# when HOMELAB_MCP_READ_WRITE=yes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-client
+  namespace: mcp
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mcp-client-token
+  namespace: mcp
+  annotations:
+    kubernetes.io/service-account.name: mcp-client
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-client-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+- kind: ServiceAccount
+  name: mcp-client
+  namespace: mcp

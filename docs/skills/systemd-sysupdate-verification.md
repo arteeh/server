@@ -17,7 +17,8 @@ the OS image.
 ## When to Use
 
 - Modifying `files/os/sysupdate.d/*.transfer` (including the `zfs`,
-  `kubestellar`, `kubeadm` and `nvidia-open-595` feature transfers) or a
+  `kubeadm`, `nvidia-open-595`, `homelab` and homelab add-on feature
+  transfers) or a
   component directory (`files/os/sysupdate.k0s.d/`,
   `files/os/sysupdate.nvidia-container-toolkit.d/`).
 - Rotating or replacing the image signing key.
@@ -57,9 +58,10 @@ Installed nodes carry A/B usr and usr-verity slots plus matching UKIs. The usr
 and usr-verity transfers live in `sysupdate.d` and fill the inactive slot; the
 UKI transfer installs the new disk UKI into `/EFI/Linux` with boot counting
 (`TriesLeft=3`), so a failed image rolls back to the previous slot on its own.
-The optional OpenZFS, KubeStellar, kubeadm and NVIDIA driver sysexts are
-version-locked to the image and follow OS updates through the optional `zfs`,
-`kubestellar`, `kubeadm` and `nvidia-open-595` sysupdate **features**
+The optional OpenZFS, kubeadm, NVIDIA driver, homelab and homelab add-on
+(`argo-workflows`, `mcp`, `kubestellar`) sysexts are version-locked to the
+image and follow OS updates through the optional sysupdate **features** of
+the same names
 (`files/os/sysupdate.d/<name>.feature` and `3N-<name>.transfer`), enabled per
 node with `updatectl enable zfs` or a drop-in such as
 `/etc/sysupdate.d/zfs.feature.d/enable.conf` containing `[Feature] Enabled=true`.

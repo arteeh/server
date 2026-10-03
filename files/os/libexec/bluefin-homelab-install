@@ -10,8 +10,8 @@
 # systemd-sysinstall drop-in appends to its command line:
 #
 #   --definitions=<stick>/bluefin/homelab/repart.d
-#       an ESP drop-in that copies the stick's kubeadm and homelab sysexts
-#       (and their SHA256SUMS) onto the installed disk's ESP, where
+#       an ESP drop-in that copies the stick's kubeadm and homelab sysexts and
+#       the homelab add-ons (and their SHA256SUMS) onto the installed disk's ESP, where
 #       bluefin-sysext-fetch.service installs them on the first boot: the
 #       install needs no network
 #   --load-credential=ignition.config:<stick>/bluefin/homelab/homelab-<role>.bu
@@ -69,7 +69,7 @@ if [ "${role}" = node ]; then
 fi
 
 printf 'BLUEFIN_INSTALL_ARGS=%s\n' "${args[*]}" > "${out}/sysinstall.env"
-msg="Homelab ${role} install: template ${template##*/}, kubeadm and homelab sysexts from the installer"
+msg="Homelab ${role} install: template ${template##*/}, kubeadm, homelab and add-on sysexts from the installer"
 [ "${role}" != node ] || msg+=", join passphrase $([ -s "${out}/passphrase" ] && echo set || echo 'from the template')"
 printf '\n%s\n' "${msg}"
 printf '%s: %s\n' "${PROG}" "${msg}" >&2

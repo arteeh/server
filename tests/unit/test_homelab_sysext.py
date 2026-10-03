@@ -379,7 +379,8 @@ def test_homelab_sysext_ships_in_the_signed_release_set() -> None:
     assert '"homelab_${v}\\\\.raw\\\\.zst"' in (ROOT / "scripts" / "publish-release.sh").read_text()
     justfile = (ROOT / "Justfile").read_text()
     assert "oci/homelab-sysext.bst" in justfile
-    assert "cp dist/homelab-checkout/homelab_*.raw.zst dist/sysext/" in justfile
+    assert "for name in homelab argo-workflows mcp kubestellar; do" in justfile
+    assert "cp dist/homelab-checkout/${name}_*.raw.zst dist/sysext/" in justfile
 
 
 def test_applier_never_deletes() -> None:

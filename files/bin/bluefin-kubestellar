@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bluefin-kubestellar: Single-command launcher and manager for kc-agent
 #
-# Provides bulletproof setup and launch for connecting client workstations to the
-# Bluefin Server KubeStellar Console kiosk:
+# Provides bulletproof setup and launch for connecting client workstations to
+# the Bluefin Server KubeStellar Console.
 # 1. Installs kc-agent via Homebrew (kubestellar/tap) if missing.
 # 2. Configures origin flags for the local console (default: http://localhost:8080,http://127.0.0.1:8080).
 # 3. Optimizes client environment by disabling in-cluster Kagenti DNS queries (KAGENTI_CONTROLLER_URL="none").

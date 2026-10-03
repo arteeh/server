@@ -1,36 +1,35 @@
 kind: manual
 description: |
-  Opt-in systemd-sysext with the KubeStellar appliance for k0s: Argo CD and
-  KubeStellar manifests, the loopback kiosk proxy assets, and the kubeflex
-  secret generators, seeded by kubestellar-seed.service before
-  k0scontroller.service starts. Requires the k0s sysext.
+  Opt-in homelab add-on systemd-sysext: the KubeStellar Console (deployed
+  once its GitHub OAuth app is configured, behind the homelab Gateway) and,
+  with HOMELAB_KUBESTELLAR_FULL=yes, full KubeStellar (KubeFlex, its
+  Postgres, the KubeStellar controllers' PostCreateHooks), under
+  /usr/share/bluefin/homelab/addons.d/. Needs the homelab sysext, whose
+  applier applies it on the control plane of a kubeadm or k0s cluster.
 
   Output: kubestellar_<image-version>.raw, .raw.zst, and SHA256SUMS. Locked to
-  one image version like the ZFS sysext and updated in lock-step with the OS
-  through the `kubestellar` sysupdate feature.
+  one image version like the homelab sysext and updated in lock-step with
+  the OS through the `kubestellar` sysupdate feature.
 
 (@):
-  - include/image.yml
-  - include/sysext.yml
+- include/image.yml
+- include/sysext.yml
 
 build-depends:
-  - base/base-stack.bst
-  - freedesktop-sdk.bst:components/erofs-utils.bst
-  - freedesktop-sdk.bst:components/zstd.bst
+- base/base-stack.bst
+- freedesktop-sdk.bst:components/erofs-utils.bst
+- freedesktop-sdk.bst:components/zstd.bst
 
 sources:
-  - kind: local
-    path: files/kubestellar/sysext
-    directory: sysext-src
-  - kind: local
-    path: files/k0s/manifests
-    directory: manifests-src
-  - kind: local
-    path: files/k0s/kiosk
-    directory: kiosk-src
-  - kind: local
-    path: files/k0s/kubeflex
-    directory: kubeflex-src
+- kind: local
+  path: files/homelab/addon-sysexts
+  directory: sysext-src
+- kind: local
+  path: files/homelab/addons/30-kubestellar-console
+  directory: addons-src/30-kubestellar-console
+- kind: local
+  path: files/homelab/addons/31-kubestellar-full
+  directory: addons-src/31-kubestellar-full
 
 variables:
   strip-binaries: ""
@@ -38,26 +37,25 @@ variables:
   sysext-image: "kubestellar_%{image-version}"
   sysext-release: "kubestellar_%{image-version}"
   sysext-version: "%{image-version}"
-  # Manifests, kiosk assets and shell scripts only.
+  # Manifests only.
   sysext-architecture: ""
 
 config:
   install-commands:
-    - |
-      set -euo pipefail
-      root=sysext/usr
-      mkdir -p "${root}/lib/systemd/system/k0scontroller.service.wants" \
-        "${root}/lib/tmpfiles.d" "${root}/lib/issue.d" \
-        "${root}/share/k0s/manifests" "${root}/share/k0s/kiosk" "${root}/share/k0s/kubeflex"
-      cp -a sysext-src/kubestellar-seed.service "${root}/lib/systemd/system/"
-      ln -s ../kubestellar-seed.service "${root}/lib/systemd/system/k0scontroller.service.wants/kubestellar-seed.service"
-      cp -a sysext-src/k0s-manifests.conf "${root}/lib/tmpfiles.d/"
-      cp -a sysext-src/40-kubestellar.issue "${root}/lib/issue.d/"
-      cp -a manifests-src/* "${root}/share/k0s/manifests/"
-      cp -a kiosk-src/. "${root}/share/k0s/kiosk/"
-      cp -a kubeflex-src/. "${root}/share/k0s/kubeflex/"
-      chmod 0755 "${root}"/share/k0s/kubeflex/*.sh
-      if find sysext -name '*.pem' | grep -q .; then
-        echo "ERROR: key material in a public sysext" >&2; exit 1
-      fi
-    - "%{sysext-pack}"
+  - |
+    set -euo pipefail
+    addons="sysext%{datadir}/bluefin/homelab/addons.d"
+    mkdir -p "${addons}"
+    cp -a addons-src/. "${addons}/"
+    for d in "${addons}"/*/; do
+      [ -f "${d}addon" ] || { echo "ERROR: ${d} has no addon index file" >&2; exit 1; }
+    done
+    # Every registry reference carries a digest.
+    if grep -rnE '^[[:space:]-]*image: "?[^[:space:]]*[/:]' "${addons}" | grep -v '@sha256:[0-9a-f]\{64\}'; then
+      echo "ERROR: image reference not pinned by digest" >&2; exit 1
+    fi
+    if find sysext -name '*.pem' -o -name '*.key' | grep -q .; then
+      echo "ERROR: key material in a public sysext" >&2; exit 1
+    fi
+
+  - "%{sysext-pack}"

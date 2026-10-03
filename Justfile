@@ -70,7 +70,7 @@ validate: gen-dev-keys
     python3 .github/scripts/check-release-version.py
     python3 .github/scripts/check-k0s-version.py
     python3 .github/scripts/check-renovate-series.py
-    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/kubestellar-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst oci/homelab-sysext.bst oci/nvidia-open-595-sysext.bst oci/nvidia-container-toolkit-sysext.bst
+    just bst show --deps all oci/bluefin-server-image.bst oci/k0s-sysext.bst oci/zfs-sysext.bst oci/kubeadm-sysext.bst oci/homelab-sysext.bst oci/argo-workflows-sysext.bst oci/mcp-sysext.bst oci/kubestellar-sysext.bst oci/nvidia-open-595-sysext.bst oci/nvidia-container-toolkit-sysext.bst
 
 # Run the unit test suite (pytest + bats; bats from a container if not installed).
 [group('dev')]
@@ -86,10 +86,10 @@ test-unit:
         -v "{{justfile_directory()}}:/code:ro" -w /code "${bats_image}" tests/unit
 
 # ── Build ─────────────────────────────────────────────────────────────
-# Build the k0s and KubeStellar systemd-sysext images.
+# Build the k0s systemd-sysext image.
 [group('sysext')]
 build-sysext:
-    just bst build oci/k0s-sysext.bst oci/kubestellar-sysext.bst
+    just bst build oci/k0s-sysext.bst
 
 # Export the k0s systemd-sysext image + SHA256SUMS to dist/sysext/.
 # The artifact checkout also emits an uncompressed .raw; only the
@@ -102,11 +102,7 @@ export-sysext: build-sysext
     cp dist/sysext-checkout/k0s-*.raw.zst dist/sysext/
     cp dist/sysext-checkout/SHA256SUMS dist/sysext/
     rm -rf dist/sysext-checkout
-    just bst artifact checkout oci/kubestellar-sysext.bst --directory /src/dist/sysext-checkout
-    cp dist/sysext-checkout/kubestellar-*.raw.zst dist/sysext/
-    cat dist/sysext-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
-    rm -rf dist/sysext-checkout
-    @echo "==> wrote k0s + kubestellar sysexts:" && ls -lh dist/sysext/
+    @echo "==> wrote k0s sysext:" && ls -lh dist/sysext/
 
 # -- Diskless /usr image + signed boot chain ----------------------------------
 
@@ -204,23 +200,28 @@ export-zfs-sysext: build-zfs-sysext
     rm -rf dist/zfs-checkout
     @echo "==> wrote zfs sysext:" && ls -lh dist/sysext/
 
-# Build the homelab sysext (component manifests + bluefin-homelab-apply).
+# Build the homelab sysext (component manifests + bluefin-homelab-apply) and
+# its add-on sysexts (Argo Workflows, MCP server, KubeStellar).
 [group('sysext')]
 build-homelab-sysext:
-    just bst build oci/homelab-sysext.bst
+    just bst build oci/homelab-sysext.bst oci/argo-workflows-sysext.bst oci/mcp-sysext.bst oci/kubestellar-sysext.bst
 
-# Export the homelab sysext + SHA256SUMS to dist/sysext/.
+# Export the homelab sysext and its add-ons + SHA256SUMS to dist/sysext/.
 [group('sysext')]
 export-homelab-sysext: build-homelab-sysext
-    rm -rf dist/homelab-checkout
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p dist/sysext
-    just bst artifact checkout oci/homelab-sysext.bst --directory /src/dist/homelab-checkout
-    cp dist/homelab-checkout/homelab_*.raw.zst dist/sysext/
-    grep 'raw.zst$' dist/homelab-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
+    for name in homelab argo-workflows mcp kubestellar; do
+        rm -rf dist/homelab-checkout
+        just bst artifact checkout "oci/${name}-sysext.bst" --directory /src/dist/homelab-checkout
+        cp dist/homelab-checkout/${name}_*.raw.zst dist/sysext/
+        grep 'raw.zst$' dist/homelab-checkout/SHA256SUMS >> dist/sysext/SHA256SUMS
+    done
     rm -rf dist/homelab-checkout
-    @echo "==> wrote homelab sysext:" && ls -lh dist/sysext/
+    echo "==> wrote homelab sysexts:" && ls -lh dist/sysext/
 
-# Re-render files/homelab/manifests/ from the pins in the render script (network, podman).
+# Re-render files/homelab/manifests/ and files/homelab/addons/ from the pins in the render script (network, podman).
 [group('sysext')]
 render-homelab-manifests:
     python3 scripts/render-homelab-manifests.py
@@ -320,20 +321,4 @@ setup-kubestellar ORIGIN="http://localhost:8080,http://127.0.0.1:8080":
       fi
       export KAGENTI_CONTROLLER_URL="none"
       kc-agent -kubeconfig "${KUBECONFIG:-$HOME/.kube/config}" -allowed-origins "{{ORIGIN}}" &
-    fi
-
-# Run fully automated headless browser test against the KubeStellar console.
-[group('test')]
-test-e2e-browser CONSOLE_URL="http://127.0.0.1:8080":
-    python3 tests/e2e/test_kubestellar_browser_login.py --console-url "{{CONSOLE_URL}}"
-
-# Complete end-to-end Lima VM orchestration test.
-[group('test')]
-test-e2e-lima:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    limactl validate files/lima/bluefin-server-kiosk.yaml
-    echo "==> Lima VM template validation passed: files/lima/bluefin-server-kiosk.yaml"
-    if [ "${RUN_LIMA_VM:-0}" = "1" ]; then
-      ./scripts/lima-e2e-kubestellar-test.sh
     fi

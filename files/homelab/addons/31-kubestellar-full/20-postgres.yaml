@@ -1,0 +1,62 @@
+# KubeFlex's database: what its chart would install at runtime with Helm
+# (release "postgres": Service and StatefulSet postgres-postgresql in
+# kubeflex-system, the password in the generated Secret postgres-postgresql).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-postgresql
+  namespace: kubeflex-system
+spec:
+  selector:
+    app.kubernetes.io/name: postgres-postgresql
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: postgresql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-postgresql
+  namespace: kubeflex-system
+spec:
+  serviceName: postgres-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-postgresql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: docker.io/library/postgres:17.9-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+        args: ["-c", "max_connections=1000"]
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-postgresql
+              key: postgres-password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - name: postgresql
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 8Gi

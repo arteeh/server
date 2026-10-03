@@ -39,12 +39,16 @@ UNIT_DIRS = [
 CONF = "/etc/bluefin/homelab.conf"
 SEED = "/etc/bluefin/homelab.conf.template"
 
+# The add-on sysexts' features: a control plane turns them on (only it
+# applies them); a node does not need them.
+ADDONS = ("argo-workflows", "mcp", "kubestellar")
+
 # name: (runtime, role, sysupdate features, units enabled by preset, links)
 EXPECTED = {
     "homelab-control-plane": (
         "kubeadm",
         "control-plane",
-        {"kubeadm", "homelab"},
+        {"kubeadm", "homelab", *ADDONS},
         {"sshd.service", "bluefin-sysext-fetch.service"},
         {"kubeadm-init.service"},
     ),
@@ -58,7 +62,7 @@ EXPECTED = {
     "homelab-k0s-control-plane": (
         "k0s",
         "control-plane",
-        {"homelab"},
+        {"homelab", *ADDONS},
         {"sshd.service", "bluefin-sysext-fetch.service", "k0s-first-boot.service"},
         set(),
     ),
@@ -202,7 +206,9 @@ def test_template_enables_exactly_its_units_and_features(name: str) -> None:
         assert "k0s-first-boot.service" not in units | links
     else:
         assert "kubeadm" not in features and "kubeadm-init.service" not in links
+    assert (role == "control-plane") == (set(ADDONS) <= features)
     if role == "node":
+        assert not set(ADDONS) & features
         # A node never initialises a cluster or starts a k0s controller.
         assert not {"kubeadm-init.service", "k0s-first-boot.service"} & (units | links)
 

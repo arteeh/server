@@ -24,14 +24,15 @@ description: |
                                            systemd-sysinstall lays onto the target disk;
                                            bluefin/homelab/ holds what its Homelab
                                            entries add (templates, kubeadm + homelab
-                                           sysexts, a repart.d drop-in)
+                                           sysexts and the homelab add-ons, a
+                                           repart.d drop-in)
     homelab-control-plane.bu/.ign, homelab-node.bu/.ign,
     homelab-k0s-control-plane.bu/.ign, homelab-k0s-node.bu/.ign
                                            homelab Ignition templates: Butane source
                                            and compiled Ignition (homelab/homelab-templates.bst)
     efi-keys/                              Secure Boot enrollment payloads
     zfs_<ver>.raw.zst, kubestellar_<ver>.raw.zst, kubeadm_<ver>.raw.zst,
-    homelab_<ver>.raw.zst,
+    homelab_<ver>.raw.zst, argo-workflows_<ver>.raw.zst, mcp_<ver>.raw.zst,
     nvidia-open-595_<ver>.raw.zst          opt-in sysexts locked to this image version
     k0s-<k0s-ver>.raw.zst                  opt-in k0s sysext (own version axis)
     nvidia-container-toolkit-<ctk-ver>.raw.zst
@@ -83,6 +84,12 @@ build-depends:
 - filename: oci/homelab-sysext.bst
   config:
     location: /sysext/homelab
+- filename: oci/argo-workflows-sysext.bst
+  config:
+    location: /sysext/argo-workflows
+- filename: oci/mcp-sysext.bst
+  config:
+    location: /sysext/mcp
 - filename: oci/nvidia-open-595-sysext.bst
   config:
     location: /sysext/nvidia-open-595
@@ -185,7 +192,8 @@ config:
     printf 'timeout 3\nconsole-mode keep\nsecure-boot-enroll if-safe\n' > "${esp}/loader/loader.conf"
     # The Homelab entries (installer UKI profiles; bluefin-homelab-install)
     # install the template for the chosen role, and copy the kubeadm and
-    # homelab sysexts onto the installed disk's ESP through an extra repart.d
+    # homelab sysexts and the homelab add-ons (argo-workflows, mcp,
+    # kubestellar; a control plane's template enables them) onto the installed disk's ESP through an extra repart.d
     # drop-in. bluefin-sysext-fetch.service installs them from there on the
     # first boot, checked against this manifest, without a network. It is not
     # signed (a signature would make the stick differ on every build): the
@@ -193,7 +201,10 @@ config:
     hl="${esp}/bluefin/homelab"
     install -Dm644 -t "${hl}" /homelab-templates/homelab-control-plane.bu /homelab-templates/homelab-node.bu
     install -Dm644 -t "${hl}/extensions" /sysext/kubeadm/kubeadm_%{image-version}.raw.zst \
-      /sysext/homelab/homelab_%{image-version}.raw.zst
+      /sysext/homelab/homelab_%{image-version}.raw.zst \
+      /sysext/argo-workflows/argo-workflows_%{image-version}.raw.zst \
+      /sysext/mcp/mcp_%{image-version}.raw.zst \
+      /sysext/kubestellar/kubestellar_%{image-version}.raw.zst
     (cd "${hl}/extensions" && sha256sum --binary *.raw.zst > SHA256SUMS)
     mkdir -p "${hl}/repart.d/10-esp.conf.d"
     printf '[Partition]\nCopyFiles=/run/bluefin/installer/bluefin/homelab/extensions:/bluefin/extensions\n' \
@@ -214,6 +225,8 @@ config:
        /sysext/zfs/zfs_%{image-version}.raw.zst \
        /sysext/kubeadm/kubeadm_%{image-version}.raw.zst \
        /sysext/homelab/homelab_%{image-version}.raw.zst \
+       /sysext/argo-workflows/argo-workflows_%{image-version}.raw.zst \
+       /sysext/mcp/mcp_%{image-version}.raw.zst \
        /sysext/nvidia-open-595/nvidia-open-595_%{image-version}.raw.zst \
        /sysext/nvidia-container-toolkit/nvidia-container-toolkit-*.raw.zst "%{install-root}/"
     install -m644 -t "%{install-root}" /homelab-templates/*.bu /homelab-templates/*.ign

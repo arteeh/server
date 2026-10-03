@@ -1,0 +1,5 @@
+# Homelab add-on (kubestellar sysext): the KubeStellar Console. Skipped (not
+# deployed) until the GitHub OAuth app's client id and secret are in
+# /etc/bluefin/homelab.d/kubestellar-console/ (see "secrets").
+# HOMELAB_KUBESTELLAR_CONSOLE=yes|no overrides the default.
+on kubeadm,k0s

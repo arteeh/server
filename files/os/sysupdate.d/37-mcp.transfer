@@ -1,0 +1,15 @@
+[Transfer]
+Features=mcp
+ProtectVersion=%A
+
+[Source]
+Type=url-file
+Path=https://github.com/projectbluefin/server/releases/latest/download/
+MatchPattern=mcp_@v.raw.zst
+
+[Target]
+Type=regular-file
+Path=/var/lib/extensions
+MatchPattern=mcp_@v.raw
+Mode=0444
+InstancesMax=2

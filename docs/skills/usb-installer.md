@@ -134,8 +134,8 @@ install:
   `$BLUEFIN_INSTALL_ARGS` is no argument at all):
   - `--definitions=/run/bluefin/installer/bluefin/homelab/repart.d`, whose
     `10-esp.conf.d/50-bluefin-homelab.conf` adds a `CopyFiles=` of the
-    stick's `bluefin/homelab/extensions/` (the kubeadm and homelab sysexts of
-    this version and their `SHA256SUMS`) to the installed ESP's
+    stick's `bluefin/homelab/extensions/` (the kubeadm and homelab sysexts
+    and the homelab add-ons of this version, and their `SHA256SUMS`) to the installed ESP's
     `/bluefin/extensions/`. On the first boot `bluefin-sysext-fetch.service`
     installs them from there and deletes the copy.
   - `--load-credential=ignition.config:/run/bluefin/installer/bluefin/homelab/homelab-<role>.bu`:

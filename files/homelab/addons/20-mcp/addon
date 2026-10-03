@@ -1,0 +1,3 @@
+# Homelab add-on (mcp sysext): the Kubernetes MCP server, read-only unless
+# HOMELAB_MCP_READ_WRITE=yes. HOMELAB_MCP=yes|no overrides the default.
+on kubeadm,k0s

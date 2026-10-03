@@ -1,29 +1,24 @@
 ---
 name: k0s-sysext-ops
-description: Operator runbook for the k0s and KubeStellar systemd-sysext extensions on Bluefin Server — provisioning, runtime testing, and troubleshooting.
+description: Operator runbook for the k0s systemd-sysext on Bluefin Server — provisioning, runtime testing, and troubleshooting.
 metadata:
   type: how-to
   status: stable
-  last_updated: "2026-09-29"
+  last_updated: "2026-10-02"
   context7-sources:
     - /systemd/systemd
 ---
-# k0s / KubeStellar systemd-sysext Operations
+# k0s systemd-sysext Operations
 
-Use this skill when running, testing, or debugging the k0s and KubeStellar
-systemd-sysext extensions on a live Bluefin Server host.
+Use this skill when running, testing, or debugging the k0s systemd-sysext
+on a live Bluefin Server host.
 
-## The split
+## KubeStellar
 
-Bluefin Server ships two separate, opt-in sysexts:
-
-- **k0s** (`oci/k0s-sysext.bst`): the k0s binary plus `k0scontroller.service`
-  and `k0sworker.service`. No Kubernetes add-ons are included. It is its own
-  sysupdate component on its own version axis (`ID=_any`).
-- **KubeStellar** (`oci/kubestellar-sysext.bst`): Argo CD and KubeStellar
-  manifests, loopback kiosk proxy assets, kubeflex secret generators, and the
-  KubeStellar console issue banner. Requires the k0s sysext. It is
-  version-locked to the OS image and follows OS updates.
+The k0s sysext carries no Kubernetes add-ons. KubeStellar is a homelab
+add-on applied by the homelab applier to a k0s or kubeadm control plane;
+see [homelab-profile.md](homelab-profile.md), "Add-ons", including what
+changed for nodes that used the former k0s KubeStellar appliance.
 
 ## Enabling k0s on a host
 
@@ -55,33 +50,6 @@ A node with a join token at `/etc/k0s/token` becomes a worker. The token can be
 written by Booty via Ignition at provisioning time; `k0sworker.service` will
 start automatically on the next boot when the token is present.
 
-## Enabling the KubeStellar appliance
-
-The KubeStellar sysext is opt-in and version-locked to the OS image. Enable
-its sysupdate feature so it downloads with every OS update:
-
-```bash
-updatectl enable kubestellar
-# or, equivalently, a drop-in /etc/sysupdate.d/kubestellar.feature.d/enable.conf
-# with [Feature] Enabled=true, then systemd-sysupdate update
-```
-
-This places `kubestellar_<ver>.raw` under `/var/lib/extensions/` (two versions
-kept). `systemd-sysext` merges only the one matching the booted image, on the
-next refresh or boot, so a boot-counted OS rollback keeps the matching
-KubeStellar.
-
-Once merged, `kubestellar-seed.service` is pulled in by `k0scontroller.service`
-via a `.wants` drop-in and runs **Before** it. The seed unit:
-
-1. Runs `systemd-tmpfiles --create /usr/lib/tmpfiles.d/k0s-manifests.conf` to
-   seed Argo CD and KubeStellar YAML stacks into `/var/lib/k0s/manifests/`.
-2. Generates a per-node kiosk TLS key at `/var/lib/k0s/kiosk/key.pem` (mode
-   600). The public sysext never ships key material; the key is created on the
-   node on first use.
-3. Runs the kubeflex secret generators
-   (`generate-postgres-secret.sh`, `generate-console-secret.sh`).
-
 ## Verifying
 
 ```bash
@@ -92,9 +60,6 @@ systemd-sysext status
 systemctl status k0scontroller.service   # controller node
 systemctl status k0sworker.service       # worker node
 
-# Check seeded manifests
-ls /var/lib/k0s/manifests/argocd/ /var/lib/k0s/manifests/kubestellar/
-
 # Check pods
 k0s kubectl get pods -A
 ```
@@ -104,10 +69,6 @@ k0s kubectl get pods -A
 Opt-in activation in QEMU reaches:
 
 - `k0scontroller.service` active
-- `kubestellar-seed.service` active
-- Manifests present under `/var/lib/k0s/manifests/argocd/` and
-  `/var/lib/k0s/manifests/kubestellar/`
-- Kiosk key at `/var/lib/k0s/kiosk/key.pem` with mode 600
 
 Placing a token at `/etc/k0s/token` switches the node to `k0sworker.service`.
 
@@ -115,17 +76,9 @@ Placing a token at `/etc/k0s/token` switches the node to `k0sworker.service`.
 
 - **Extension not merged**: Check `systemd-sysext status`. For k0s, verify the
   persistent image is `/var/lib/k0s/k0s.raw`; `k0s-first-boot.service` copies it
-  into `/run/extensions/k0s.raw`. For KubeStellar, verify the versioned image
-  matching the booted OS version exists at
-  `/var/lib/extensions/kubestellar_<ver>.raw`.
-- **Seed unit did not run**: Confirm the KubeStellar sysext is merged and that
-  `k0scontroller.service` is starting. The seed unit has
-  `Before=k0scontroller.service` and `RequiresMountsFor=/var/lib/k0s`.
-- **Manifests not applied**: Check `/var/lib/k0s/manifests/`. Ensure files end
-  in `.yaml` (not `.yml`).
+  into `/run/extensions/k0s.raw`.
 - **Service failed**: Check `journalctl -u k0scontroller -e` or
-  `journalctl -u k0sworker -e`. For the seed unit, check
-  `journalctl -u kubestellar-seed -e`.
+  `journalctl -u k0sworker -e`.
 
 ## See also
 

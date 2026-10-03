@@ -1,0 +1,19 @@
+# Applied only with HOMELAB_MCP_READ_WRITE=yes (the server then also exposes
+# its write tools): mcp-client may change namespaced resources ("edit").
+# The applier never deletes: after switching back to read-only, the server
+# hides its write tools again, and `kubectl delete clusterrolebinding
+# mcp-client-edit` takes the grant away.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-client-edit
+  labels:
+    homelab.bluefin.dev/mcp-read-write: "${HOMELAB_MCP_READ_WRITE}"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- kind: ServiceAccount
+  name: mcp-client
+  namespace: mcp

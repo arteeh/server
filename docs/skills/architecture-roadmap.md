@@ -25,7 +25,7 @@ For reference, so future planning does not redo them:
 - Diskless network boot (`rd.systemd.pull` of the OS DDI into RAM, `verify=signature` against the initrd keyring) and diskless-native install via `systemd-sysinstall`.
 - Secure Boot end to end (signed systemd-boot, signed UKIs, signed modules, `lockdown=integrity`).
 - Opt-in Ignition provisioning via system credentials, plus `bluefin-node.ign` next to the UKI on UEFI HTTP boot.
-- k0s role units (controller vs worker) and the KubeStellar/Argo CD/kiosk stack split into its own sysext.
+- k0s role units (controller vs worker); KubeStellar is a homelab add-on sysext applied by the homelab applier on kubeadm or k0s.
 - Combined `SHA256SUMS` over the whole image set, signed inside `oci/bluefin-server-image.bst` and verified by both sysupdate and the diskless pull.
 - OCI artifact output (`ghcr.io/<owner>/bluefin-server:<ver>,latest`) alongside the raw release files, via ORAS in CI and `just publish-oci` locally.
 - Booty HTTP boot: per-MAC serving of the UKI, DDI, `SHA256SUMS(.gpg)`, and per-host `bluefin-node.ign`, verified end to end in QEMU with Secure Boot; merged upstream in [jeefy/booty#39](https://github.com/jeefy/booty/pull/39).

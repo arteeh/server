@@ -1,0 +1,4 @@
+# Homelab add-on (argo-workflows sysext), applied by bluefin-homelab-apply
+# after the base components: <default> <runtimes>. HOMELAB_ARGO_WORKFLOWS=
+# yes|no in /etc/bluefin/homelab.conf overrides the default.
+on kubeadm,k0s

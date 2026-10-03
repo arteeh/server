@@ -38,7 +38,7 @@ GPT partition label with room to spare):
 | `bluefin-server-netboot_<ver>.efi` | Netboot UKI (diskless nodes); the UEFI HTTP boot / PXE target. |
 | `bluefin-server-netboot_<ver>.esp.raw` | Netboot ESP image: signed systemd-boot, the netboot UKI, and Secure Boot key enrollment payloads. Write it to a USB stick to boot diskless without HTTP boot. |
 | `bluefin-server-installer_<ver>.raw` | Offline USB installer; write to a stick to install without a network. See [usb-installer.md](usb-installer.md). |
-| `zfs_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` / `homelab_<ver>.raw.zst` / `nvidia-open-595_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the `zfs` / `kubestellar` / `kubeadm` / `homelab` / `nvidia-open-595` sysupdate features. |
+| `zfs_<ver>.raw.zst` / `kubeadm_<ver>.raw.zst` / `homelab_<ver>.raw.zst` / `argo-workflows_<ver>.raw.zst` / `mcp_<ver>.raw.zst` / `kubestellar_<ver>.raw.zst` / `nvidia-open-595_<ver>.raw.zst` | Opt-in sysext assets locked to this image version; installed nodes fetch them through the sysupdate features of the same names (the last three before `nvidia` are the homelab add-ons, [homelab-profile.md](homelab-profile.md)). |
 | `k0s-<k0s-ver>.raw.zst` | Opt-in k0s sysext asset, on its own version axis. |
 | `nvidia-container-toolkit-<ctk-ver>.raw.zst` | Opt-in NVIDIA Container Toolkit (CDI) sysext asset, on its own version axis like k0s. |
 | `efi-keys/` | PK/KEK/db enrollment payloads. |
@@ -161,8 +161,9 @@ Installed nodes update with `systemd-sysupdate` against the transfers in
   usr-verity slot (matched by `bluefin_usr_@v` partition labels).
 - `20-uki.transfer` installs the new disk UKI into `/EFI/Linux` with boot
   counting (`TriesLeft=3`, at most 2 UKIs kept).
-- `30-zfs.transfer`, `31-kubestellar.transfer`, `32-kubeadm.transfer` and
-  `33-nvidia-open-595.transfer` are optional **features**
+- `30-zfs.transfer`, `31-kubestellar.transfer`, `32-kubeadm.transfer`,
+  `33-nvidia-open-595.transfer`, `35-homelab.transfer`,
+  `36-argo-workflows.transfer` and `37-mcp.transfer` are optional **features**
   (enabled with `updatectl enable zfs` or a drop-in
   `/etc/sysupdate.d/zfs.feature.d/enable.conf` with `[Feature] Enabled=true`).
   When enabled, the matching sysext is downloaded with every OS update into

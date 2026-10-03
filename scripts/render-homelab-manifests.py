@@ -44,6 +44,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "files" / "homelab" / "manifests"
+ADDONS = ROOT / "files" / "homelab" / "addons"
 HELM_IMAGE = "docker.io/alpine/helm:4.3.0@sha256:a6cf54599ccb99d90cf0712b30f03fdb3cab062e6b94e0418cc4db7e8a1464b2"
 SKOPEO_IMAGE = "quay.io/skopeo/stable:v1.22.3@sha256:8482f709108354691af2defec4cad5f3ddea6cfff0c8091109dec8034574a918"
 # Capabilities.KubeVersion for the charts: the kubeadm sysext's Kubernetes.
@@ -88,6 +89,8 @@ class Component:
     source: Chart | Manifest
     release: str = ""
     values: dict = field(default_factory=dict)
+    # The base set (OUT) or an add-on (ADDONS).
+    root: Path = OUT
 
 
 PH = lambda name: "${HOMELAB_" + name + "}"  # noqa: E731
@@ -329,6 +332,141 @@ COMPONENTS = [
 ]
 
 
+# The add-on sysexts' components: one directory each under ADDONS, applied
+# after the base set in name order (files/homelab/addons/<NN-addon>/addon).
+ADDON_COMPONENTS = [
+    Component(
+        "10-argo-workflows", "argo",
+        # Namespace-scoped install; patch_argo_workflows sets the server's
+        # auth mode and plain HTTP (TLS ends at the homelab Gateway).
+        Manifest("https://github.com/argoproj/argo-workflows/releases/download/v4.1.4/namespace-install.yaml",
+                 "947bbab7f9c99eb1e6b5ba47866afa531c1f485f3ad2586f6bfbc081a0057498"),
+        root=ADDONS,
+    ),
+    Component(
+        "20-mcp", "mcp",
+        Chart("oci://ghcr.io/containers/charts", "kubernetes-mcp-server", "0.1.0",
+              "2b9e0371b6a54ace8bfd9c100d61c766f0f8cec45de46040d28ea2e9f8c31484"),
+        release="mcp",
+        values={
+            "image": {"registry": "quay.io", "repository": "containers/kubernetes_mcp_server", "version": "v0.0.67"},
+            "ingress": {"enabled": False},
+            # The server's own account gets no grant: every tool call runs
+            # with the caller's bearer token (cluster_auth_mode passthrough).
+            # Its token stays mounted: the in-cluster provider needs the
+            # service account's CA and API server address.
+            "rbac": {"create": False},
+            # patch_mcp replaces the rendered config.toml with MCP_CONFIG.
+            "config": {"port": "8080"},
+        },
+        root=ADDONS,
+    ),
+    Component(
+        "30-kubestellar-console", "kubestellar-console",
+        Chart("oci://ghcr.io/kubestellar/charts", "kubestellar-console", "0.3.42",
+              "a6360659ba8e9c02380b34046f97af09d045a64e0e35d57168817d027b6a5609"),
+        release="kubestellar-console",
+        values={
+            "image": {"tag": "v0.3.42"},
+            # GitHub OAuth from the operator's files, the JWT key generated
+            # on the node (see the "secrets" file); no Secret in the chart.
+            "github": {"existingSecret": "kubestellar-console-github-oauth"},
+            "jwt": {"existingSecret": "kubestellar-console-jwt"},
+            "persistence": {"enabled": True, "accessModes": ["ReadWriteOnce"]},
+            "backup": {"enabled": False},
+            "selfUpgrade": {"enabled": False},
+            "rbac": {"resourceQuotasReadOnly": True},
+            "extraEnv": [{"name": "FRONTEND_URL", "value": "http://kubestellar.${HOMELAB_DOMAIN}"}],
+        },
+        root=ADDONS,
+    ),
+    Component(
+        # Full KubeStellar: KubeFlex and the KubeStellar PostCreateHooks
+        # (controller manager, transport, status add-on) for the ITS/WDS
+        # control planes one creates. KubeFlex's own Postgres is a Helm
+        # install at runtime; 20-postgres.yaml replaces it (patch_kubestellar_full).
+        "31-kubestellar-full", "kubeflex-system",
+        Chart("oci://ghcr.io/kubestellar/kubestellar", "core-chart", "0.30.0",
+              "a66697c077431c4e2cff73764f9b60fc15b3af75ad3e9e70ddda9c94d4c996ad"),
+        release="ks",
+        root=ADDONS,
+    ),
+]
+
+# kubernetes-mcp-server's config: HTTP on 8080 (Streamable HTTP at /mcp),
+# read-only unless homelab.conf says HOMELAB_MCP_READ_WRITE=yes, and every
+# request must carry a bearer token, which the server forwards to the API
+# server: Kubernetes authenticates and authorizes each call (the generated
+# mcp-client token is bound to the "view" ClusterRole).
+MCP_CONFIG = """port = "8080"
+stateless = true
+read_only = ${HOMELAB_MCP_READ_ONLY}
+toolsets = ["core", "config"]
+cluster_provider_strategy = "in-cluster"
+require_oauth = true
+skip_jwt_verification = true
+cluster_auth_mode = "passthrough"
+
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"
+"""
+
+
+def patch_argo_workflows(docs: list[dict]) -> list[dict]:
+    for d in docs:
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "argo-server":
+            c = d["spec"]["template"]["spec"]["containers"][0]
+            # Clients authenticate with their own Kubernetes token
+            # (kubectl create token), and the Gateway speaks plain HTTP.
+            c["args"] += ["--auth-mode=client", "--secure=false"]
+            c["readinessProbe"]["httpGet"]["scheme"] = "HTTP"
+        if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "workflow-controller-configmap":
+            # The executor the controller injects into workflow pods,
+            # pinned like every other image.
+            d["data"] = {"executor": "image: quay.io/argoproj/argoexec:v4.1.4\n"}
+        if d["kind"] in ("RoleBinding", "ClusterRoleBinding"):
+            for s in d.get("subjects", []):
+                if s["kind"] == "ServiceAccount":
+                    s.setdefault("namespace", "argo")
+    return docs
+
+
+def patch_mcp(docs: list[dict]) -> list[dict]:
+    for d in docs:
+        if d["kind"] == "ConfigMap":
+            d["data"] = {"config.toml": MCP_CONFIG}
+        if d["kind"] == "Deployment":
+            # The chart's config checksum is of its own config; reloader
+            # restarts the pod when the applier changes read_only.
+            tmpl = d["spec"]["template"]["metadata"]
+            tmpl.get("annotations", {}).pop("checksum/config", None)
+            if not tmpl.get("annotations"):
+                tmpl.pop("annotations", None)
+            d["metadata"].setdefault("annotations", {})["reloader.stakater.com/auto"] = "true"
+    return docs
+
+
+def patch_console(docs: list[dict]) -> list[dict]:
+    # The chart's pre-upgrade PVC migration (a Helm hook for its own
+    # upgrades) has no place in a plain apply.
+    return [d for d in docs if not d["metadata"]["name"].startswith("kubestellar-console-pvc-migration")]
+
+
+def patch_kubestellar_full(docs: list[dict]) -> list[dict]:
+    return [d for d in docs if not (d["kind"] == "Job" and "install-postgresql" in d["metadata"]["name"])]
+
+
+PATCHES = {
+    "20-local-path-provisioner": lambda docs: patch_local_path(docs),
+    "10-argo-workflows": patch_argo_workflows,
+    "20-mcp": patch_mcp,
+    "30-kubestellar-console": patch_console,
+    "31-kubestellar-full": patch_kubestellar_full,
+}
+
+
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     result = subprocess.run(cmd, text=True, **kw)
     if result.returncode:
@@ -566,7 +704,7 @@ def dump(path: Path, docs: list[dict]) -> None:
 
 
 def write_component(comp: Component, docs: list[dict]) -> None:
-    out = OUT / comp.directory
+    out = comp.root / comp.directory
     out.mkdir(parents=True, exist_ok=True)
     for f in out.glob("*.yaml"):
         if f.read_text().startswith(GENERATED):
@@ -607,7 +745,7 @@ def main() -> None:
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
-    selected = [c for c in COMPONENTS if not args.only or c.directory == args.only]
+    selected = [c for c in COMPONENTS + ADDON_COMPONENTS if not args.only or c.directory == args.only]
 
     rendered = {}
     for comp in selected:
@@ -616,15 +754,14 @@ def main() -> None:
             continue
         if isinstance(comp.source, Manifest):
             docs = load(src.read_text())
-            if comp.directory == "20-local-path-provisioner":
-                docs = patch_local_path(docs)
         else:
             docs = load(helm_template(comp, src, work))
-        rendered[comp.directory] = postprocess(docs, comp)
+        docs = postprocess(docs, comp)
+        rendered[comp.directory] = PATCHES.get(comp.directory, lambda d: d)(docs)
     if args.print_pins:
         return
 
-    hand_written = {f: load(f.read_text()) for f in sorted(OUT.glob("*/*.yaml"))
+    hand_written = {f: load(f.read_text()) for f in sorted([*OUT.glob("*/*.yaml"), *ADDONS.glob("*/*.yaml")])
                     if not f.read_text().startswith(GENERATED)}
     digests = Digests(work)
     refs: set[str] = set()
@@ -641,8 +778,9 @@ def main() -> None:
             sys.exit(f"{path.relative_to(ROOT)}: pin its images by digest by hand "
                      f"({sorted(r for d in docs for r in image_refs(d))})")
 
-    total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
-    print(f"wrote {OUT.relative_to(ROOT)}: {total} bytes")
+    for root in (OUT, ADDONS):
+        total = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+        print(f"wrote {root.relative_to(ROOT)}: {total} bytes")
 
 
 if __name__ == "__main__":

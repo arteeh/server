@@ -37,6 +37,8 @@ build-depends:
 - oci/kubeadm-sysext.bst
 - kubeadm/kubeadm-bin.bst
 - oci/homelab-sysext.bst
+- oci/argo-workflows-sysext.bst
+- oci/mcp-sysext.bst
 - homelab/bluefin-cluster.bst
 - oci/zfs-sysext.bst
 - zfs/openzfs.bst

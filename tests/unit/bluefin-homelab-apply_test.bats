@@ -72,6 +72,7 @@ k0s_node() {
 run_applier() {
     run env -i PATH="${STUBS}:${TOOLS}" HOMELAB_ROOT="${FAKE_ROOT}" \
         HOMELAB_MANIFESTS="${MANIFESTS:-${REPO_ROOT}/files/homelab/manifests}" \
+        HOMELAB_ADDONS="${ADDONS:-${BATS_TEST_TMPDIR}/no-addons}" \
         HOMELAB_API_TIMEOUT=1 HOMELAB_WAIT_TIMEOUT=1 HOMELAB_POLL_INTERVAL=0 "$@" \
         bash "${SCRIPT}"
 }
@@ -291,4 +292,90 @@ EOF
     second=$(ls "${APPLIED}" | grep -v stdin.yaml | sed 's/^[0-9]*-//' | paste -sd' ')
     [ "${first}" = "${second}" ]
     ! grep -qw delete "${LOG}"
+}
+
+# Add-ons: the add-on sysexts' directories, merged into addons.d.
+with_addons() {
+    ADDONS="${REPO_ROOT}/files/homelab/addons"
+}
+
+@test "add-ons apply after the base set, in name order, with their defaults" {
+    kubeadm_node
+    with_addons
+    run_applier
+    [ "$status" -eq 0 ]
+    [ "$(applied_components)" = "cilium local-path-provisioner metallb envoy-gateway cert-manager argocd metrics-server reloader kured argo-workflows mcp kubestellar-console" ]
+    [[ "$output" == *"kubestellar-full: disabled (HOMELAB_KUBESTELLAR_FULL)"* ]]
+    grep -q 'argo-server' "${APPLIED}"/*-10-argo-workflows.yaml
+}
+
+@test "add-ons follow HOMELAB_<ID> and their runtimes" {
+    k0s_node
+    with_addons
+    run_applier HOMELAB_ARGO_WORKFLOWS=no HOMELAB_KUBESTELLAR_FULL=yes
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"argo-workflows: disabled (HOMELAB_ARGO_WORKFLOWS)"* ]]
+    [[ "$(applied_components)" == *"mcp kubestellar-console kubestellar-full" ]]
+    grep -q 'create secret generic postgres-postgresql --from-literal=postgres-password=' "${LOG}"
+}
+
+@test "add-ons: nothing is applied on a node" {
+    kubeadm_node
+    with_addons
+    run_applier HOMELAB_ROLE=node
+    [ "$status" -eq 0 ]
+    ! grep -q '^kubectl' "${LOG}"
+}
+
+@test "a directory without an addon file is not an add-on" {
+    kubeadm_node
+    ADDONS="${BATS_TEST_TMPDIR}/addons"
+    mkdir -p "${ADDONS}/10-demo" "${ADDONS}/20-other"
+    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\n' >"${ADDONS}/10-demo/10-demo.yaml"
+    cp "${ADDONS}/10-demo/10-demo.yaml" "${ADDONS}/20-other/10-other.yaml"
+    printf '# comment\n\non kubeadm\n' >"${ADDONS}/20-other/addon"
+    run_applier
+    [ "$status" -eq 0 ]
+    [[ "$(applied_components)" == *"kured other" ]]
+}
+
+@test "the KubeStellar Console is not deployed until its OAuth app is configured" {
+    kubeadm_node
+    with_addons
+    run_applier
+    [[ "$output" == *"kubestellar-console: skipped, missing /etc/bluefin/homelab.d/kubestellar-console/github-client-id /etc/bluefin/homelab.d/kubestellar-console/github-client-secret"* ]]
+    ! ls "${APPLIED}"/*-10-kubestellar-console.yaml
+    d="${FAKE_ROOT}/etc/bluefin/homelab.d/kubestellar-console"
+    mkdir -p "${d}"
+    printf %s dummy-id >"${d}/github-client-id"
+    printf %s dummy-secret >"${d}/github-client-secret"
+    : >"${LOG}"
+    run_applier
+    [ "$status" -eq 0 ]
+    ls "${APPLIED}"/*-10-kubestellar-console.yaml
+    grep -q "create secret generic kubestellar-console-github-oauth --from-file=github-client-id=${d}/github-client-id --from-file=github-client-secret=${d}/github-client-secret" "${LOG}"
+    line=$(grep 'create secret generic kubestellar-console-jwt' "${LOG}")
+    [[ "${line}" =~ --from-literal=jwt-secret=([0-9a-f]{48}) ]]
+    [[ "$output" != *"${BASH_REMATCH[1]}"* ]]
+    [[ "$output" != *dummy-secret* ]]
+    grep -q 'value: "http://kubestellar.home.arpa"' "${APPLIED}"/*-10-kubestellar-console.yaml
+}
+
+@test "MCP: read-only by default, read-write only with HOMELAB_MCP_READ_WRITE=yes" {
+    kubeadm_node
+    with_addons
+    run_applier
+    grep -q '^    read_only = true$' "${APPLIED}"/*-10-mcp.yaml
+    [[ "$output" == *"mcp: skipping 21-client-read-write.yaml: HOMELAB_MCP_READ_WRITE not set"* ]]
+    grep -q 'name: view$' "${APPLIED}"/*-20-client.yaml
+    grep -q '"mcp.home.arpa"' "${APPLIED}"/*-22-httproute.yaml
+    rm -f "${APPLIED}"/*
+    run_applier HOMELAB_MCP_READ_WRITE=yes HOMELAB_DOMAIN=lab.example.com
+    grep -q '^    read_only = false$' "${APPLIED}"/*-10-mcp.yaml
+    grep -q 'name: edit$' "${APPLIED}"/*-21-client-read-write.yaml
+    grep -q '"mcp.lab.example.com"' "${APPLIED}"/*-22-httproute.yaml
+    rm -f "${APPLIED}"/*
+    run_applier HOMELAB_MCP_READ_WRITE=no
+    grep -q '^    read_only = true$' "${APPLIED}"/*-10-mcp.yaml
+    ! ls "${APPLIED}"/*-21-client-read-write.yaml
 }

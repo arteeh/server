@@ -5,7 +5,10 @@
 # Finds the control plane's admin kubeconfig (kubeadm /etc/kubernetes/admin.conf
 # or k0s /var/lib/k0s/pki/admin.conf), waits for the API server, then applies
 # every enabled component in /usr/share/bluefin/homelab in the order of its
-# "components" index with server-side apply. Within a component the files
+# "components" index with server-side apply, then every enabled add-on: the
+# directories the add-on sysexts merge into /usr/share/bluefin/homelab/
+# addons.d/, in name order, each with an "addon" file holding its default and
+# runtimes. Within a component the files
 # apply in name order: CRDs (waits until Established), Namespaces, generated
 # Secrets, then the rest; after each file it waits for the Deployments,
 # DaemonSets and StatefulSets in it to roll out.
@@ -22,6 +25,7 @@
 set -uo pipefail
 
 MANIFESTS=${HOMELAB_MANIFESTS:-/usr/share/bluefin/homelab}
+ADDONS=${HOMELAB_ADDONS:-${MANIFESTS}/addons.d}
 # Test hook: prefix for the host paths below.
 ROOT=${HOMELAB_ROOT:-}
 WAIT_TIMEOUT=${HOMELAB_WAIT_TIMEOUT:-600}
@@ -49,6 +53,9 @@ declare -A PATTERN=(
 	[KURED_START_TIME]='^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$'
 	[KURED_END_TIME]='^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$'
 	[KURED_REBOOT_DAYS]='^[a-z]{2}(,[a-z]{2})*$'
+	[DOMAIN]='^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$'
+	[MCP_READ_ONLY]='^(true|false)$'
+	[MCP_READ_WRITE]='^yes$'
 )
 declare -A DEFAULT=(
 	[ACME_SERVER]=https://acme-v02.api.letsencrypt.org/directory
@@ -58,6 +65,7 @@ declare -A DEFAULT=(
 	[KURED_START_TIME]=0:00
 	[KURED_END_TIME]=23:59:59
 	[KURED_REBOOT_DAYS]='su,mo,tu,we,th,fr,sa'
+	[DOMAIN]=home.arpa
 )
 
 # A control plane is coming up on this node, so its kubeconfig is worth
@@ -159,6 +167,19 @@ substitutions() {
 }
 input() {
 	local var=HOMELAB_$1 value
+	case $1 in
+	# Both follow the HOMELAB_MCP_READ_WRITE switch: the MCP server is
+	# read-only and its client's write grant absent unless it is on.
+	MCP_READ_ONLY)
+		if enabled HOMELAB_MCP_READ_WRITE off >&2; then echo false; else echo true; fi
+		return 0
+		;;
+	MCP_READ_WRITE)
+		enabled HOMELAB_MCP_READ_WRITE off >&2 || return 1
+		echo yes
+		return 0
+		;;
+	esac
 	value=${!var:-${DEFAULT[$1]:-}}
 	[ -n "${value}" ] || return 1
 	if ! [[ ${value} =~ ${PATTERN[$1]} ]]; then
@@ -288,9 +309,38 @@ apply_component() {
 	[ -n "${secrets_done}" ] || apply_secrets "${dir}"
 }
 
+# <NN-id> <default> <runtimes> <directory>: applies one component or add-on
+# unless homelab.conf (HOMELAB_<ID>) or the runtime rules it out; records a
+# failure in "failed".
+apply_entry() {
+	local dir=$1 default=$2 runtimes=$3 path=$4 id var
+	id=${dir#*-}
+	var=HOMELAB_${id^^}
+	var=${var//-/_}
+	COMPONENT=${id}
+	if ! enabled "${var}" "${default}"; then
+		notice "${id}: disabled (${var})"
+		return 0
+	fi
+	if [[ ,${runtimes}, != *,${RUNTIME},* ]]; then
+		notice "${id}: not used with ${RUNTIME}"
+		return 0
+	fi
+	if [ "${id}" = argocd ] && [ "${RUNTIME}" = k0s ] && [ -e "${ROOT}/var/lib/k0s/manifests/argocd" ]; then
+		notice "${id}: managed by the kubestellar sysext's k0s manifests"
+		return 0
+	fi
+	notice "${id}: applying"
+	if apply_component "${path}"; then
+		notice "${id}: ready"
+	else
+		failed+=("${id}")
+	fi
+}
+
 main() {
-	local status dir default runtimes id var
-	local -a failed=()
+	local status dir default runtimes
+	failed=()
 	if [ "${HOMELAB_ROLE:-}" = node ]; then
 		notice "HOMELAB_ROLE=node: the control plane applies the components; nothing to do"
 		return 0
@@ -317,29 +367,15 @@ main() {
 
 	while read -r dir default runtimes; do
 		case ${dir} in '' | \#*) continue ;; esac
-		id=${dir#*-}
-		var=HOMELAB_${id^^}
-		var=${var//-/_}
-		COMPONENT=${id}
-		if ! enabled "${var}" "${default}"; then
-			notice "${id}: disabled (${var})"
-			continue
-		fi
-		if [[ ,${runtimes}, != *,${RUNTIME},* ]]; then
-			notice "${id}: not used with ${RUNTIME}"
-			continue
-		fi
-		if [ "${id}" = argocd ] && [ "${RUNTIME}" = k0s ] && [ -e "${ROOT}/var/lib/k0s/manifests/argocd" ]; then
-			notice "${id}: managed by the kubestellar sysext's k0s manifests"
-			continue
-		fi
-		notice "${id}: applying"
-		if apply_component "${MANIFESTS}/${dir}"; then
-			notice "${id}: ready"
-		else
-			failed+=("${id}")
-		fi
+		apply_entry "${dir}" "${default}" "${runtimes}" "${MANIFESTS}/${dir}"
 	done <"${MANIFESTS}/components"
+
+	# Add-ons: after the base set, in name order (the glob sorts).
+	for dir in "${ADDONS}"/[0-9][0-9]-*/; do
+		[ -f "${dir}addon" ] || continue
+		read -r default runtimes < <(grep -v '^[[:space:]]*\(#\|$\)' "${dir}addon")
+		apply_entry "$(basename "${dir}")" "${default}" "${runtimes}" "${dir%/}"
+	done
 
 	if [ "${#failed[@]}" -gt 0 ]; then
 		err "failed: ${failed[*]}"

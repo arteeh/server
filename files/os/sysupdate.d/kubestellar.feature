@@ -1,3 +1,3 @@
 [Feature]
-Description=KubeStellar, Argo CD and kiosk systemd-sysext for k0s, locked to the image version
+Description=KubeStellar Console (and opt-in full KubeStellar) homelab add-on systemd-sysext (needs the homelab feature), locked to the image version
 Documentation=https://github.com/projectbluefin/server

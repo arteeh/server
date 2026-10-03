@@ -35,6 +35,8 @@ jobs:
         oci/kubestellar-sysext.bst
         oci/kubeadm-sysext.bst
         oci/homelab-sysext.bst
+        oci/argo-workflows-sysext.bst
+        oci/mcp-sysext.bst
         oci/zfs-sysext.bst
         bluefin-server/os-sd-boot-signed.bst
     steps:

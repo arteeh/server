@@ -102,6 +102,8 @@ def test_sysupdate_directories_are_populated():
         "32-kubeadm.transfer",
         "33-nvidia-open-595.transfer",
         "35-homelab.transfer",
+        "36-argo-workflows.transfer",
+        "37-mcp.transfer",
     ]
     assert k0s == ["70-k0s.transfer"]
     ctk = sorted(p.name for p in CTK_SYSUPDATE_DIR.glob("*.transfer"))

@@ -34,7 +34,7 @@ This is the lazy-load routing table for agent skills. Keep this file in memory w
 | [`gap-analysis-distros.md`](gap-analysis-distros.md) | Comparing Bluefin Server to other server OSes | Source-verified comparison to Ubuntu, Talos, Flatcar, FCOS. |
 | [`homelab-profile.md`](homelab-profile.md) | The homelab Ignition templates, how they pull in the sysexts, the USB installer's Homelab entries | Templates per runtime and role, what they turn on, publication, QEMU checks. |
 | [`kubeadm-sysext.md`](kubeadm-sysext.md) | Joining a kubeadm cluster, single-node kubeadm control plane, kubelet/containerd sysext, Kubernetes kernel options | Build and runtime contract for the kubeadm sysext (worker or single-node control plane). |
-| [`k0s-sysext-ops.md`](k0s-sysext-ops.md) | Operating k0s or the KubeStellar appliance on Bluefin Server | Runtime operation and troubleshooting for the k0s and KubeStellar sysexts. |
+| [`k0s-sysext-ops.md`](k0s-sysext-ops.md) | Operating k0s on Bluefin Server | Runtime operation and troubleshooting for the k0s sysext. |
 | [`k0s-sysext.md`](k0s-sysext.md) | Building the k0s sysext | BuildStream element and publish steps for the k0s sysext. |
 | [`nvidia-sysext.md`](nvidia-sysext.md) | Adding, bumping, or debugging an NVIDIA driver (open kernel modules) or Container Toolkit (CDI) sysext | Flavours and adding one, open-modules-only (Turing+) policy, driver and toolkit bumps, CDI and GPU Operator values. |
 | [`secure-boot-keys.md`](secure-boot-keys.md) | Rotating signing keys, setting up CI secrets, debugging signature verification | Key inventory, `gen-dev-keys`, CI secrets, and rotation. |

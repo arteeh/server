@@ -61,17 +61,16 @@ The first-party extensions make opposite choices:
   `nvidia` runtime handler for the kubeadm sysext (nvidia-sysext.md). No OCI
   hook or `libnvidia-container`. The refresh is ordered after the driver sysext's
   units without requiring them, and skips on nodes without an NVIDIA GPU.
-- **OpenZFS and KubeStellar** are version-locked to the image: their
-  extension-release file is named after the versioned image file
-  (`extension-release.zfs_<image-version>`,
-  `extension-release.kubestellar_<image-version>`) with `ID=bluefin-server`
-  and `VERSION_ID=<image-version>`, because the ZFS kernel modules only load
-  on the exact kernel they were built against (and the KubeStellar stack is
-  validated against one image). Several versions sit side by side in
-  `/var/lib/extensions` as `zfs_<ver>.raw` / `kubestellar_<ver>.raw`;
-  systemd-sysext merges only the one matching the booted image, so an A/B
-  rollback keeps its ZFS. Installed nodes receive them in lock-step with OS
-  updates through the optional `zfs` / `kubestellar` sysupdate features
+- **OpenZFS** is version-locked to the image: its extension-release file is
+  named after the versioned image file (`extension-release.zfs_<image-version>`)
+  with `ID=bluefin-server` and `VERSION_ID=<image-version>`, because the ZFS
+  kernel modules only load on the exact kernel they were built against (the
+  homelab sysext and its add-ons follow the same scheme, validated against
+  one image). Several versions sit side by side in `/var/lib/extensions` as
+  `zfs_<ver>.raw`; systemd-sysext merges only the one matching the booted
+  image, so an A/B rollback keeps its ZFS. Installed nodes receive them in
+  lock-step with OS updates through the optional sysupdate features of the
+  same name
   (see `systemd-sysupdate-verification.md`); diskless nodes get them from
   Ignition, which writes `/etc/extensions/<name>_<ver>.raw` with a sha256
   verification hash.
@@ -133,7 +132,11 @@ A failed run is retried by the unit. It also carries `bluefin-cluster` (a Go
 binary, so the image has `ARCHITECTURE=`) for multi-node homelabs
 (`HOMELAB_ROLE`), and a `20-wired.network` drop-in enabling mDNS; see
 [`files/homelab/cluster/README.md`](../../files/homelab/cluster/README.md).
-The applier does nothing on `HOMELAB_ROLE=node`.
+The applier does nothing on `HOMELAB_ROLE=node`. After the base set it
+applies the homelab add-ons, the manifest-only `argo-workflows`, `mcp` and
+`kubestellar` sysexts, which merge their directories into
+`/usr/share/bluefin/homelab/addons.d/` ([homelab-profile.md](homelab-profile.md),
+"Add-ons").
 
 The toolkit is delivered like k0s: the sysupdate component
 `nvidia-container-toolkit` (`/usr/lib/sysupdate.nvidia-container-toolkit.d/`)
